@@ -14,6 +14,7 @@ add_library(tiny_renderer
     src/obj_loader.cpp
     src/ppm_loader.cpp
     src/rasterizer.cpp
+    src/rasterizer_range.cpp
     src/texture.cpp
 )
 
@@ -78,4 +79,11 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_material_import_tests COMMAND tiny_renderer_material_import_tests)
+
+    add_executable(tiny_renderer_model_asset_tests tests/test_model_asset.cpp)
+    target_link_libraries(tiny_renderer_model_asset_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_model_asset_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_model_asset_tests COMMAND tiny_renderer_model_asset_tests)
 endif()
