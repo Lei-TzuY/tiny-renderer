@@ -80,6 +80,31 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
     }
 }
 
+BaseColorSource prepare_base_color_source(BaseColorSource source, const TextureBinding& texture_binding) {
+    switch (source) {
+        case BaseColorSource::Auto:
+            return texture_binding.texture != nullptr
+                ? BaseColorSource::Texture
+                : BaseColorSource::VaryingColor;
+        case BaseColorSource::VaryingColor:
+            if (texture_binding.texture != nullptr) {
+                throw std::invalid_argument("varying-color base source conflicts with a bound texture");
+            }
+            return source;
+        case BaseColorSource::Texture:
+            if (texture_binding.texture == nullptr) {
+                throw std::invalid_argument("texture base-color source requires a bound texture");
+            }
+            return source;
+        case BaseColorSource::ConstantWhite:
+            if (texture_binding.texture != nullptr) {
+                throw std::invalid_argument("constant-white base-color source conflicts with a bound texture");
+            }
+            return source;
+    }
+    throw std::invalid_argument("unknown base-color source");
+}
+
 void validate_normal_binding(const NormalBinding& binding, const VaryingPack& pack) {
     if (binding.x >= pack.count || binding.y >= pack.count || binding.z >= pack.count) {
         throw std::out_of_range("normal binding references unavailable varying channel");
@@ -93,16 +118,28 @@ void validate_normal_binding(const NormalBinding& binding, const VaryingPack& pa
 void validate_output_binding(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
+    BaseColorSource source,
     std::size_t varying_count) {
-    if (texture_binding.texture != nullptr) {
-        validate_texture_binding(texture_binding, varying_count);
-    } else {
-        validate_color_binding(color_binding, varying_count);
+    switch (source) {
+        case BaseColorSource::VaryingColor:
+            validate_color_binding(color_binding, varying_count);
+            return;
+        case BaseColorSource::Texture:
+            validate_texture_binding(texture_binding, varying_count);
+            return;
+        case BaseColorSource::ConstantWhite:
+            return;
+        case BaseColorSource::Auto:
+            throw std::logic_error("automatic base-color source must be resolved before validation");
     }
+    throw std::logic_error("unreachable base-color source validation state");
 }
 
-void validate_texture_coordinates(const VaryingPack& pack, const TextureBinding& binding) {
-    if (binding.texture == nullptr) {
+void validate_texture_coordinates(
+    const VaryingPack& pack,
+    const TextureBinding& binding,
+    BaseColorSource source) {
+    if (source != BaseColorSource::Texture) {
         return;
     }
     const float u = pack.values[binding.u_channel];
@@ -169,16 +206,17 @@ void validate_triangle_varyings(
     const Triangle& triangle,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
+    BaseColorSource source,
     const DirectionalLight& light) {
     validate_pack(triangle[0].varyings);
-    validate_output_binding(color_binding, texture_binding, triangle[0].varyings.count);
+    validate_output_binding(color_binding, texture_binding, source, triangle[0].varyings.count);
     validate_layout_match(triangle[0].varyings, triangle[1].varyings);
     validate_layout_match(triangle[0].varyings, triangle[2].varyings);
     if (light.enabled) {
         validate_normal_binding(light.normal, triangle[0].varyings);
     }
     for (const Vertex& vertex : triangle) {
-        validate_texture_coordinates(vertex.varyings, texture_binding);
+        validate_texture_coordinates(vertex.varyings, texture_binding, source);
         if (light.enabled) {
             validate_normal_value(vertex.varyings, light.normal);
         }
@@ -437,30 +475,39 @@ VaryingPack interpolate_varyings(
 Vec3 base_fragment_color(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
-    const TextureBinding& texture_binding) {
-    if (texture_binding.texture != nullptr) {
-        return texture_binding.texture->sample(
-            {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
-            texture_binding.sampler);
+    const TextureBinding& texture_binding,
+    BaseColorSource source) {
+    switch (source) {
+        case BaseColorSource::VaryingColor:
+            return {
+                varyings.values[color_binding.red],
+                varyings.values[color_binding.green],
+                varyings.values[color_binding.blue],
+            };
+        case BaseColorSource::Texture:
+            return texture_binding.texture->sample(
+                {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+                texture_binding.sampler);
+        case BaseColorSource::ConstantWhite:
+            return {1.0F, 1.0F, 1.0F};
+        case BaseColorSource::Auto:
+            throw std::logic_error("automatic base-color source must be resolved before shading");
     }
-    return {
-        varyings.values[color_binding.red],
-        varyings.values[color_binding.green],
-        varyings.values[color_binding.blue],
-    };
+    throw std::logic_error("unreachable base-color source shading state");
 }
 
 Vec3 shade_fragment(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
+    BaseColorSource source,
     const DirectionalLight& light,
     const MaterialState& material) {
-    const Vec3 source = base_fragment_color(varyings, color_binding, texture_binding);
+    const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
     const Vec3 base{
-        source.x * material.albedo.x,
-        source.y * material.albedo.y,
-        source.z * material.albedo.z,
+        source_color.x * material.albedo.x,
+        source_color.y * material.albedo.y,
+        source_color.z * material.albedo.z,
     };
     if (!light.enabled) {
         return base;
@@ -490,6 +537,7 @@ void rasterize_screen_triangle(
     std::array<ScreenVertex, 3> v,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
+    BaseColorSource source,
     const DirectionalLight& light,
     const MaterialState& material) {
     std::array<FixedPoint2, 3> fixed{
@@ -561,7 +609,7 @@ void rasterize_screen_triangle(
                 continue;
             }
             const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
-            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, light, material);
+            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, source, light, material);
             framebuffer.depth_test_and_write(static_cast<std::size_t>(x), static_cast<std::size_t>(y), depth, color);
         }
     }
@@ -571,6 +619,7 @@ void validate_mesh(
     const Mesh& mesh,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
+    BaseColorSource source,
     const DirectionalLight& light) {
     for (const TriangleIndices& triangle : mesh.triangles) {
         for (const std::uint32_t index : triangle) {
@@ -583,13 +632,13 @@ void validate_mesh(
         return;
     }
     validate_pack(mesh.vertices.front().varyings);
-    validate_output_binding(color_binding, texture_binding, mesh.vertices.front().varyings.count);
+    validate_output_binding(color_binding, texture_binding, source, mesh.vertices.front().varyings.count);
     if (light.enabled) {
         validate_normal_binding(light.normal, mesh.vertices.front().varyings);
     }
     for (const Vertex& vertex : mesh.vertices) {
         validate_layout_match(mesh.vertices.front().varyings, vertex.varyings);
-        validate_texture_coordinates(vertex.varyings, texture_binding);
+        validate_texture_coordinates(vertex.varyings, texture_binding, source);
         if (light.enabled) {
             validate_normal_value(vertex.varyings, light.normal);
         }
@@ -606,6 +655,7 @@ void draw_triangle_impl(
     const Mat4& mvp,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
+    BaseColorSource source,
     const DirectionalLight& light,
     const MaterialState& material) {
     std::array<ClipVertex, 3> clip{};
@@ -629,7 +679,14 @@ void draw_triangle_impl(
         if (!a || !b || !c) {
             continue;
         }
-        rasterize_screen_triangle(framebuffer, {*a, *b, *c}, color_binding, texture_binding, light, material);
+        rasterize_screen_triangle(
+            framebuffer,
+            {*a, *b, *c},
+            color_binding,
+            texture_binding,
+            source,
+            light,
+            material);
     }
 }
 
@@ -637,9 +694,10 @@ void draw_triangle_impl(
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
     validate_raster_target(framebuffer_);
+    const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_triangle_varyings(triangle, color_binding_, texture_binding_, light);
+    validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
 
     Triangle prepared = triangle;
     if (light.enabled) {
@@ -651,6 +709,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         projection * view * model,
         color_binding_,
         texture_binding_,
+        source,
         light,
         material);
 }
@@ -660,17 +719,19 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
     validate_raster_target(framebuffer_);
+    const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_triangle_varyings(triangle, color_binding_, texture_binding_, light);
-    draw_triangle_impl(framebuffer_, triangle, mvp, color_binding_, texture_binding_, light, material);
+    validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
+    draw_triangle_impl(framebuffer_, triangle, mvp, color_binding_, texture_binding_, source, light, material);
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
     validate_raster_target(framebuffer_);
+    const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_mesh(mesh, color_binding_, texture_binding_, light);
+    validate_mesh(mesh, color_binding_, texture_binding_, source, light);
 
     Mesh prepared = mesh;
     if (light.enabled && !mesh.vertices.empty()) {
@@ -684,6 +745,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             mvp,
             color_binding_,
             texture_binding_,
+            source,
             light,
             material);
     }
@@ -694,9 +756,10 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
     validate_raster_target(framebuffer_);
+    const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_mesh(mesh, color_binding_, texture_binding_, light);
+    validate_mesh(mesh, color_binding_, texture_binding_, source, light);
     for (const TriangleIndices& indices : mesh.triangles) {
         draw_triangle_impl(
             framebuffer_,
@@ -704,6 +767,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             mvp,
             color_binding_,
             texture_binding_,
+            source,
             light,
             material);
     }
