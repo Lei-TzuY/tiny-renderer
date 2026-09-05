@@ -6,8 +6,8 @@
 #include <fstream>
 #include <limits>
 #include <string>
-#include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace tiny_renderer {
@@ -126,11 +126,9 @@ Texture2D load_ppm(std::istream& input) {
     }
 
     std::vector<unsigned char> bytes(raster_bytes);
-    if (raster_bytes != 0U) {
-        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(raster_bytes));
-        if (input.gcount() != static_cast<std::streamsize>(raster_bytes)) {
-            fail("raster payload is truncated");
-        }
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(raster_bytes));
+    if (input.gcount() != static_cast<std::streamsize>(raster_bytes)) {
+        fail("raster payload is truncated");
     }
 
     if (input.peek() != std::char_traits<char>::eof()) {
