@@ -143,6 +143,16 @@ DirectionalLight prepare_directional_light(const DirectionalLight& light) {
     return prepared;
 }
 
+MaterialState prepare_material_state(const MaterialState& material) {
+    if (!finite_vec3(material.albedo)
+        || material.albedo.x < 0.0F || material.albedo.x > 1.0F
+        || material.albedo.y < 0.0F || material.albedo.y > 1.0F
+        || material.albedo.z < 0.0F || material.albedo.z > 1.0F) {
+        throw std::invalid_argument("material albedo components must be finite and within [0, 1]");
+    }
+    return material;
+}
+
 void validate_layout_match(const VaryingPack& reference, const VaryingPack& candidate) {
     validate_pack(candidate);
     if (candidate.count != reference.count) {
@@ -444,8 +454,14 @@ Vec3 shade_fragment(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
-    const DirectionalLight& light) {
-    const Vec3 base = base_fragment_color(varyings, color_binding, texture_binding);
+    const DirectionalLight& light,
+    const MaterialState& material) {
+    const Vec3 source = base_fragment_color(varyings, color_binding, texture_binding);
+    const Vec3 base{
+        source.x * material.albedo.x,
+        source.y * material.albedo.y,
+        source.z * material.albedo.z,
+    };
     if (!light.enabled) {
         return base;
     }
@@ -474,7 +490,8 @@ void rasterize_screen_triangle(
     std::array<ScreenVertex, 3> v,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
-    const DirectionalLight& light) {
+    const DirectionalLight& light,
+    const MaterialState& material) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
         quantize_subpixel(v[1].position),
@@ -544,7 +561,7 @@ void rasterize_screen_triangle(
                 continue;
             }
             const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
-            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, light);
+            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, light, material);
             framebuffer.depth_test_and_write(static_cast<std::size_t>(x), static_cast<std::size_t>(y), depth, color);
         }
     }
@@ -589,7 +606,8 @@ void draw_triangle_impl(
     const Mat4& mvp,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
-    const DirectionalLight& light) {
+    const DirectionalLight& light,
+    const MaterialState& material) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         clip[i] = {
@@ -611,7 +629,7 @@ void draw_triangle_impl(
         if (!a || !b || !c) {
             continue;
         }
-        rasterize_screen_triangle(framebuffer, {*a, *b, *c}, color_binding, texture_binding, light);
+        rasterize_screen_triangle(framebuffer, {*a, *b, *c}, color_binding, texture_binding, light, material);
     }
 }
 
@@ -619,6 +637,7 @@ void draw_triangle_impl(
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
     validate_raster_target(framebuffer_);
+    const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_triangle_varyings(triangle, color_binding_, texture_binding_, light);
 
@@ -632,7 +651,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         projection * view * model,
         color_binding_,
         texture_binding_,
-        light);
+        light,
+        material);
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
@@ -640,13 +660,15 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
     validate_raster_target(framebuffer_);
+    const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_triangle_varyings(triangle, color_binding_, texture_binding_, light);
-    draw_triangle_impl(framebuffer_, triangle, mvp, color_binding_, texture_binding_, light);
+    draw_triangle_impl(framebuffer_, triangle, mvp, color_binding_, texture_binding_, light, material);
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
     validate_raster_target(framebuffer_);
+    const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_mesh(mesh, color_binding_, texture_binding_, light);
 
@@ -662,7 +684,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             mvp,
             color_binding_,
             texture_binding_,
-            light);
+            light,
+            material);
     }
 }
 
@@ -671,6 +694,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
     validate_raster_target(framebuffer_);
+    const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_mesh(mesh, color_binding_, texture_binding_, light);
     for (const TriangleIndices& indices : mesh.triangles) {
@@ -680,7 +704,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             mvp,
             color_binding_,
             texture_binding_,
-            light);
+            light,
+            material);
     }
 }
 
