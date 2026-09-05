@@ -45,10 +45,25 @@ MaterialLibrary parse_mtl(std::string_view text) {
     return load_mtl(input);
 }
 
+MaterialAssetLibrary parse_mtl_assets(std::string_view text) {
+    std::istringstream input{std::string(text)};
+    return load_mtl_assets(input);
+}
+
 void expect_mtl_error(std::string_view text, const std::string& message) {
     bool threw = false;
     try {
         (void)parse_mtl(text);
+    } catch (const MtlParseError&) {
+        threw = true;
+    }
+    check(threw, message);
+}
+
+void expect_mtl_asset_error(std::string_view text, const std::string& message) {
+    bool threw = false;
+    try {
+        (void)parse_mtl_assets(text);
     } catch (const MtlParseError&) {
         threw = true;
     }
@@ -83,11 +98,56 @@ void test_mtl_diffuse_subset_and_rejections() {
     expect_mtl_error("newmtl a\nKd 1 1 1\nKs 1 1 1\n", "unsupported MTL directives fail closed");
 }
 
+void test_rich_mtl_diffuse_map_subset_and_legacy_strictness() {
+    const std::string mapped =
+        "newmtl mapped\n"
+        "Kd 0.75 0.5 0.25\n"
+        "map_Kd checker.ppm\n";
+    const MaterialAssetLibrary library = parse_mtl_assets(mapped);
+    check(library.size() == 1U, "rich MTL loader accepts one diffuse-map material");
+    if (const auto entry = library.find("mapped"); entry != library.end()) {
+        check(entry->second.diffuse_map_filename.has_value(), "rich material retains optional map_Kd filename");
+        if (entry->second.diffuse_map_filename) {
+            check(*entry->second.diffuse_map_filename == "checker.ppm", "map_Kd filename is preserved exactly");
+        }
+        check_near(entry->second.material.albedo.x, 0.75F, "rich material preserves Kd red");
+    } else {
+        check(false, "mapped rich material exists");
+    }
+
+    expect_mtl_error(mapped, "legacy strict MTL loader still rejects map_Kd rather than silently discarding it");
+    expect_mtl_asset_error(
+        "map_Kd checker.ppm\nnewmtl a\nKd 1 1 1\n",
+        "map_Kd before newmtl is rejected");
+    expect_mtl_asset_error(
+        "newmtl a\nKd 1 1 1\nmap_Kd checker.ppm\nmap_Kd checker.ppm\n",
+        "duplicate map_Kd is rejected");
+    expect_mtl_asset_error(
+        "newmtl a\nKd 1 1 1\nmap_Kd ../checker.ppm\n",
+        "map_Kd parent path is rejected");
+    expect_mtl_asset_error(
+        "newmtl a\nKd 1 1 1\nmap_Kd textures/checker.ppm\n",
+        "map_Kd nested path is rejected");
+    expect_mtl_asset_error(
+        "newmtl a\nKd 1 1 1\nmap_Kd -clamp on checker.ppm\n",
+        "map_Kd options are rejected by the bounded subset");
+}
+
 std::filesystem::path fixture_path(const char* name) {
 #ifndef TINY_RENDERER_SOURCE_DIR
 #error TINY_RENDERER_SOURCE_DIR must be provided for material import fixture tests
 #endif
     return std::filesystem::path(TINY_RENDERER_SOURCE_DIR) / "tests" / "fixtures" / name;
+}
+
+DirectionalLight fixture_light() {
+    return DirectionalLight{
+        true,
+        NormalBinding{2U, 3U, 4U},
+        {0.0F, 0.0F, 1.0F},
+        0.2F,
+        0.8F,
+    };
 }
 
 void test_contiguous_batch_order_and_material_values() {
@@ -123,13 +183,7 @@ void test_material_batches_render_like_programmatic_submission() {
         1U,
         SamplerState{AddressMode::Clamp, AddressMode::Clamp, FilterMode::Bilinear},
     };
-    const DirectionalLight light{
-        true,
-        NormalBinding{2U, 3U, 4U},
-        {0.0F, 0.0F, 1.0F},
-        0.2F,
-        0.8F,
-    };
+    const DirectionalLight light = fixture_light();
 
     Framebuffer imported_fb(65U, 65U);
     for (const MaterialBatch& batch : imported) {
@@ -160,13 +214,7 @@ void test_kd_only_material_batches_render_without_texture() {
     const std::vector<MaterialBatch> imported =
         load_obj_material_batches_file(fixture_path("material_sequence.obj"));
     const Mesh geometry = load_obj_file(fixture_path("material_sequence.obj"));
-    const DirectionalLight light{
-        true,
-        NormalBinding{2U, 3U, 4U},
-        {0.0F, 0.0F, 1.0F},
-        0.2F,
-        0.8F,
-    };
+    const DirectionalLight light = fixture_light();
 
     Framebuffer imported_fb(65U, 65U);
     for (const MaterialBatch& batch : imported) {
@@ -208,6 +256,124 @@ void test_kd_only_material_batches_render_without_texture() {
                 "cool Kd is the visible base color on the cool face without a texture");
 }
 
+void render_asset_batches(Framebuffer& framebuffer, const std::vector<MaterialAssetBatch>& batches) {
+    const DirectionalLight light = fixture_light();
+    const SamplerState sampler{AddressMode::Clamp, AddressMode::Clamp, FilterMode::Bilinear};
+    for (const MaterialAssetBatch& batch : batches) {
+        const bool textured = static_cast<bool>(batch.diffuse_texture);
+        const TextureBinding texture_binding{
+            textured ? batch.diffuse_texture.get() : nullptr,
+            0U,
+            1U,
+            sampler,
+        };
+        Rasterizer rasterizer(
+            framebuffer,
+            ColorBinding{99U, 99U, 99U},
+            texture_binding,
+            light,
+            batch.material,
+            textured ? BaseColorSource::Texture : BaseColorSource::ConstantWhite);
+        rasterizer.draw_mesh(batch.mesh, Mat4::identity(), Mat4::identity(), Mat4::identity());
+    }
+}
+
+void test_owned_diffuse_texture_batches_and_render_equivalence() {
+    std::vector<MaterialAssetBatch> imported =
+        load_obj_material_asset_batches_file(fixture_path("material_texture_sequence.obj"));
+    check(imported.size() == 3U, "mixed map_Kd A-B-A asset remains three ordered contiguous batches");
+    if (imported.size() != 3U) {
+        return;
+    }
+    check(imported[0].material_name == "warm", "mapped warm batch remains first");
+    check(imported[1].material_name == "cool", "Kd-only cool batch remains second");
+    check(imported[2].material_name == "warm", "repeated mapped warm batch remains third");
+    check(static_cast<bool>(imported[0].diffuse_texture), "mapped warm batch owns a decoded texture");
+    check(!imported[1].diffuse_texture, "Kd-only cool batch has no synthetic texture");
+    check(static_cast<bool>(imported[2].diffuse_texture), "repeated mapped warm batch owns a texture reference");
+    if (imported[0].diffuse_texture && imported[2].diffuse_texture) {
+        check(imported[0].diffuse_texture.get() == imported[2].diffuse_texture.get(),
+              "repeated map_Kd batches share one decoded texture ownership object");
+    }
+
+    std::vector<MaterialAssetBatch> surviving_copy = imported;
+    imported.clear();
+    check(static_cast<bool>(surviving_copy[0].diffuse_texture),
+          "copied material batch retains owned texture after original batch vector is destroyed");
+    if (surviving_copy[0].diffuse_texture) {
+        const Vec3 sample = surviving_copy[0].diffuse_texture->sample({0.25F, 0.25F});
+        check(std::isfinite(sample.x) && std::isfinite(sample.y) && std::isfinite(sample.z),
+              "owned diffuse texture remains sampleable across batch copies");
+    }
+
+    Framebuffer imported_fb(65U, 65U);
+    render_asset_batches(imported_fb, surviving_copy);
+
+    const Mesh geometry = load_obj_file(fixture_path("material_texture_sequence.obj"));
+    const Texture2D texture = load_ppm_file(fixture_path("checker.ppm"));
+    const MaterialState warm{{1.0F, 0.5F, 0.25F}};
+    const MaterialState cool{{0.25F, 0.5F, 1.0F}};
+    const std::vector<MaterialState> materials{warm, cool, warm};
+    const std::vector<bool> textured{true, false, true};
+    const DirectionalLight light = fixture_light();
+    const SamplerState sampler{AddressMode::Clamp, AddressMode::Clamp, FilterMode::Bilinear};
+
+    Framebuffer manual_fb(65U, 65U);
+    for (std::size_t i = 0U; i < geometry.triangles.size() && i < materials.size(); ++i) {
+        Mesh one_face;
+        one_face.vertices = geometry.vertices;
+        one_face.triangles.push_back(geometry.triangles[i]);
+        const TextureBinding texture_binding{
+            textured[i] ? &texture : nullptr,
+            0U,
+            1U,
+            sampler,
+        };
+        Rasterizer rasterizer(
+            manual_fb,
+            ColorBinding{99U, 99U, 99U},
+            texture_binding,
+            light,
+            materials[i],
+            textured[i] ? BaseColorSource::Texture : BaseColorSource::ConstantWhite);
+        rasterizer.draw_mesh(one_face, Mat4::identity(), Mat4::identity(), Mat4::identity());
+    }
+
+    check(imported_fb.rgb8() == manual_fb.rgb8(),
+          "owned OBJ/MTL map_Kd batches render byte-identically to programmatic texture/material submissions");
+    check(imported_fb.fnv1a64() == manual_fb.fnv1a64(),
+          "owned map_Kd material rendering preserves deterministic framebuffer hash");
+}
+
+void test_rich_kd_only_batches_preserve_m13_output() {
+    const std::vector<MaterialBatch> legacy =
+        load_obj_material_batches_file(fixture_path("material_sequence.obj"));
+    const std::vector<MaterialAssetBatch> rich =
+        load_obj_material_asset_batches_file(fixture_path("material_sequence.obj"));
+    check(rich.size() == legacy.size(), "rich Kd-only loader preserves legacy batch count");
+    for (const MaterialAssetBatch& batch : rich) {
+        check(!batch.diffuse_texture, "Kd-only rich batch does not invent a diffuse texture");
+    }
+
+    Framebuffer legacy_fb(65U, 65U);
+    const DirectionalLight light = fixture_light();
+    for (const MaterialBatch& batch : legacy) {
+        Rasterizer rasterizer(
+            legacy_fb,
+            ColorBinding{99U, 99U, 99U},
+            {},
+            light,
+            batch.material,
+            BaseColorSource::ConstantWhite);
+        rasterizer.draw_mesh(batch.mesh, Mat4::identity(), Mat4::identity(), Mat4::identity());
+    }
+
+    Framebuffer rich_fb(65U, 65U);
+    render_asset_batches(rich_fb, rich);
+    check(rich_fb.rgb8() == legacy_fb.rgb8(), "rich Kd-only asset path is byte-stable with Milestone 13 output");
+    check(rich_fb.fnv1a64() == legacy_fb.fnv1a64(), "rich Kd-only asset path preserves the Milestone 13 hash");
+}
+
 void test_legacy_obj_without_material_library_becomes_default_batch() {
     const std::filesystem::path path = fixture_path("lit_textured_quad.obj");
     const Mesh legacy = load_obj_file(path);
@@ -240,16 +406,30 @@ void test_obj_material_metadata_fail_closed() {
     expect_obj_material_error("parent_mtllib.obj", "mtllib parent-path escape is rejected by bounded file loader");
 }
 
+void test_missing_diffuse_texture_fails_closed() {
+    bool threw = false;
+    try {
+        (void)load_obj_material_asset_batches_file(fixture_path("missing_texture.obj"));
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    check(threw, "missing map_Kd texture file is rejected before any draw submission exists");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_mtl_diffuse_subset_and_rejections();
+        test_rich_mtl_diffuse_map_subset_and_legacy_strictness();
         test_contiguous_batch_order_and_material_values();
         test_material_batches_render_like_programmatic_submission();
         test_kd_only_material_batches_render_without_texture();
+        test_owned_diffuse_texture_batches_and_render_equivalence();
+        test_rich_kd_only_batches_preserve_m13_output();
         test_legacy_obj_without_material_library_becomes_default_batch();
         test_obj_material_metadata_fail_closed();
+        test_missing_diffuse_texture_fails_closed();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;

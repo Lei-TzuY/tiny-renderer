@@ -1,0 +1,5 @@
+newmtl warm
+Kd 1 0.5 0.25
+map_Kd checker.ppm
+newmtl cool
+Kd 0.25 0.5 1

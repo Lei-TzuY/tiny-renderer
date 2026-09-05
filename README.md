@@ -1,6 +1,6 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, Milestone 10 added bounded OBJ normal import, Milestone 11 added bounded runtime material albedo, Milestone 12 added strict diffuse MTL import plus ordered OBJ material draw batches, and Milestone 13 adds an explicit base-color source contract so imported diffuse materials can render without synthetic RGB varyings or unrelated textures.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, Milestone 10 added bounded OBJ normal import, Milestone 11 added bounded runtime material albedo, Milestone 12 added strict diffuse MTL import plus ordered OBJ material draw batches, Milestone 13 added an explicit base-color source contract, and Milestone 14 adds bounded owned MTL `map_Kd` diffuse textures without changing the legacy strict material APIs.
 
 ## Rendering pipeline
 
@@ -14,13 +14,13 @@ The renderer follows this path for every submitted triangle:
 6. **Fixed-point triangle setup/coverage** — screen-space vertices are quantized to a 1/256-pixel grid; signed 64-bit integer edge equations plus an exact top-left rule decide pixel-center ownership. Quantized zero-area triangles are discarded.
 7. **Qualified barycentric interpolation** — accepted samples use the original floating screen positions. `smooth` channels use perspective-correct `varying / w` and `1 / w`, `noperspective` channels use screen-linear barycentric interpolation, and `flat` channels use the first submitted vertex as the provoking vertex.
 8. **Base-color source selection** — `BaseColorSource::Auto` preserves the legacy contract by choosing a bound texture when present and RGB varyings otherwise. Explicit `VaryingColor` and `Texture` modes validate only their relevant bindings, while `ConstantWhite` contributes `(1,1,1)` without consuming RGB or UV channels. Conflicting or invalid source/binding state fails before framebuffer mutation.
-9. **Texture sampling** — when the resolved source is `Texture`, normalized UVs use explicit `Clamp` or `Repeat` addressing and `Nearest` or texel-center `Bilinear` filtering. Texture sampling stays on the same clipping/interpolation/coverage path rather than introducing a textured rasterizer.
-10. **Material albedo** — a validated runtime `MaterialState` multiplies the selected base color component-wise. The default white albedo `(1,1,1)` is byte-compatible with earlier milestones. Material-aware OBJ loading maps bounded MTL `Kd` values directly onto this same state; with `ConstantWhite`, `Kd` itself becomes the visible diffuse base color.
+9. **Texture sampling** — when the resolved source is `Texture`, normalized UVs use explicit `Clamp` or `Repeat` addressing and `Nearest` or texel-center `Bilinear` filtering. Rich material assets can own a bounded P6 texture imported from MTL `map_Kd`; the resulting `Texture2D` still enters this same sampler and raster path.
+10. **Material albedo** — a validated runtime `MaterialState` multiplies the selected base color component-wise. The default white albedo `(1,1,1)` is byte-compatible with earlier milestones. Material-aware OBJ loading maps bounded MTL `Kd` values directly onto this same state; with `ConstantWhite`, `Kd` itself becomes the visible diffuse base color, while mapped materials multiply sampled `map_Kd` texels by `Kd`.
 11. **Directional Lambert lighting** — when enabled, the interpolated world-space normal is renormalized per fragment. The material-modulated base color is multiplied by `ambient + diffuse * max(dot(normal, direction_to_light), 0)`, with validated bounded coefficients. Lighting-disabled rendering retains the same fragment path without the Lambert factor.
 12. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
 13. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
 
-Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. Asset import stays above the rendering core: the OBJ loader converts a bounded geometry/attribute subset into ordinary `Mesh`, the MTL loader converts bounded diffuse materials into ordinary `MaterialState`, material-aware OBJ loading emits ordered `MaterialBatch` draw units, and the PPM loader converts a bounded image subset into ordinary `Texture2D`. The rasterizer therefore remains unaware of file formats.
+Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. Asset import stays above the rendering core: the OBJ loader converts a bounded geometry/attribute subset into ordinary `Mesh`, the legacy MTL loader converts strict diffuse materials into ordinary `MaterialState`, the richer MTL asset loader retains optional `map_Kd`, material-aware OBJ loading emits ordered material batches, and the PPM loader converts the supported image subset into ordinary `Texture2D`. The rasterizer therefore remains unaware of file formats.
 
 ## Build and run
 
@@ -31,15 +31,16 @@ ctest --test-dir build --output-on-failure
 ./build/tiny_renderer_sample milestone1.ppm
 ```
 
-The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, lighting, runtime material albedo, ordered OBJ/MTL material batching, and Kd-only constant-source rendering are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
+The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, lighting, runtime material albedo, ordered OBJ/MTL material batching, Kd-only rendering, and owned `map_Kd` material textures are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
 
 ## Architecture
 
 - `include/tiny_renderer/math.hpp` — vectors, `Mat3`/`Mat4`, camera/view and perspective projection math, plus inverse-transpose model normal-matrix construction.
 - `include/tiny_renderer/mesh.hpp` — vertices, fixed-capacity `VaryingPack`, per-channel `Interpolation` qualifiers, indexed triangle topology, and the reusable mesh data model.
 - `include/tiny_renderer/material.hpp` — bounded runtime material state shared by the rasterizer and asset loaders.
-- `include/tiny_renderer/mtl_loader.hpp`, `src/mtl_loader.cpp` — strict diffuse MTL `newmtl`/`Kd` stream/file parsing into a deterministic named material library.
-- `include/tiny_renderer/obj_loader.hpp`, `src/obj_loader.cpp` — bounded OBJ geometry parsing, source-line diagnostics, deterministic position/UV(/normal) normalization, legacy `Mesh` loading, and material-aware ordered draw-batch loading.
+- `include/tiny_renderer/mtl_loader.hpp`, `src/mtl_loader.cpp` — strict legacy diffuse MTL `newmtl`/`Kd` loading plus a separate richer asset parser that retains a bounded optional sibling `map_Kd` filename.
+- `include/tiny_renderer/obj_loader.hpp`, `src/obj_loader.cpp` — bounded OBJ geometry parsing, source-line diagnostics, deterministic position/UV(/normal) normalization, legacy `Mesh` loading, and ordered material batching.
+- `src/material_asset_loader.cpp` — richer OBJ/MTL asset enrichment that keeps canonical OBJ geometry, resolves optional `map_Kd` through the bounded PPM loader, deduplicates texture loads by normalized path, and returns texture-owning material batches.
 - `include/tiny_renderer/ppm_loader.hpp`, `src/ppm_loader.cpp` — bounded binary PPM stream/file decoding with strict header/raster validation into `Texture2D`.
 - `include/tiny_renderer/texture.hpp`, `src/texture.cpp` — validated in-memory RGB textures plus deterministic normalized-coordinate addressing and nearest/bilinear sampling.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
@@ -53,7 +54,7 @@ The original sample scene still renders three colored triangles through a perspe
 - `tests/test_ppm_loader.cpp`, `tests/fixtures/checker.ppm` — P6 binary decoding, malformed/truncated/overflow rejection, and file-driven OBJ + PPM render equivalence.
 - `tests/test_lighting.cpp` — inverse-transpose normal correctness, non-uniform-transform lighting, texture modulation, lit clipping equivalence, and fail-closed lighting-contract regressions.
 - `tests/test_material.cpp` — default-material/source byte stability, explicit varying/texture compatibility, constant-white material/Lambert composition, clipping equivalence, and fail-closed material/source validation.
-- `tests/test_material_import.cpp`, `tests/fixtures/diffuse.mtl`, `tests/fixtures/material_sequence.obj` — bounded MTL parsing, ordered OBJ material batches, metadata rejection, legacy fallback, textured material equivalence, and Kd-only file-driven rendering without a texture.
+- `tests/test_material_import.cpp` plus material fixtures — strict/rich MTL parsing, ordered batches, Kd-only stability, owned `map_Kd` lifetime/deduplication, metadata/path rejection, and file-driven mixed texture/material render equivalence.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
 
 ## Implemented
@@ -212,11 +213,24 @@ The original sample scene still renders three colored triangles through a perspe
 - explicit varying and texture modes are regression-proven byte-identical to their corresponding legacy automatic paths
 - constant-white × albedo × Lambert is verified analytically, and clipped constant-white geometry is byte-identical to equivalent explicitly clipped triangles
 - invalid source enum values and invalid source/binding combinations are fail-closed before framebuffer writes
-- the real OBJ/MTL normal-bearing fixture now renders imported warm/cool `Kd` values without loading any texture, with byte/hash equality to equivalent programmatic material batches
+- the real OBJ/MTL normal-bearing fixture renders imported warm/cool `Kd` values without loading any texture, with byte/hash equality to equivalent programmatic material batches
+
+### Milestone 14 — owned MTL diffuse texture assets
+
+- legacy `load_mtl` / `load_mtl_file` remain strict `newmtl` + `Kd` APIs and still reject `map_Kd` instead of silently losing texture metadata
+- `MaterialAssetDefinition` and `load_mtl_assets` / `load_mtl_assets_file` provide a separate richer path that retains an optional `map_Kd`
+- rich `map_Kd` is deliberately bounded to exactly one simple sibling filename with no options; parent paths, nested paths, duplicates, malformed records, and unsupported directives fail closed
+- `MaterialAssetBatch` owns an optional diffuse texture through `shared_ptr<const Texture2D>`, so batch copies/moves cannot leave a dangling texture binding
+- `load_obj_material_asset_batches_file` keeps geometry normalization on the canonical OBJ loader, preserves contiguous A→B→A material order, loads maps through the existing bounded P6 decoder, and deduplicates repeated texture paths
+- mapped materials select the existing texture base-color path and still multiply sampled texels by imported `Kd`; materials without maps select `ConstantWhite`, preserving Kd-only semantics
+- regression proves repeated mapped batches share one decoded texture object and that a surviving batch copy remains sampleable after the original returned batch vector is destroyed
+- a mixed file-driven OBJ + MTL `map_Kd` + PPM + explicit normals + Lambert render is byte/hash-identical to equivalent programmatic mixed texture/Kd-only submissions
+- the richer loader applied to the existing Kd-only fixture produces no synthetic textures and remains byte/hash-identical to Milestone 13 output
+- missing texture files are rejected during asset loading before any rendering submission exists
 
 ## Intentionally not implemented yet
 
-The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ/MTL support, MTL texture-map import/ownership, specular/Phong or physically based lighting, shadows, normal maps, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
+The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ/MTL support, MTL texture-map options, specular/Phong or physically based lighting, shadows, normal maps, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
 
 ## Numerical and graphics limitations
 
@@ -225,13 +239,13 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 - `flat` currently uses the first submitted vertex as the fixed provoking-vertex convention; this is deliberate and not configurable yet.
 - Textures use linear RGB float arrays supplied by the caller or decoded byte-for-byte from the bounded P6 loader; there are no mipmaps, anisotropic filtering, sRGB conversion, compressed formats, or general image decoders.
 - The PPM loader accepts only P6/maxval-255 images, requires exactly one ASCII whitespace raster separator, rejects trailing bytes, and caps raster payloads at 64 MiB. These are deliberate bounded-decoder semantics rather than a claim of full Netpbm conformance.
-- Texture bindings are non-owning and the bound `Texture2D` must outlive rasterizer draw calls.
+- Direct `TextureBinding` remains non-owning and the bound `Texture2D` must outlive rasterizer draw calls. Rich `MaterialAssetBatch` avoids that lifetime burden for imported `map_Kd` by retaining shared immutable texture ownership.
 - OBJ import remains deliberately bounded to positions, 2-D texture coordinates, optional explicit normals, positive absolute indices, and triangle faces. A loaded mesh must consistently use either `v/vt` or `v/vt/vn`; `v//vn`, mixed layouts, polygon triangulation, relative indices, generated normals, and smoothing-group semantics are not supported.
-- The material-aware OBJ loader accepts exactly one simple sibling `mtllib` filename. Nested paths, multiple libraries, late libraries, unknown `usemtl` names, and faces without an active material after a library is declared are rejected.
-- MTL import is deliberately limited to `newmtl` plus diffuse `Kd`. Material names are single tokens; texture maps, opacity, specular/emissive terms, illumination models, and general MTL syntax are not supported.
-- `MaterialBatch` owns a mesh copy for each contiguous material run in this educational implementation; no shared immutable model/primitive buffer or material-indexed draw-command structure exists yet.
+- The material-aware OBJ loaders accept exactly one simple sibling `mtllib` filename. Nested paths, multiple libraries, late libraries, unknown `usemtl` names, and faces without an active material after a library is declared are rejected.
+- Legacy MTL import is limited to `newmtl` plus diffuse `Kd`; the richer asset API additionally accepts one simple sibling `map_Kd`. Material names are single tokens; map options, opacity, specular/emissive terms, illumination models, and general MTL syntax are not supported.
+- Both `MaterialBatch` and `MaterialAssetBatch` still own a full mesh copy for each contiguous material run. There is not yet one canonical model mesh plus compact draw ranges, and the richer asset loader currently repeats the bounded material-metadata scan rather than sharing one model-import result.
 - OBJ texture coordinates and normals are preserved verbatim; the importer does not flip V, normalize normal magnitudes, generate normals, or infer smoothing.
-- Runtime material state is one constant bounded RGB albedo per `Rasterizer`. `ConstantWhite` now makes imported `Kd` independently renderable, but material texture ownership and automatic per-batch source/texture selection are not implemented yet.
+- Runtime material state is one constant bounded RGB albedo per `Rasterizer`; rich batches expose the owned texture and material data but the caller still constructs the corresponding `TextureBinding` / `BaseColorSource` for each draw.
 - Directional lighting is intentionally a bounded diffuse model: one world-space light direction, no attenuation, no specular term, no multiple lights, no normal maps, and no shadowing.
 - Lighting-enabled calls require separate model/view/projection matrices so normal transformation remains correct; precomposed-MVP lighting is deliberately unsupported.
 - Fixed-point coverage quantizes screen-space positions to 1/256 pixel. Geometry smaller than the quantized grid can collapse to zero area by design.
@@ -242,4 +256,4 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 
 ## Next milestone
 
-The highest-value next architectural frontier is **bounded MTL `map_Kd` texture ownership and material-driven texture binding**. Extend the material asset representation so one imported material can retain its verified `Kd` plus an optional sibling texture reference, decode the currently supported bounded P6 texture format with owned lifetime, and expose deterministic draw data that selects `BaseColorSource::Texture` only when a material actually owns a diffuse map and `ConstantWhite` otherwise. Keep legacy `load_mtl`/geometry APIs source-compatible or introduce a clearly separate richer asset-loading API rather than changing old return types silently. Acceptance should prove a file-driven OBJ + MTL `map_Kd` + PPM + normals + Lambert render against equivalent programmatic texture/material submissions, preserve A→B→A draw order and texture lifetime, reject missing/unsafe/unsupported texture paths and duplicate `map_Kd` fail-closed, and keep Kd-only/default rendering byte-stable. PNG/JPEG, multiple libraries, general MTL option syntax, opacity, specular maps, normal maps, and PBR remain later phases.
+The highest-value next architectural frontier is a **single canonical model asset with ordered draw ranges**. Replace per-material full `Mesh` copies with one normalized mesh plus compact contiguous draw records (`first triangle`, `triangle count`, material/texture state), and centralize the material-metadata scan so geometry/material association has one source of truth. Add a validated mesh-range submission path rather than slicing/copying triangles at call sites. Acceptance should prove A→B→A order preservation, fail-closed range/index/material validation before framebuffer mutation, byte/hash equivalence with the current batch renderer for Kd-only and `map_Kd` assets, retained texture ownership, and unchanged legacy loaders. This phase is about architecture and executable integration, not an unsupported performance claim; controlled benchmarking can follow only after the shared model representation exists.

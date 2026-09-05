@@ -9,6 +9,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 
 add_library(tiny_renderer
     src/framebuffer.cpp
+    src/material_asset_loader.cpp
     src/mtl_loader.cpp
     src/obj_loader.cpp
     src/ppm_loader.cpp
