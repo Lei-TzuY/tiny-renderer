@@ -214,6 +214,25 @@ void preflight_transformed_normals(const Mesh& mesh, const DirectionalLight& lig
 
 }  // namespace
 
+void validate_face_culling(CullMode cull_mode, FrontFace front_face) {
+    switch (cull_mode) {
+        case CullMode::None:
+        case CullMode::Back:
+        case CullMode::Front:
+            break;
+        default:
+            throw std::invalid_argument("unknown face culling mode");
+    }
+
+    switch (front_face) {
+        case FrontFace::CounterClockwise:
+        case FrontFace::Clockwise:
+            return;
+        default:
+            throw std::invalid_argument("unknown front-face winding");
+    }
+}
+
 void preflight_mesh_range_submission(
     const Framebuffer& framebuffer,
     const Mesh& mesh,
@@ -223,6 +242,8 @@ void preflight_mesh_range_submission(
     const DirectionalLight& directional_light,
     const MaterialState& material_state,
     BaseColorSource base_color_source,
+    CullMode cull_mode,
+    FrontFace front_face,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
@@ -230,6 +251,7 @@ void preflight_mesh_range_submission(
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
 
+    validate_face_culling(cull_mode, front_face);
     validate_raster_target(framebuffer);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
