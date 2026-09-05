@@ -15,6 +15,41 @@ struct ModelRenderOptions {
     DirectionalLight directional_light{};
 };
 
+class PreparedModelSubmission {
+public:
+    PreparedModelSubmission(const PreparedModelSubmission&) = default;
+    PreparedModelSubmission(PreparedModelSubmission&&) noexcept = default;
+    PreparedModelSubmission& operator=(const PreparedModelSubmission&) = default;
+    PreparedModelSubmission& operator=(PreparedModelSubmission&&) noexcept = default;
+
+    [[nodiscard]] const ModelAsset& asset() const noexcept { return asset_; }
+    [[nodiscard]] const ModelRenderOptions& options() const noexcept { return options_; }
+
+private:
+    friend PreparedModelSubmission prepare_model_asset(ModelAsset asset, ModelRenderOptions options);
+
+    PreparedModelSubmission(ModelAsset asset, ModelRenderOptions options);
+
+    ModelAsset asset_;
+    ModelRenderOptions options_;
+};
+
+[[nodiscard]] PreparedModelSubmission prepare_model_asset(
+    ModelAsset asset,
+    ModelRenderOptions options = {});
+
+void draw_prepared_model(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& model,
+    const Mat4& view,
+    const Mat4& projection);
+
+void draw_prepared_model(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& mvp);
+
 void draw_model_asset(
     Framebuffer& framebuffer,
     const ModelAsset& asset,
