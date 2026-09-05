@@ -41,19 +41,31 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - A singular later lighting transform rejects the entire batch before earlier valid instances can write; empty batches are deterministic no-ops.
 - MVP-only batches preserve the existing rule that directional lighting requires separate model/view/projection transforms.
 
-## Next frontier — Milestone 22
+### Milestone 22 — heterogeneous prepared submission lists
 
-The next architectural promotion should be a **bounded heterogeneous prepared submission list**: one ordered batch containing references to multiple prepared model plans plus per-entry transforms, with whole-list fail-closed preflight before execution. The goal is to compose different meshes/material sets without introducing a general scene graph or command-buffer subsystem prematurely.
+- `PreparedModelListEntry` borrows one prepared plan plus a model transform; the prepared plan remains the owner of canonical mesh, material, and texture state.
+- `draw_prepared_model_list` accepts an ordered span of heterogeneous entries with shared view/projection state, without introducing a persistent command buffer or scene graph.
+- List structure is validated first, including explicit rejection of null prepared-plan entries.
+- Every entry and all of its material draws are dynamically preflighted before the first framebuffer mutation, so a malformed later entry cannot partially commit earlier models.
+- Execution preserves exact caller entry order and each prepared plan's canonical material-draw order.
+- Kd-only and mapped-texture prepared assets in one list are byte/hash-equivalent to the same sequential prepared submissions.
+- Equal-depth differently colored prepared plans make caller order observably deterministic under strict `<` depth testing.
+- Empty lists are deterministic no-ops; no new raster path or performance claim is introduced.
+
+## Next frontier — Milestone 23
+
+The next architectural promotion is **explicit face-culling state with a defined front-face convention** in the raster core. The current renderer normalizes both triangle orientations and therefore cannot model the culling stage present in conventional graphics pipelines.
 
 Acceptance for that slice should require:
 
-- heterogeneous prepared models execute in exact caller order and remain byte/hash-equivalent to the same sequential calls;
-- every entry is preflighted before the first framebuffer write, including later-entry singular lighting transforms and incompatible framebuffer/draw state;
-- prepared asset and texture ownership remains with the prepared plans rather than copied into per-frame commands;
-- empty submission lists are deterministic no-ops;
-- no new rasterization path is introduced: accepted entries still reach the existing shared preflight, `draw_mesh_range`, and triangle core;
-- no performance claim is made without a controlled benchmark.
+- explicit `CullMode` state supporting at least `None`, `Back`, and `Front`, with legacy behavior remaining `None` by default;
+- an explicit clockwise/counter-clockwise front-face convention defined in a coordinate space that is independent of the framebuffer's top-left image origin;
+- culling after homogeneous clipping/perspective divide so clipped fan triangles obey the same visible-face contract as unclipped geometry;
+- winding/culling behavior proven for both submitted orientations, clipped triangles, indexed meshes/ranges, and model-list execution without creating a parallel draw path;
+- degenerate triangles remain discarded deterministically rather than being misclassified as a face;
+- invalid culling enum/state fails closed before framebuffer mutation;
+- the baseline sample and all prior no-culling framebuffer/hash contracts remain unchanged under default state.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, back-face culling, configurable depth functions/reversed-Z, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, configurable depth functions/reversed-Z, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
