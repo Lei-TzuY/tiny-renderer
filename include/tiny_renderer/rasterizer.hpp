@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "tiny_renderer/framebuffer.hpp"
+#include "tiny_renderer/material.hpp"
 #include "tiny_renderer/mesh.hpp"
 #include "tiny_renderer/texture.hpp"
 
@@ -34,10 +35,6 @@ struct DirectionalLight {
     Vec3 direction_to_light{0.0F, 0.0F, 1.0F};
     float ambient{0.0F};
     float diffuse{1.0F};
-};
-
-struct MaterialState {
-    Vec3 albedo{1.0F, 1.0F, 1.0F};
 };
 
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);

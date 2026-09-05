@@ -5,7 +5,9 @@
 #include <istream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
+#include "tiny_renderer/material.hpp"
 #include "tiny_renderer/mesh.hpp"
 
 namespace tiny_renderer {
@@ -20,7 +22,14 @@ private:
     std::size_t line_{};
 };
 
+struct MaterialBatch {
+    Mesh mesh;
+    std::string material_name;
+    MaterialState material{};
+};
+
 [[nodiscard]] Mesh load_obj(std::istream& input);
 [[nodiscard]] Mesh load_obj_file(const std::filesystem::path& path);
+[[nodiscard]] std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem::path& path);
 
 }  // namespace tiny_renderer
