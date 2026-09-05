@@ -17,6 +17,7 @@ struct ModelRenderOptions {
     CullMode cull_mode{CullMode::None};
     FrontFace front_face{FrontFace::CounterClockwise};
     DepthState depth_state{};
+    ViewportState viewport_state{};
 };
 
 class PreparedModelSubmission {
