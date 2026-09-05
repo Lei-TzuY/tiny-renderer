@@ -30,6 +30,20 @@ enum class BaseColorSource {
     ConstantWhite,
 };
 
+enum class CullMode {
+    None,
+    Back,
+    Front,
+};
+
+// Front-face winding is defined in normalized device coordinates after
+// homogeneous clipping and perspective divide, before the framebuffer's
+// top-left-origin viewport transform can invert Y orientation.
+enum class FrontFace {
+    CounterClockwise,
+    Clockwise,
+};
+
 struct NormalBinding {
     std::size_t x{0U};
     std::size_t y{1U};
@@ -56,13 +70,17 @@ public:
         TextureBinding texture_binding = {},
         DirectionalLight directional_light = {},
         MaterialState material_state = {},
-        BaseColorSource base_color_source = BaseColorSource::Auto)
+        BaseColorSource base_color_source = BaseColorSource::Auto,
+        CullMode cull_mode = CullMode::None,
+        FrontFace front_face = FrontFace::CounterClockwise)
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
           directional_light_(directional_light),
           material_state_(material_state),
-          base_color_source_(base_color_source) {}
+          base_color_source_(base_color_source),
+          cull_mode_(cull_mode),
+          front_face_(front_face) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -83,6 +101,8 @@ private:
     DirectionalLight directional_light_;
     MaterialState material_state_;
     BaseColorSource base_color_source_;
+    CullMode cull_mode_;
+    FrontFace front_face_;
 };
 
 }  // namespace tiny_renderer
