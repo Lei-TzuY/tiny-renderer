@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 
 namespace tiny_renderer::detail {
@@ -29,6 +30,25 @@ void validate_draw_range(const Mesh& mesh, DrawRange range) {
 void validate_raster_target(const Framebuffer& framebuffer) {
     if (framebuffer.width() - 1U > kMaxRasterCoordinate || framebuffer.height() - 1U > kMaxRasterCoordinate) {
         throw std::overflow_error("framebuffer dimensions exceed fixed-point rasterizer safety bound");
+    }
+}
+
+void validate_rect_addition(const RasterRect& rect, const char* label) {
+    if (rect.width > std::numeric_limits<std::size_t>::max() - rect.x
+        || rect.height > std::numeric_limits<std::size_t>::max() - rect.y) {
+        throw std::overflow_error(std::string(label) + " bounds overflow size_t");
+    }
+}
+
+void validate_rect_fits_target(
+    const RasterRect& rect,
+    std::size_t target_width,
+    std::size_t target_height,
+    const char* label) {
+    if (rect.x > target_width || rect.y > target_height
+        || rect.width > target_width - rect.x
+        || rect.height > target_height - rect.y) {
+        throw std::out_of_range(std::string(label) + " exceeds framebuffer bounds");
     }
 }
 
@@ -233,6 +253,42 @@ void validate_face_culling(CullMode cull_mode, FrontFace front_face) {
     }
 }
 
+void validate_viewport_state_definition(const ViewportState& state) {
+    if (state.viewport) {
+        if (state.viewport->width == 0U || state.viewport->height == 0U) {
+            throw std::invalid_argument("viewport extent must be non-zero");
+        }
+        validate_rect_addition(*state.viewport, "viewport");
+    }
+    if (state.scissor) {
+        validate_rect_addition(*state.scissor, "scissor");
+    }
+}
+
+ResolvedViewportState resolve_viewport_state(
+    const Framebuffer& framebuffer,
+    const ViewportState& state) {
+    validate_viewport_state_definition(state);
+
+    ResolvedViewportState resolved{
+        state.viewport.value_or(RasterRect{0U, 0U, framebuffer.width(), framebuffer.height()}),
+        state.scissor,
+    };
+    validate_rect_fits_target(
+        resolved.viewport,
+        framebuffer.width(),
+        framebuffer.height(),
+        "viewport");
+    if (resolved.scissor) {
+        validate_rect_fits_target(
+            *resolved.scissor,
+            framebuffer.width(),
+            framebuffer.height(),
+            "scissor");
+    }
+    return resolved;
+}
+
 void preflight_mesh_range_submission(
     const Framebuffer& framebuffer,
     const Mesh& mesh,
@@ -245,6 +301,7 @@ void preflight_mesh_range_submission(
     CullMode cull_mode,
     FrontFace front_face,
     const DepthState& depth_state,
+    const ViewportState& viewport_state,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
@@ -255,6 +312,7 @@ void preflight_mesh_range_submission(
     validate_face_culling(cull_mode, front_face);
     validate_depth_state(depth_state);
     validate_raster_target(framebuffer);
+    (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
     const DirectionalLight light = prepare_directional_light(directional_light);
