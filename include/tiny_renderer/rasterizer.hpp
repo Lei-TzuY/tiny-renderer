@@ -23,6 +23,13 @@ struct TextureBinding {
     SamplerState sampler{};
 };
 
+enum class BaseColorSource {
+    Auto,
+    VaryingColor,
+    Texture,
+    ConstantWhite,
+};
+
 struct NormalBinding {
     std::size_t x{0U};
     std::size_t y{1U};
@@ -48,12 +55,14 @@ public:
         ColorBinding color_binding = {},
         TextureBinding texture_binding = {},
         DirectionalLight directional_light = {},
-        MaterialState material_state = {})
+        MaterialState material_state = {},
+        BaseColorSource base_color_source = BaseColorSource::Auto)
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
           directional_light_(directional_light),
-          material_state_(material_state) {}
+          material_state_(material_state),
+          base_color_source_(base_color_source) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -66,6 +75,7 @@ private:
     TextureBinding texture_binding_;
     DirectionalLight directional_light_;
     MaterialState material_state_;
+    BaseColorSource base_color_source_;
 };
 
 }  // namespace tiny_renderer
