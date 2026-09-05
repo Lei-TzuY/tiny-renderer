@@ -127,28 +127,35 @@ void test_stencil_mask_prepass_controls_colored_pass() {
         DepthState{DepthCompare::Always, false})
         .draw_mesh(color, Mat4::identity());
 
+    const std::vector<std::uint8_t> bytes = framebuffer.rgb8();
     std::size_t mask_samples = 0U;
     std::size_t colored_samples = 0U;
-    bool mask_matches_color = true;
+    bool ownership_matches = true;
+    bool color_bytes_match = true;
     for (std::size_t y = 0U; y < framebuffer.height(); ++y) {
         for (std::size_t x = 0U; x < framebuffer.width(); ++x) {
             const bool in_mask = framebuffer.stencil_at(x, y) == 1U;
-            const Vec3 pixel = framebuffer.color_at(x, y);
-            const bool colored = pixel.x != 0.0F || pixel.y != 0.0F || pixel.z != 0.0F;
+            const std::size_t pixel = y * framebuffer.width() + x;
+            const std::uint8_t red = bytes[pixel * 3U];
+            const std::uint8_t green = bytes[pixel * 3U + 1U];
+            const std::uint8_t blue = bytes[pixel * 3U + 2U];
+            const bool colored = red != 0U || green != 0U || blue != 0U;
             mask_samples += in_mask ? 1U : 0U;
             colored_samples += colored ? 1U : 0U;
-            mask_matches_color = mask_matches_color && in_mask == colored;
+            ownership_matches = ownership_matches && in_mask == colored;
             if (colored) {
-                mask_matches_color = mask_matches_color
-                    && same_color(pixel, Vec3{0.2F, 0.8F, 0.4F});
+                color_bytes_match = color_bytes_match
+                    && red == 51U && green == 204U && blue == 102U;
             }
         }
     }
 
     check(mask_samples > 0U && mask_samples < framebuffer.width() * framebuffer.height(),
           "stencil prepass creates a non-empty strict subset mask");
-    check(mask_matches_color && colored_samples == mask_samples,
+    check(ownership_matches && colored_samples == mask_samples,
           "colored pass owns exactly the samples marked by the stencil prepass");
+    check(color_bytes_match,
+          "stencil-selected colored samples preserve the expected deterministic RGB8 shading output");
 }
 
 void test_scissor_prevents_stencil_side_effects_outside_bounds() {
