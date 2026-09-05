@@ -30,6 +30,26 @@ Vec3 replicated(float value) {
     return {value, value, value};
 }
 
+std::size_t checked_samples_per_pixel(SampleCount sample_count) {
+    switch (sample_count) {
+        case SampleCount::One:
+            return 1U;
+        case SampleCount::Four:
+            return 4U;
+    }
+    throw std::invalid_argument("unsupported framebuffer sample count");
+}
+
+std::size_t checked_pixel_count(std::size_t width, std::size_t height) {
+    if (width == 0U || height == 0U) {
+        throw std::invalid_argument("framebuffer dimensions must be non-zero");
+    }
+    if (height > std::numeric_limits<std::size_t>::max() / width) {
+        throw std::overflow_error("framebuffer pixel count overflows size_t");
+    }
+    return width * height;
+}
+
 bool depth_compare_passes(DepthCompare compare, float incoming, float stored) {
     switch (compare) {
         case DepthCompare::Less:
@@ -295,27 +315,61 @@ void validate_blend_state(const BlendState& state) {
     }
 }
 
-Framebuffer::Framebuffer(std::size_t width, std::size_t height)
-    : width_(width),
-      height_(height),
-      color_(width * height),
-      depth_(width * height),
-      stencil_(width * height) {
-    if (width == 0 || height == 0) {
-        throw std::invalid_argument("framebuffer dimensions must be non-zero");
+Framebuffer::Framebuffer(
+    std::size_t width,
+    std::size_t height,
+    SampleCount sample_count)
+    : width_(width), height_(height), sample_count_(sample_count) {
+    const std::size_t pixel_count = checked_pixel_count(width, height);
+    const std::size_t sample_count_value = checked_samples_per_pixel(sample_count);
+    if (pixel_count > std::numeric_limits<std::size_t>::max() / sample_count_value) {
+        throw std::overflow_error("framebuffer sample storage size overflows size_t");
     }
+    const std::size_t sample_storage_count = pixel_count * sample_count_value;
+
+    resolved_color_.resize(pixel_count);
+    sample_color_.resize(sample_storage_count);
+    sample_depth_.resize(sample_storage_count);
+    sample_stencil_.resize(sample_storage_count);
     clear();
 }
 
 void Framebuffer::clear(const Vec3& color, float depth, std::uint8_t stencil) {
-    std::fill(color_.begin(), color_.end(), color);
-    std::fill(depth_.begin(), depth_.end(), depth);
-    std::fill(stencil_.begin(), stencil_.end(), stencil);
+    std::fill(resolved_color_.begin(), resolved_color_.end(), color);
+    std::fill(sample_color_.begin(), sample_color_.end(), color);
+    std::fill(sample_depth_.begin(), sample_depth_.end(), depth);
+    std::fill(sample_stencil_.begin(), sample_stencil_.end(), stencil);
 }
 
 bool Framebuffer::test_and_write(
     std::size_t x,
     std::size_t y,
+    float depth,
+    const Vec3& color,
+    DepthState depth_state,
+    StencilState stencil_state,
+    BlendState blend_state,
+    float source_alpha) {
+    if (sample_count_ != SampleCount::One) {
+        throw std::invalid_argument(
+            "pixel-level fragment ownership requires a single-sample framebuffer; use test_and_write_sample");
+    }
+    return test_and_write_sample(
+        x,
+        y,
+        0U,
+        depth,
+        color,
+        depth_state,
+        stencil_state,
+        blend_state,
+        source_alpha);
+}
+
+bool Framebuffer::test_and_write_sample(
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index,
     float depth,
     const Vec3& color,
     DepthState depth_state,
@@ -328,29 +382,33 @@ bool Framebuffer::test_and_write(
     if (!std::isfinite(source_alpha) || source_alpha < 0.0F || source_alpha > 1.0F) {
         throw std::invalid_argument("fragment source alpha must be finite and within [0, 1]");
     }
+    if (sample_index >= samples_per_pixel()) {
+        throw std::out_of_range("framebuffer sample index out of range");
+    }
     if (x >= width_ || y >= height_ || !std::isfinite(depth)) {
         return false;
     }
 
-    const std::size_t i = index(x, y);
+    const std::size_t pixel = pixel_index(x, y);
+    const std::size_t sample = pixel * samples_per_pixel() + sample_index;
     if (stencil_state.enabled
         && !stencil_compare_passes(
             stencil_state.compare,
             stencil_state.reference,
-            stencil_[i],
+            sample_stencil_[sample],
             stencil_state.read_mask)) {
         apply_stencil_operation(
-            stencil_[i],
+            sample_stencil_[sample],
             stencil_state.stencil_fail,
             stencil_state.reference,
             stencil_state.write_mask);
         return false;
     }
 
-    if (!depth_compare_passes(depth_state.compare, depth, depth_[i])) {
+    if (!depth_compare_passes(depth_state.compare, depth, sample_depth_[sample])) {
         if (stencil_state.enabled) {
             apply_stencil_operation(
-                stencil_[i],
+                sample_stencil_[sample],
                 stencil_state.depth_fail,
                 stencil_state.reference,
                 stencil_state.write_mask);
@@ -358,23 +416,24 @@ bool Framebuffer::test_and_write(
         return false;
     }
 
-    const Vec3 destination = color_[i];
-    const Vec3 resolved_color = apply_color_write_mask(
+    const Vec3 destination = sample_color_[sample];
+    const Vec3 resolved_sample_color = apply_color_write_mask(
         blended_rgb(color, destination, blend_state, source_alpha),
         destination,
         blend_state.write_mask);
 
     if (stencil_state.enabled) {
         apply_stencil_operation(
-            stencil_[i],
+            sample_stencil_[sample],
             stencil_state.pass,
             stencil_state.reference,
             stencil_state.write_mask);
     }
     if (depth_state.write_enabled) {
-        depth_[i] = depth;
+        sample_depth_[sample] = depth;
     }
-    color_[i] = resolved_color;
+    sample_color_[sample] = resolved_sample_color;
+    resolve_pixel(pixel);
     return true;
 }
 
@@ -388,21 +447,45 @@ bool Framebuffer::depth_test_and_write(
 }
 
 const Vec3& Framebuffer::color_at(std::size_t x, std::size_t y) const {
-    return color_.at(index(x, y));
+    return resolved_color_.at(pixel_index(x, y));
 }
 
 float Framebuffer::depth_at(std::size_t x, std::size_t y) const {
-    return depth_.at(index(x, y));
+    return sample_depth_at(x, y, 0U);
 }
 
 std::uint8_t Framebuffer::stencil_at(std::size_t x, std::size_t y) const {
-    return stencil_.at(index(x, y));
+    return sample_stencil_at(x, y, 0U);
+}
+
+const Vec3& Framebuffer::sample_color_at(
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index) const {
+    return sample_color_.at(sample_storage_index(x, y, sample_index));
+}
+
+float Framebuffer::sample_depth_at(
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index) const {
+    return sample_depth_.at(sample_storage_index(x, y, sample_index));
+}
+
+std::uint8_t Framebuffer::sample_stencil_at(
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index) const {
+    return sample_stencil_.at(sample_storage_index(x, y, sample_index));
 }
 
 std::vector<std::uint8_t> Framebuffer::rgb8() const {
+    if (resolved_color_.size() > std::numeric_limits<std::size_t>::max() / 3U) {
+        throw std::overflow_error("RGB8 output size overflows size_t");
+    }
     std::vector<std::uint8_t> bytes;
-    bytes.reserve(color_.size() * 3U);
-    for (const Vec3& pixel : color_) {
+    bytes.reserve(resolved_color_.size() * 3U);
+    for (const Vec3& pixel : resolved_color_) {
         bytes.push_back(to_u8(pixel.x));
         bytes.push_back(to_u8(pixel.y));
         bytes.push_back(to_u8(pixel.z));
@@ -434,11 +517,36 @@ void Framebuffer::write_ppm(const std::string& path) const {
     }
 }
 
-std::size_t Framebuffer::index(std::size_t x, std::size_t y) const {
+std::size_t Framebuffer::pixel_index(std::size_t x, std::size_t y) const {
     if (x >= width_ || y >= height_) {
         throw std::out_of_range("framebuffer coordinate out of range");
     }
     return y * width_ + x;
+}
+
+std::size_t Framebuffer::sample_storage_index(
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index) const {
+    if (sample_index >= samples_per_pixel()) {
+        throw std::out_of_range("framebuffer sample index out of range");
+    }
+    return pixel_index(x, y) * samples_per_pixel() + sample_index;
+}
+
+void Framebuffer::resolve_pixel(std::size_t pixel) {
+    const std::size_t count = samples_per_pixel();
+    const std::size_t first = pixel * count;
+    if (count == 1U) {
+        resolved_color_[pixel] = sample_color_[first];
+        return;
+    }
+
+    Vec3 sum{0.0F, 0.0F, 0.0F};
+    for (std::size_t sample = 0U; sample < count; ++sample) {
+        sum = sum + sample_color_[first + sample];
+    }
+    resolved_color_[pixel] = sum * (1.0F / static_cast<float>(count));
 }
 
 }  // namespace tiny_renderer
