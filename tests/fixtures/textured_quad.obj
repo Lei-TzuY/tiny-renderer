@@ -1,0 +1,17 @@
+# Position/UV indices are intentionally independent. Position 3 is paired
+# with two different UVs across the two faces, forcing unified-vertex splitting.
+o textured_quad
+v -0.8 -0.8 0.0
+v 0.8 -0.8 0.0
+v 0.8 0.8 0.0
+v -0.8 0.8 0.0
+
+vt 1.0 1.0
+vt 0.0 0.0
+vt 0.0 1.0
+vt 1.0 0.0
+vt 0.25 0.75
+
+g front
+f 1/2 2/4 3/1
+f 1/2 3/5 4/3
