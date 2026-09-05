@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "rasterizer_validation.hpp"
+
 namespace tiny_renderer {
 
 float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c) {
@@ -382,6 +384,46 @@ bool finite(const Vec4& v) {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w);
 }
 
+std::optional<Vec2> to_ndc_xy(const ClipVertex& vertex) {
+    if (!finite(vertex.position) || std::fabs(vertex.position.w) <= kEpsilon) {
+        return std::nullopt;
+    }
+    const float inv_w = 1.0F / vertex.position.w;
+    const Vec2 result{vertex.position.x * inv_w, vertex.position.y * inv_w};
+    if (!std::isfinite(result.x) || !std::isfinite(result.y)) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+bool should_cull_projected_triangle(
+    const ClipVertex& a,
+    const ClipVertex& b,
+    const ClipVertex& c,
+    CullMode cull_mode,
+    FrontFace front_face) {
+    if (cull_mode == CullMode::None) {
+        return false;
+    }
+
+    const auto ndc_a = to_ndc_xy(a);
+    const auto ndc_b = to_ndc_xy(b);
+    const auto ndc_c = to_ndc_xy(c);
+    if (!ndc_a || !ndc_b || !ndc_c) {
+        return true;
+    }
+
+    const float area = signed_area_twice(*ndc_a, *ndc_b, *ndc_c);
+    if (!std::isfinite(area) || std::fabs(area) <= kEpsilon) {
+        return true;
+    }
+
+    const bool front_facing = front_face == FrontFace::CounterClockwise
+        ? area > 0.0F
+        : area < 0.0F;
+    return cull_mode == CullMode::Back ? !front_facing : front_facing;
+}
+
 std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, std::size_t width, std::size_t height) {
     if (!finite(vertex.position) || std::fabs(vertex.position.w) <= kEpsilon) {
         return std::nullopt;
@@ -657,7 +699,9 @@ void draw_triangle_impl(
     const TextureBinding& texture_binding,
     BaseColorSource source,
     const DirectionalLight& light,
-    const MaterialState& material) {
+    const MaterialState& material,
+    CullMode cull_mode,
+    FrontFace front_face) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         clip[i] = {
@@ -673,6 +717,11 @@ void draw_triangle_impl(
     }
 
     for (std::size_t i = 1; i + 1U < polygon.size(); ++i) {
+        if (should_cull_projected_triangle(
+                polygon[0], polygon[i], polygon[i + 1U], cull_mode, front_face)) {
+            continue;
+        }
+
         const auto a = to_screen(polygon[0], framebuffer.width(), framebuffer.height());
         const auto b = to_screen(polygon[i], framebuffer.width(), framebuffer.height());
         const auto c = to_screen(polygon[i + 1U], framebuffer.width(), framebuffer.height());
@@ -693,6 +742,7 @@ void draw_triangle_impl(
 }  // namespace
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
+    detail::validate_face_culling(cull_mode_, front_face_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -711,22 +761,36 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         texture_binding_,
         source,
         light,
-        material);
+        material,
+        cull_mode_,
+        front_face_);
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     if (directional_light_.enabled) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
+    detail::validate_face_culling(cull_mode_, front_face_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
-    draw_triangle_impl(framebuffer_, triangle, mvp, color_binding_, texture_binding_, source, light, material);
+    draw_triangle_impl(
+        framebuffer_,
+        triangle,
+        mvp,
+        color_binding_,
+        texture_binding_,
+        source,
+        light,
+        material,
+        cull_mode_,
+        front_face_);
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
+    detail::validate_face_culling(cull_mode_, front_face_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -747,7 +811,9 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             texture_binding_,
             source,
             light,
-            material);
+            material,
+            cull_mode_,
+            front_face_);
     }
 }
 
@@ -755,6 +821,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     if (directional_light_.enabled) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
+    detail::validate_face_culling(cull_mode_, front_face_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -769,7 +836,9 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             texture_binding_,
             source,
             light,
-            material);
+            material,
+            cull_mode_,
+            front_face_);
     }
 }
 
