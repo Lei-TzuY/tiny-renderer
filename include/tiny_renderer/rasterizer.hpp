@@ -68,6 +68,13 @@ public:
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
     void draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_mesh(const Mesh& mesh, const Mat4& mvp);
+    void draw_mesh_range(
+        const Mesh& mesh,
+        DrawRange range,
+        const Mat4& model,
+        const Mat4& view,
+        const Mat4& projection);
+    void draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& mvp);
 
 private:
     Framebuffer& framebuffer_;

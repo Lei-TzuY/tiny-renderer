@@ -68,6 +68,11 @@ struct Vertex {
 using Triangle = std::array<Vertex, 3>;
 using TriangleIndices = std::array<std::uint32_t, 3>;
 
+struct DrawRange {
+    std::size_t first_triangle{0U};
+    std::size_t triangle_count{0U};
+};
+
 struct Mesh {
     std::vector<Vertex> vertices;
     std::vector<TriangleIndices> triangles;

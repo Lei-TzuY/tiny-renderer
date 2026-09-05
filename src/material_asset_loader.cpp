@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -126,25 +127,35 @@ std::shared_ptr<const Texture2D> load_owned_diffuse_texture(
     return texture;
 }
 
+void validate_generated_range(const Mesh& mesh, DrawRange range) {
+    if (range.first_triangle > mesh.triangles.size()
+        || range.triangle_count > mesh.triangles.size() - range.first_triangle) {
+        throw std::logic_error("generated material draw range exceeds canonical mesh");
+    }
+}
+
 }  // namespace
 
-std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::filesystem::path& path) {
-    const Mesh geometry = load_obj_file(path);
+ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
+    ModelAsset asset;
+    asset.mesh = load_obj_file(path);
 
     std::ifstream metadata_input(path);
     if (!metadata_input) {
         throw std::runtime_error("failed to reopen OBJ file for material metadata: " + path.string());
     }
     const AssetMaterialMetadata metadata = scan_asset_material_metadata(metadata_input);
-    if (metadata.face_materials.size() != geometry.triangles.size()) {
+    if (metadata.face_materials.size() != asset.mesh.triangles.size()) {
         throw std::runtime_error("OBJ geometry/material face count changed between parsing passes");
     }
 
     if (!metadata.library_filename) {
-        if (geometry.triangles.empty()) {
-            return {};
+        if (!asset.mesh.triangles.empty()) {
+            MaterialDraw draw;
+            draw.range = {0U, asset.mesh.triangles.size()};
+            asset.draws.push_back(std::move(draw));
         }
-        return {MaterialAssetBatch{geometry, std::string{}, MaterialState{}, {}}};
+        return asset;
     }
 
     const std::filesystem::path library_path = path.parent_path() / *metadata.library_filename;
@@ -163,19 +174,40 @@ std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::
             load_owned_diffuse_texture(library_path.parent_path(), definition, texture_cache));
     }
 
-    std::vector<MaterialAssetBatch> batches;
-    for (std::size_t face = 0U; face < geometry.triangles.size(); ++face) {
+    for (std::size_t face = 0U; face < asset.mesh.triangles.size(); ++face) {
         const std::string& material_name = metadata.face_materials[face];
         const MaterialAssetDefinition& definition = library.at(material_name);
-        if (batches.empty() || batches.back().material_name != material_name) {
-            MaterialAssetBatch batch;
-            batch.mesh.vertices = geometry.vertices;
-            batch.material_name = material_name;
-            batch.material = definition.material;
-            batch.diffuse_texture = material_textures.at(material_name);
-            batches.push_back(std::move(batch));
+        if (asset.draws.empty() || asset.draws.back().material_name != material_name) {
+            MaterialDraw draw;
+            draw.range.first_triangle = face;
+            draw.material_name = material_name;
+            draw.material = definition.material;
+            draw.diffuse_texture = material_textures.at(material_name);
+            asset.draws.push_back(std::move(draw));
         }
-        batches.back().mesh.triangles.push_back(geometry.triangles[face]);
+        ++asset.draws.back().range.triangle_count;
+    }
+
+    return asset;
+}
+
+std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::filesystem::path& path) {
+    const ModelAsset asset = load_obj_model_asset_file(path);
+    std::vector<MaterialAssetBatch> batches;
+    batches.reserve(asset.draws.size());
+
+    for (const MaterialDraw& draw : asset.draws) {
+        validate_generated_range(asset.mesh, draw.range);
+        MaterialAssetBatch batch;
+        batch.mesh.vertices = asset.mesh.vertices;
+        using Difference = std::vector<TriangleIndices>::difference_type;
+        const auto first = asset.mesh.triangles.begin() + static_cast<Difference>(draw.range.first_triangle);
+        const auto last = first + static_cast<Difference>(draw.range.triangle_count);
+        batch.mesh.triangles.assign(first, last);
+        batch.material_name = draw.material_name;
+        batch.material = draw.material;
+        batch.diffuse_texture = draw.diffuse_texture;
+        batches.push_back(std::move(batch));
     }
     return batches;
 }
