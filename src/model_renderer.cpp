@@ -108,6 +108,47 @@ BaseColorSource base_color_source_for(const MaterialDraw& draw) {
     return draw.diffuse_texture ? BaseColorSource::Texture : BaseColorSource::ConstantWhite;
 }
 
+void preflight_prepared_model_transform(
+    const Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& model) {
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    for (const MaterialDraw& draw : asset.draws) {
+        detail::preflight_mesh_range_submission(
+            framebuffer,
+            asset.mesh,
+            DrawRange{0U, 0U},
+            {},
+            texture_binding_for(draw, options),
+            options.directional_light,
+            draw.material,
+            base_color_source_for(draw),
+            &model,
+            false);
+    }
+}
+
+void execute_prepared_model_transform(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& model,
+    const Mat4& view,
+    const Mat4& projection) {
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    for (const MaterialDraw& draw : asset.draws) {
+        Rasterizer rasterizer(
+            framebuffer,
+            {},
+            texture_binding_for(draw, options),
+            options.directional_light,
+            draw.material,
+            base_color_source_for(draw));
+        rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
+    }
+}
+
 template <typename PreflightDraw, typename SubmitRange>
 void draw_validated_model_impl(
     Framebuffer& framebuffer,
@@ -151,43 +192,16 @@ void draw_prepared_model_instances(
     std::span<const Mat4> models,
     const Mat4& view,
     const Mat4& projection) {
-    const ModelAsset& asset = prepared.asset();
-    const ModelRenderOptions& options = prepared.options();
-    if (models.empty() || asset.draws.empty()) {
+    if (models.empty() || prepared.asset().draws.empty()) {
         return;
     }
 
-    // Batch-level fail-closed preflight: every instance and every material draw
-    // must validate before the first submitted range can mutate color or depth.
     for (const Mat4& model : models) {
-        for (const MaterialDraw& draw : asset.draws) {
-            detail::preflight_mesh_range_submission(
-                framebuffer,
-                asset.mesh,
-                DrawRange{0U, 0U},
-                {},
-                texture_binding_for(draw, options),
-                options.directional_light,
-                draw.material,
-                base_color_source_for(draw),
-                &model,
-                false);
-        }
+        preflight_prepared_model_transform(framebuffer, prepared, model);
     }
 
-    // Execution order is deterministic: instance input order, then canonical
-    // material draw order within each instance.
     for (const Mat4& model : models) {
-        for (const MaterialDraw& draw : asset.draws) {
-            Rasterizer rasterizer(
-                framebuffer,
-                {},
-                texture_binding_for(draw, options),
-                options.directional_light,
-                draw.material,
-                base_color_source_for(draw));
-            rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
-        }
+        execute_prepared_model_transform(framebuffer, prepared, model, view, projection);
     }
 }
 
@@ -229,6 +243,41 @@ void draw_prepared_model_instances(
                 base_color_source_for(draw));
             rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
         }
+    }
+}
+
+void draw_prepared_model_list(
+    Framebuffer& framebuffer,
+    std::span<const PreparedModelListEntry> entries,
+    const Mat4& view,
+    const Mat4& projection) {
+    if (entries.empty()) {
+        return;
+    }
+
+    // Validate list structure before any dynamic preflight. Entries borrow their
+    // prepared plans only for this call; null plans are never silently skipped.
+    for (const PreparedModelListEntry& entry : entries) {
+        if (entry.prepared == nullptr) {
+            throw std::invalid_argument("prepared model list entry requires a prepared plan");
+        }
+    }
+
+    // Whole-list fail-closed preflight: a bad later heterogeneous entry cannot
+    // leave fragments from an earlier valid prepared model in the framebuffer.
+    for (const PreparedModelListEntry& entry : entries) {
+        preflight_prepared_model_transform(framebuffer, *entry.prepared, entry.model);
+    }
+
+    // Caller entry order is the submission order; each plan retains its own
+    // canonical material-draw order and owned asset/texture state.
+    for (const PreparedModelListEntry& entry : entries) {
+        execute_prepared_model_transform(
+            framebuffer,
+            *entry.prepared,
+            entry.model,
+            view,
+            projection);
     }
 }
 
