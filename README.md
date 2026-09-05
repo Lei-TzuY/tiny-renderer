@@ -1,6 +1,6 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, and Milestone 5 adds explicit per-varying interpolation semantics.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, and Milestone 6 adds deterministic in-memory texture sampling through the same fragment pipeline.
 
 ## Rendering pipeline
 
@@ -13,9 +13,10 @@ The renderer follows this path for every submitted triangle:
 5. **Viewport transform** — NDC is mapped to pixel coordinates with a top-left image origin.
 6. **Fixed-point triangle setup/coverage** — screen-space vertices are quantized to a 1/256-pixel grid; signed 64-bit integer edge equations plus an exact top-left rule decide pixel-center ownership. Quantized zero-area triangles are discarded.
 7. **Qualified barycentric interpolation** — accepted samples use the original floating screen positions. `smooth` channels use perspective-correct `varying / w` and `1 / w`, `noperspective` channels use screen-linear barycentric interpolation, and `flat` channels use the first submitted vertex as the provoking vertex.
-8. **Color binding** — three validated varying-channel indices select the RGB value written to the framebuffer; the default binding is channels 0, 1, and 2.
-9. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
-10. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
+8. **Fragment color source** — without a texture binding, three validated varying channels supply framebuffer RGB. With a texture binding, two validated varying channels supply UV coordinates to the bound `Texture2D` sampler; this uses the exact same clipping/interpolation/coverage path rather than a separate textured rasterizer.
+9. **Texture sampling** — normalized UVs use explicit `Clamp` or `Repeat` addressing and `Nearest` or texel-center `Bilinear` filtering. Texture output replaces the untextured color binding for the fragment.
+10. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
+11. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
 
 Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle.
 
@@ -28,18 +29,20 @@ ctest --test-dir build --output-on-failure
 ./build/tiny_renderer_sample milestone1.ppm
 ```
 
-The sample scene renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. The executable also prints a deterministic FNV-1a hash of the RGB framebuffer.
+The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling is exercised by the test suite without changing this baseline sample or its deterministic framebuffer contract.
 
 ## Architecture
 
 - `include/tiny_renderer/math.hpp` — vectors, matrices, camera/view and perspective projection math.
 - `include/tiny_renderer/mesh.hpp` — vertices, fixed-capacity `VaryingPack`, per-channel `Interpolation` qualifiers, indexed triangle topology, and the reusable mesh data model.
+- `include/tiny_renderer/texture.hpp`, `src/texture.cpp` — validated in-memory RGB textures plus deterministic normalized-coordinate addressing and nearest/bilinear sampling.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
-- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — color-channel binding, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation and depth testing.
-- `src/main.cpp` — deterministic end-to-end sample scene.
+- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — color/texture binding, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation, fragment color selection and depth testing.
+- `src/main.cpp` — deterministic end-to-end baseline sample scene.
 - `tests/test_main.cpp` — dependency-free mathematical, rasterization, mesh, varying, and integration correctness tests.
 - `tests/test_fixed_point.cpp` — fixed-point ownership, quantization-stability, and subpixel-degeneracy regressions.
 - `tests/test_interpolation.cpp` — analytic smooth/noperspective/flat semantics, clipping behavior, provoking-vertex preservation, and fail-closed qualifier-layout regressions.
+- `tests/test_texture.cpp` — sampler addressing/filtering, perspective-correct UV, clipping continuity, and fail-closed texture-binding regressions.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
 
 ## Implemented
@@ -98,15 +101,30 @@ The sample scene renders three colored triangles through a perspective camera. T
 - analytic regression exercises smooth, noperspective, and flat channels simultaneously in one projected primitive
 - clipping regressions prove noperspective equivalence and flat provoking-value preservation when the provoking vertex itself lies outside the clip volume
 
+### Milestone 6 — in-memory texture sampling
+
+- validated `Texture2D` stores finite RGB texels with explicit dimensions and deterministic indexing
+- normalized UV sampling supports `Clamp` and `Repeat` independently on U/V
+- filtering supports nearest and bilinear interpolation with texel-center sampling; repeat-mode bilinear filtering crosses wrap seams correctly
+- optional `TextureBinding` selects the texture plus U/V varying channels and sampler state without adding a second raster path
+- bound UVs inherit the existing varying interpolation semantics, so smooth UVs are perspective-correct automatically
+- texture UV bindings and input UV values are preflight-validated before framebuffer writes
+- sampler regressions cover all four address/filter behaviors used by the milestone
+- integration regression deliberately chooses a probe where perspective-correct and affine UVs select different texels and proves the perspective-correct result wins
+- clipping regression proves a textured clipped primitive is framebuffer-equivalent to the same explicitly clipped geometry
+- existing untextured sample path remains the default when no texture is bound
+
 ## Intentionally not implemented yet
 
-The project does **not** yet include textures, OBJ/model-file loading, Phong or physically based lighting, shadows, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
+The project does **not** yet include image-file texture loading, OBJ/model-file loading, Phong or physically based lighting, shadows, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
 
 ## Numerical and graphics limitations
 
 - Homogeneous clipping and attribute interpolation still use single-precision floating point, so geometry extremely close to clip planes remains subject to float precision.
 - The varying payload is deliberately fixed at eight scalar channels for deterministic storage and simple teaching value; there is no dynamic shader interface or semantic type system.
 - `flat` currently uses the first submitted vertex as the fixed provoking-vertex convention; this is deliberate and not configurable yet.
+- Textures are RGB float arrays supplied by the caller; there are no mipmaps, anisotropic filtering, sRGB conversion, compressed formats, or image-file decoders yet.
+- Texture bindings are non-owning and the bound `Texture2D` must outlive rasterizer draw calls.
 - Fixed-point coverage quantizes screen-space positions to 1/256 pixel. Geometry smaller than the quantized grid can collapse to zero area by design.
 - Raster targets are rejected if their dimensions would make 64-bit fixed-point edge arithmetic unsafe; this is an explicit fail-closed numerical bound.
 - Depth uses the conventional finite OpenGL-style projection and a strict `<` comparison; there is no configurable depth function, reversed-Z, polygon offset, or depth precision analysis yet.
@@ -115,4 +133,4 @@ The project does **not** yet include textures, OBJ/model-file loading, Phong or 
 
 ## Next milestone
 
-The highest-value next step is an **in-memory texture sampling vertical slice**. Add a small CPU texture representation plus explicit UV-channel binding, deterministic address/filter semantics, and textured triangle/mesh rendering through the existing smooth varying pipeline. Acceptance should prove perspective-correct UV sampling, clipping continuity, deterministic nearest/bilinear behavior, and fail-closed texture/binding validation before later adding image-file or OBJ loading.
+The highest-value next step is a **bounded OBJ mesh-import vertical slice** for positions, texture coordinates, and triangle faces. The importer should reject malformed/out-of-range topology, normalize OBJ's independent position/UV indices into this renderer's unified vertices, preserve deterministic face order, and feed the existing indexed textured pipeline without adding lighting or a scene graph. A small in-repo fixture should prove imported geometry renders identically to the same mesh constructed programmatically.
