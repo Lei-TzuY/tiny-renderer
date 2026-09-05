@@ -85,6 +85,9 @@ void validate_material_state(const MaterialState& material) {
         || material.albedo.z < 0.0F || material.albedo.z > 1.0F) {
         throw std::invalid_argument("material albedo components must be finite and within [0, 1]");
     }
+    if (!std::isfinite(material.opacity) || material.opacity < 0.0F || material.opacity > 1.0F) {
+        throw std::invalid_argument("material opacity must be finite and within [0, 1]");
+    }
 }
 
 DirectionalLight prepare_directional_light(const DirectionalLight& light) {
