@@ -118,10 +118,6 @@ void test_range_preserves_all_vertex_uv_validation_contract() {
     mesh.vertices[5].varyings.values[0] = std::numeric_limits<float>::quiet_NaN();
 
     const Texture2D texture(1U, 1U, {{1.0F, 1.0F, 1.0F}});
-    Rasterizer rasterizer(
-        *new Framebuffer(1U, 1U));
-    (void)rasterizer;
-
     Framebuffer framebuffer(65U, 65U);
     framebuffer.clear({0.125F, 0.375F, 0.25F});
     const std::vector<std::uint8_t> before = framebuffer.rgb8();
