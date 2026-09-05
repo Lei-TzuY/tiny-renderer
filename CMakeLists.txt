@@ -10,6 +10,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 add_library(tiny_renderer
     src/framebuffer.cpp
     src/material_asset_loader.cpp
+    src/model_renderer.cpp
     src/mtl_loader.cpp
     src/obj_loader.cpp
     src/ppm_loader.cpp
@@ -97,4 +98,11 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_direct_range_tests tests/test_direct_range.cpp)
     target_link_libraries(tiny_renderer_direct_range_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_direct_range_tests COMMAND tiny_renderer_direct_range_tests)
+
+    add_executable(tiny_renderer_model_renderer_tests tests/test_model_renderer.cpp)
+    target_link_libraries(tiny_renderer_model_renderer_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_model_renderer_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_model_renderer_tests COMMAND tiny_renderer_model_renderer_tests)
 endif()
