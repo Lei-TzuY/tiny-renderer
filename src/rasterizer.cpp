@@ -588,6 +588,7 @@ void rasterize_screen_triangle(
     const DirectionalLight& light,
     const MaterialState& material,
     const DepthState& depth_state,
+    const StencilState& stencil_state,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
@@ -673,12 +674,13 @@ void rasterize_screen_triangle(
             }
             const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
             const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, source, light, material);
-            framebuffer.depth_test_and_write(
+            framebuffer.test_and_write(
                 static_cast<std::size_t>(x),
                 static_cast<std::size_t>(y),
                 depth,
                 color,
-                depth_state);
+                depth_state,
+                stencil_state);
         }
     }
 }
@@ -729,6 +731,7 @@ void draw_triangle_impl(
     CullMode cull_mode,
     FrontFace front_face,
     const DepthState& depth_state,
+    const StencilState& stencil_state,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
@@ -765,6 +768,7 @@ void draw_triangle_impl(
             light,
             material,
             depth_state,
+            stencil_state,
             viewport_state.scissor);
     }
 }
@@ -774,6 +778,7 @@ void draw_triangle_impl(
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
+    validate_stencil_state(stencil_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -798,6 +803,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         cull_mode_,
         front_face_,
         depth_state_,
+        stencil_state_,
         viewport_state);
 }
 
@@ -807,6 +813,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     }
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
+    validate_stencil_state(stencil_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -826,12 +833,14 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         cull_mode_,
         front_face_,
         depth_state_,
+        stencil_state_,
         viewport_state);
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
+    validate_stencil_state(stencil_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -858,6 +867,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             cull_mode_,
             front_face_,
             depth_state_,
+            stencil_state_,
             viewport_state);
     }
 }
@@ -868,6 +878,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     }
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
+    validate_stencil_state(stencil_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -888,6 +899,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             cull_mode_,
             front_face_,
             depth_state_,
+            stencil_state_,
             viewport_state);
     }
 }
