@@ -4,6 +4,8 @@
 
 namespace tiny_renderer::detail {
 
+void validate_face_culling(CullMode cull_mode, FrontFace front_face);
+
 void preflight_mesh_range_submission(
     const Framebuffer& framebuffer,
     const Mesh& mesh,
@@ -13,6 +15,8 @@ void preflight_mesh_range_submission(
     const DirectionalLight& directional_light,
     const MaterialState& material_state,
     BaseColorSource base_color_source,
+    CullMode cull_mode,
+    FrontFace front_face,
     const Mat4* model,
     bool mvp_only);
 
