@@ -261,6 +261,100 @@ void test_perspective_correct_color() {
     check(std::fabs(actual.x - bary->x) > 0.1F, "perspective-correct result is observably different from affine interpolation");
 }
 
+void test_general_varying_binding_perspective() {
+    const Triangle triangle{{
+        Vertex::with_varyings({-0.5F, -0.5F, 1.0F}, VaryingPack{7.0F, 8.0F, 1.0F, 0.0F, 0.0F}),
+        Vertex::with_varyings({1.0F, -1.0F, 2.0F}, VaryingPack{7.0F, 8.0F, 0.0F, 1.0F, 0.0F}),
+        Vertex::with_varyings({-2.0F, 2.0F, 4.0F}, VaryingPack{7.0F, 8.0F, 0.0F, 0.0F, 1.0F}),
+    }};
+
+    Mat4 projective{};
+    projective(0, 0) = 1.0F;
+    projective(1, 1) = 1.0F;
+    projective(3, 2) = 1.0F;
+
+    Framebuffer fb(33, 33);
+    Rasterizer rasterizer(fb, ColorBinding{2U, 3U, 4U});
+    rasterizer.draw_triangle(triangle, projective);
+
+    const auto bary = barycentric_coordinates({8.0F, 24.0F}, {24.0F, 24.0F}, {8.0F, 8.0F}, {13.5F, 18.5F});
+    check(bary.has_value(), "general varying probe has barycentric coordinates");
+    if (!bary) {
+        return;
+    }
+
+    const float denominator = bary->x / 1.0F + bary->y / 2.0F + bary->z / 4.0F;
+    const Vec3 expected{
+        (bary->x / 1.0F) / denominator,
+        (bary->y / 2.0F) / denominator,
+        (bary->z / 4.0F) / denominator,
+    };
+    const Vec3& actual = fb.color_at(13U, 18U);
+    check_near(actual.x, expected.x, "bound varying red is perspective-correct", 2.0e-4F);
+    check_near(actual.y, expected.y, "bound varying green is perspective-correct", 2.0e-4F);
+    check_near(actual.z, expected.z, "bound varying blue is perspective-correct", 2.0e-4F);
+}
+
+void test_general_varyings_survive_clipping() {
+    const ColorBinding binding{3U, 4U, 5U};
+    const Triangle crossing{{
+        Vertex::with_varyings({-2.0F, 0.0F, 0.0F}, VaryingPack{9.0F, 9.0F, 9.0F, 0.0F, 0.0F, 0.0F}),
+        Vertex::with_varyings({0.0F, -0.8F, 0.0F}, VaryingPack{9.0F, 9.0F, 9.0F, 1.0F, 0.0F, 0.0F}),
+        Vertex::with_varyings({0.0F, 0.8F, 0.0F}, VaryingPack{9.0F, 9.0F, 9.0F, 0.0F, 0.0F, 1.0F}),
+    }};
+
+    const Vertex lower = Vertex::with_varyings({-1.0F, -0.4F, 0.0F}, VaryingPack{9.0F, 9.0F, 9.0F, 0.5F, 0.0F, 0.0F});
+    const Vertex upper = Vertex::with_varyings({-1.0F, 0.4F, 0.0F}, VaryingPack{9.0F, 9.0F, 9.0F, 0.0F, 0.0F, 0.5F});
+    const Triangle manual_a{{lower, crossing[1], crossing[2]}};
+    const Triangle manual_b{{lower, crossing[2], upper}};
+
+    Framebuffer clipped(41, 41);
+    Rasterizer clipped_rasterizer(clipped, binding);
+    clipped_rasterizer.draw_triangle(crossing, Mat4::identity());
+
+    Framebuffer manual(41, 41);
+    Rasterizer manual_rasterizer(manual, binding);
+    manual_rasterizer.draw_triangle(manual_a, Mat4::identity());
+    manual_rasterizer.draw_triangle(manual_b, Mat4::identity());
+
+    check(clipped.rgb8() == manual.rgb8(), "non-color varying channels are interpolated correctly through homogeneous clipping");
+}
+
+void test_varying_contract_is_fail_closed() {
+    Triangle triangle{{
+        Vertex::with_varyings({-0.5F, -0.5F, 0.0F}, VaryingPack{1.0F, 0.0F, 0.0F, 2.0F}),
+        Vertex::with_varyings({0.5F, -0.5F, 0.0F}, VaryingPack{0.0F, 1.0F, 0.0F}),
+        Vertex::with_varyings({0.0F, 0.5F, 0.0F}, VaryingPack{0.0F, 0.0F, 1.0F}),
+    }};
+
+    Framebuffer fb(33, 33);
+    Rasterizer rasterizer(fb);
+    const std::uint64_t before = fb.fnv1a64();
+    bool mismatch_threw = false;
+    try {
+        rasterizer.draw_triangle(triangle, Mat4::identity());
+    } catch (const std::invalid_argument&) {
+        mismatch_threw = true;
+    }
+    check(mismatch_threw, "mismatched varying counts are rejected");
+    check(fb.fnv1a64() == before, "varying-count validation happens before framebuffer mutation");
+
+    Triangle valid{{
+        Vertex::with_varyings({-0.5F, -0.5F, 0.0F}, VaryingPack{1.0F, 0.0F, 0.0F}),
+        Vertex::with_varyings({0.5F, -0.5F, 0.0F}, VaryingPack{0.0F, 1.0F, 0.0F}),
+        Vertex::with_varyings({0.0F, 0.5F, 0.0F}, VaryingPack{0.0F, 0.0F, 1.0F}),
+    }};
+    Rasterizer bad_binding(fb, ColorBinding{0U, 1U, 5U});
+    bool binding_threw = false;
+    try {
+        bad_binding.draw_triangle(valid, Mat4::identity());
+    } catch (const std::out_of_range&) {
+        binding_threw = true;
+    }
+    check(binding_threw, "out-of-range framebuffer color binding is rejected");
+    check(fb.fnv1a64() == before, "color-binding validation happens before framebuffer mutation");
+}
+
 }  // namespace
 
 int main() {
@@ -277,6 +371,9 @@ int main() {
         test_shared_edge_crack_free();
         test_invalid_mesh_is_fail_closed();
         test_perspective_correct_color();
+        test_general_varying_binding_perspective();
+        test_general_varyings_survive_clipping();
+        test_varying_contract_is_fail_closed();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
