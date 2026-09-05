@@ -33,8 +33,6 @@ namespace {
 
 constexpr std::int64_t kSubpixelScale = 256;
 constexpr std::int64_t kSubpixelHalf = kSubpixelScale / 2;
-// Keeping every quantized screen coordinate within +/-2e9 guarantees that
-// each 2-D edge-function product and subtraction fits in signed int64_t.
 constexpr std::int64_t kMaxFixedCoordinate = 2'000'000'000LL;
 constexpr std::size_t kMaxRasterCoordinate =
     static_cast<std::size_t>((kMaxFixedCoordinate - kSubpixelHalf) / kSubpixelScale);
@@ -48,7 +46,7 @@ struct ScreenVertex {
     Vec2 position;
     float ndc_z{};
     float inv_w{};
-    VaryingPack varyings_over_w;
+    VaryingPack interpolation_terms;
 };
 
 struct FixedPoint2 {
@@ -68,16 +66,23 @@ void validate_binding(const ColorBinding& binding, std::size_t varying_count) {
     }
 }
 
-void validate_triangle_varyings(const Triangle& triangle, const ColorBinding& binding) {
-    const std::size_t count = triangle[0].varyings.count;
-    validate_pack(triangle[0].varyings);
-    validate_binding(binding, count);
-    for (std::size_t i = 1; i < triangle.size(); ++i) {
-        validate_pack(triangle[i].varyings);
-        if (triangle[i].varyings.count != count) {
-            throw std::invalid_argument("triangle vertices must use the same varying count");
+void validate_layout_match(const VaryingPack& reference, const VaryingPack& candidate) {
+    validate_pack(candidate);
+    if (candidate.count != reference.count) {
+        throw std::invalid_argument("varying packs must use the same channel count");
+    }
+    for (std::size_t channel = 0; channel < reference.count; ++channel) {
+        if (candidate.interpolation[channel] != reference.interpolation[channel]) {
+            throw std::invalid_argument("varying packs must use the same interpolation qualifiers");
         }
     }
+}
+
+void validate_triangle_varyings(const Triangle& triangle, const ColorBinding& binding) {
+    validate_pack(triangle[0].varyings);
+    validate_binding(binding, triangle[0].varyings.count);
+    validate_layout_match(triangle[0].varyings, triangle[1].varyings);
+    validate_layout_match(triangle[0].varyings, triangle[2].varyings);
 }
 
 void validate_raster_target(const Framebuffer& framebuffer) {
@@ -86,23 +91,53 @@ void validate_raster_target(const Framebuffer& framebuffer) {
     }
 }
 
-VaryingPack interpolate(const VaryingPack& a, const VaryingPack& b, float t) {
-    if (a.count != b.count) {
-        throw std::invalid_argument("cannot interpolate mismatched varying packs");
-    }
+float lerp_scalar(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+VaryingPack interpolate_clip_varyings(
+    const VaryingPack& a,
+    const VaryingPack& b,
+    float smooth_t,
+    float noperspective_t) {
+    validate_layout_match(a, b);
     VaryingPack result;
     result.count = a.count;
+    result.interpolation = a.interpolation;
     for (std::size_t i = 0; i < result.count; ++i) {
-        result.values[i] = a.values[i] + (b.values[i] - a.values[i]) * t;
+        switch (a.interpolation[i]) {
+            case Interpolation::Smooth:
+                result.values[i] = lerp_scalar(a.values[i], b.values[i], smooth_t);
+                break;
+            case Interpolation::NoPerspective:
+                result.values[i] = lerp_scalar(a.values[i], b.values[i], noperspective_t);
+                break;
+            case Interpolation::Flat:
+                result.values[i] = a.values[i];
+                break;
+        }
     }
     return result;
 }
 
-VaryingPack scale(const VaryingPack& pack, float factor) {
-    VaryingPack result;
-    result.count = pack.count;
+void apply_flat_provoking_vertex(std::array<ClipVertex, 3>& triangle) {
+    for (std::size_t channel = 0; channel < triangle[0].varyings.count; ++channel) {
+        if (triangle[0].varyings.interpolation[channel] != Interpolation::Flat) {
+            continue;
+        }
+        const float provoking_value = triangle[0].varyings.values[channel];
+        for (ClipVertex& vertex : triangle) {
+            vertex.varyings.values[channel] = provoking_value;
+        }
+    }
+}
+
+VaryingPack prepare_interpolation_terms(const VaryingPack& pack, float inv_w) {
+    VaryingPack result = pack;
     for (std::size_t i = 0; i < result.count; ++i) {
-        result.values[i] = pack.values[i] * factor;
+        if (result.interpolation[i] == Interpolation::Smooth) {
+            result.values[i] *= inv_w;
+        }
     }
     return result;
 }
@@ -120,9 +155,17 @@ float plane_distance(const ClipVertex& v, int plane) {
 }
 
 ClipVertex lerp(const ClipVertex& a, const ClipVertex& b, float t) {
+    const Vec4 position = a.position + (b.position - a.position) * t;
+    float noperspective_t = t;
+    if (std::fabs(position.w) > kEpsilon) {
+        const float projected_t = (t * b.position.w) / position.w;
+        if (std::isfinite(projected_t)) {
+            noperspective_t = projected_t;
+        }
+    }
     return {
-        a.position + (b.position - a.position) * t,
-        interpolate(a.varyings, b.varyings, t),
+        position,
+        interpolate_clip_varyings(a.varyings, b.varyings, t, noperspective_t),
     };
 }
 
@@ -190,7 +233,7 @@ std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, std::size_t widt
         {(ndc_x * 0.5F + 0.5F) * max_x, (1.0F - (ndc_y * 0.5F + 0.5F)) * max_y},
         ndc_z,
         inv_w,
-        scale(vertex.varyings, inv_w),
+        prepare_interpolation_terms(vertex.varyings, inv_w),
     };
 }
 
@@ -234,12 +277,26 @@ bool edge_accept(std::int64_t value, bool top_left) {
 
 Vec3 interpolate_color(const std::array<ScreenVertex, 3>& v, const Vec3& bary, float reciprocal_w, const ColorBinding& binding) {
     VaryingPack result;
-    result.count = v[0].varyings_over_w.count;
+    result.count = v[0].interpolation_terms.count;
+    result.interpolation = v[0].interpolation_terms.interpolation;
     for (std::size_t i = 0; i < result.count; ++i) {
-        const float numerator = v[0].varyings_over_w.values[i] * bary.x
-            + v[1].varyings_over_w.values[i] * bary.y
-            + v[2].varyings_over_w.values[i] * bary.z;
-        result.values[i] = numerator / reciprocal_w;
+        switch (result.interpolation[i]) {
+            case Interpolation::Smooth: {
+                const float numerator = v[0].interpolation_terms.values[i] * bary.x
+                    + v[1].interpolation_terms.values[i] * bary.y
+                    + v[2].interpolation_terms.values[i] * bary.z;
+                result.values[i] = numerator / reciprocal_w;
+                break;
+            }
+            case Interpolation::NoPerspective:
+                result.values[i] = v[0].interpolation_terms.values[i] * bary.x
+                    + v[1].interpolation_terms.values[i] * bary.y
+                    + v[2].interpolation_terms.values[i] * bary.z;
+                break;
+            case Interpolation::Flat:
+                result.values[i] = v[0].interpolation_terms.values[i];
+                break;
+        }
     }
     return {result.values[binding.red], result.values[binding.green], result.values[binding.blue]};
 }
@@ -251,14 +308,13 @@ void rasterize_screen_triangle(Framebuffer& framebuffer, std::array<ScreenVertex
         quantize_subpixel(v[2].position),
     };
 
-    std::int64_t fixed_area = fixed_edge(fixed[0], fixed[1], fixed[2]);
+    const std::int64_t fixed_area = fixed_edge(fixed[0], fixed[1], fixed[2]);
     if (fixed_area == 0) {
         return;
     }
     if (fixed_area < 0) {
         std::swap(v[1], v[2]);
         std::swap(fixed[1], fixed[2]);
-        fixed_area = -fixed_area;
     }
 
     const float interpolation_area = edge(v[0].position, v[1].position, v[2].position);
@@ -331,14 +387,10 @@ void validate_mesh(const Mesh& mesh, const ColorBinding& binding) {
     if (mesh.vertices.empty()) {
         return;
     }
-    const std::size_t count = mesh.vertices.front().varyings.count;
     validate_pack(mesh.vertices.front().varyings);
-    validate_binding(binding, count);
+    validate_binding(binding, mesh.vertices.front().varyings.count);
     for (const Vertex& vertex : mesh.vertices) {
-        validate_pack(vertex.varyings);
-        if (vertex.varyings.count != count) {
-            throw std::invalid_argument("mesh vertices must use the same varying count");
-        }
+        validate_layout_match(mesh.vertices.front().varyings, vertex.varyings);
     }
 }
 
@@ -362,6 +414,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
             triangle[i].varyings,
         };
     }
+    apply_flat_provoking_vertex(clip);
 
     const std::vector<ClipVertex> polygon = clip_triangle(clip);
     if (polygon.size() < 3U) {
