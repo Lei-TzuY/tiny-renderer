@@ -84,6 +84,7 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
     validate_model_structure(asset);
     detail::validate_face_culling(options.cull_mode, options.front_face);
     validate_depth_state(options.depth_state);
+    detail::validate_viewport_state_definition(options.viewport_state);
     bool sampler_needed = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
@@ -129,6 +130,7 @@ void preflight_prepared_model_transform(
             options.cull_mode,
             options.front_face,
             options.depth_state,
+            options.viewport_state,
             &model,
             false);
     }
@@ -152,7 +154,8 @@ void execute_prepared_model_transform(
             base_color_source_for(draw),
             options.cull_mode,
             options.front_face,
-            options.depth_state);
+            options.depth_state,
+            options.viewport_state);
         rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
     }
 }
@@ -182,7 +185,8 @@ void draw_validated_model_impl(
             base_color_source_for(draw),
             options.cull_mode,
             options.front_face,
-            options.depth_state);
+            options.depth_state,
+            options.viewport_state);
         submit_range(rasterizer, draw.range);
     }
 }
@@ -241,6 +245,7 @@ void draw_prepared_model_instances(
                 options.cull_mode,
                 options.front_face,
                 options.depth_state,
+                options.viewport_state,
                 nullptr,
                 true);
         }
@@ -257,7 +262,8 @@ void draw_prepared_model_instances(
                 base_color_source_for(draw),
                 options.cull_mode,
                 options.front_face,
-                options.depth_state);
+                options.depth_state,
+                options.viewport_state);
             rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
         }
     }
@@ -341,6 +347,7 @@ void draw_model_asset(
                 options.cull_mode,
                 options.front_face,
                 options.depth_state,
+                options.viewport_state,
                 &model,
                 false);
         },
@@ -372,6 +379,7 @@ void draw_model_asset(
                 options.cull_mode,
                 options.front_face,
                 options.depth_state,
+                options.viewport_state,
                 nullptr,
                 true);
         },

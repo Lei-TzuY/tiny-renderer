@@ -424,7 +424,7 @@ bool should_cull_projected_triangle(
     return cull_mode == CullMode::Back ? !front_facing : front_facing;
 }
 
-std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, std::size_t width, std::size_t height) {
+std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, const RasterRect& viewport) {
     if (!finite(vertex.position) || std::fabs(vertex.position.w) <= kEpsilon) {
         return std::nullopt;
     }
@@ -437,10 +437,15 @@ std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, std::size_t widt
         return std::nullopt;
     }
 
-    const float max_x = static_cast<float>(width - 1U);
-    const float max_y = static_cast<float>(height - 1U);
+    const float origin_x = static_cast<float>(viewport.x);
+    const float origin_y = static_cast<float>(viewport.y);
+    const float max_x = static_cast<float>(viewport.width - 1U);
+    const float max_y = static_cast<float>(viewport.height - 1U);
     return ScreenVertex{
-        {(ndc_x * 0.5F + 0.5F) * max_x, (1.0F - (ndc_y * 0.5F + 0.5F)) * max_y},
+        {
+            origin_x + (ndc_x * 0.5F + 0.5F) * max_x,
+            origin_y + (1.0F - (ndc_y * 0.5F + 0.5F)) * max_y,
+        },
         ndc_z,
         inv_w,
         prepare_interpolation_terms(vertex.varyings, inv_w),
@@ -582,7 +587,8 @@ void rasterize_screen_triangle(
     BaseColorSource source,
     const DirectionalLight& light,
     const MaterialState& material,
-    const DepthState& depth_state) {
+    const DepthState& depth_state,
+    const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
         quantize_subpixel(v[1].position),
@@ -610,10 +616,24 @@ void rasterize_screen_triangle(
 
     const int width = static_cast<int>(framebuffer.width());
     const int height = static_cast<int>(framebuffer.height());
-    const int min_x = std::max(0, static_cast<int>(std::floor(min_x_f)));
-    const int max_x = std::min(width - 1, static_cast<int>(std::ceil(max_x_f)));
-    const int min_y = std::max(0, static_cast<int>(std::floor(min_y_f)));
-    const int max_y = std::min(height - 1, static_cast<int>(std::ceil(max_y_f)));
+    int min_x = std::max(0, static_cast<int>(std::floor(min_x_f)));
+    int max_x = std::min(width - 1, static_cast<int>(std::ceil(max_x_f)));
+    int min_y = std::max(0, static_cast<int>(std::floor(min_y_f)));
+    int max_y = std::min(height - 1, static_cast<int>(std::ceil(max_y_f)));
+
+    if (scissor) {
+        if (scissor->width == 0U || scissor->height == 0U) {
+            return;
+        }
+        const int scissor_min_x = static_cast<int>(scissor->x);
+        const int scissor_min_y = static_cast<int>(scissor->y);
+        const int scissor_max_x = static_cast<int>(scissor->x + scissor->width - 1U);
+        const int scissor_max_y = static_cast<int>(scissor->y + scissor->height - 1U);
+        min_x = std::max(min_x, scissor_min_x);
+        max_x = std::min(max_x, scissor_max_x);
+        min_y = std::max(min_y, scissor_min_y);
+        max_y = std::min(max_y, scissor_max_y);
+    }
 
     if (min_x > max_x || min_y > max_y) {
         return;
@@ -708,7 +728,8 @@ void draw_triangle_impl(
     const MaterialState& material,
     CullMode cull_mode,
     FrontFace front_face,
-    const DepthState& depth_state) {
+    const DepthState& depth_state,
+    const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         clip[i] = {
@@ -729,9 +750,9 @@ void draw_triangle_impl(
             continue;
         }
 
-        const auto a = to_screen(polygon[0], framebuffer.width(), framebuffer.height());
-        const auto b = to_screen(polygon[i], framebuffer.width(), framebuffer.height());
-        const auto c = to_screen(polygon[i + 1U], framebuffer.width(), framebuffer.height());
+        const auto a = to_screen(polygon[0], viewport_state.viewport);
+        const auto b = to_screen(polygon[i], viewport_state.viewport);
+        const auto c = to_screen(polygon[i + 1U], viewport_state.viewport);
         if (!a || !b || !c) {
             continue;
         }
@@ -743,7 +764,8 @@ void draw_triangle_impl(
             source,
             light,
             material,
-            depth_state);
+            depth_state,
+            viewport_state.scissor);
     }
 }
 
@@ -753,6 +775,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
+    const detail::ResolvedViewportState viewport_state =
+        detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
@@ -773,7 +797,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         material,
         cull_mode_,
         front_face_,
-        depth_state_);
+        depth_state_,
+        viewport_state);
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
@@ -783,6 +808,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
+    const detail::ResolvedViewportState viewport_state =
+        detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
@@ -798,13 +825,16 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         material,
         cull_mode_,
         front_face_,
-        depth_state_);
+        depth_state_,
+        viewport_state);
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
+    const detail::ResolvedViewportState viewport_state =
+        detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
@@ -827,7 +857,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             material,
             cull_mode_,
             front_face_,
-            depth_state_);
+            depth_state_,
+            viewport_state);
     }
 }
 
@@ -838,6 +869,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
+    const detail::ResolvedViewportState viewport_state =
+        detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
@@ -854,7 +887,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             material,
             cull_mode_,
             front_face_,
-            depth_state_);
+            depth_state_,
+            viewport_state);
     }
 }
 
