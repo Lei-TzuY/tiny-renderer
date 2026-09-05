@@ -36,6 +36,10 @@ struct DirectionalLight {
     float diffuse{1.0F};
 };
 
+struct MaterialState {
+    Vec3 albedo{1.0F, 1.0F, 1.0F};
+};
+
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);
 [[nodiscard]] std::optional<Vec3> barycentric_coordinates(const Vec2& a, const Vec2& b, const Vec2& c, const Vec2& p);
 [[nodiscard]] bool barycentric_inside(const Vec3& barycentric, float epsilon = 1.0e-6F);
@@ -46,11 +50,13 @@ public:
         Framebuffer& framebuffer,
         ColorBinding color_binding = {},
         TextureBinding texture_binding = {},
-        DirectionalLight directional_light = {})
+        DirectionalLight directional_light = {},
+        MaterialState material_state = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
-          directional_light_(directional_light) {}
+          directional_light_(directional_light),
+          material_state_(material_state) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -62,6 +68,7 @@ private:
     ColorBinding color_binding_;
     TextureBinding texture_binding_;
     DirectionalLight directional_light_;
+    MaterialState material_state_;
 };
 
 }  // namespace tiny_renderer
