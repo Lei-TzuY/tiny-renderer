@@ -60,6 +60,19 @@ Vertex uv_vertex(const Vec3& position, float u, float v) {
     return Vertex::with_varyings(position, VaryingPack{u, v});
 }
 
+Vertex interpolate_smooth_uv_vertex(const Vertex& a, const Vertex& b, float t) {
+    const Vec3 position = a.position + (b.position - a.position) * t;
+    const float u = a.varyings.values[0] + (b.varyings.values[0] - a.varyings.values[0]) * t;
+    const float v = a.varyings.values[1] + (b.varyings.values[1] - a.varyings.values[1]) * t;
+    return uv_vertex(position, u, v);
+}
+
+float left_clip_distance_for_projective_fixture(const Vertex& vertex) {
+    // projective_w_from_z maps object (x, y, z) to clip (x, y, 0, z),
+    // so the canonical left-plane distance w + x is z + x.
+    return vertex.position.z + vertex.position.x;
+}
+
 TextureBinding texture_binding(
     const Texture2D& texture,
     FilterMode filter = FilterMode::Nearest,
@@ -137,9 +150,13 @@ void test_textured_clipping_matches_manual_geometry() {
         uv_vertex({0.0F, 2.0F, 4.0F}, 0.0F, 0.5F),
     }};
 
-    const Vertex intersection_ca = uv_vertex({-1.6F, 0.4F, 1.6F}, 0.0F, 0.5F);
-    const Vertex intersection_ab = uv_vertex(
-        {-4.0F / 3.0F, -1.0F / 3.0F, 4.0F / 3.0F}, 1.0F / 3.0F, 0.5F);
+    const float distance_a = left_clip_distance_for_projective_fixture(crossing[0]);
+    const float distance_b = left_clip_distance_for_projective_fixture(crossing[1]);
+    const float distance_c = left_clip_distance_for_projective_fixture(crossing[2]);
+    const float t_ca = distance_c / (distance_c - distance_a);
+    const float t_ab = distance_a / (distance_a - distance_b);
+    const Vertex intersection_ca = interpolate_smooth_uv_vertex(crossing[2], crossing[0], t_ca);
+    const Vertex intersection_ab = interpolate_smooth_uv_vertex(crossing[0], crossing[1], t_ab);
     const Triangle manual_a{{intersection_ca, intersection_ab, crossing[1]}};
     const Triangle manual_b{{intersection_ca, crossing[1], crossing[2]}};
 
