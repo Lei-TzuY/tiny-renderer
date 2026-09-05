@@ -17,6 +17,7 @@ void preflight_mesh_range_submission(
     BaseColorSource base_color_source,
     CullMode cull_mode,
     FrontFace front_face,
+    const DepthState& depth_state,
     const Mat4* model,
     bool mvp_only);
 

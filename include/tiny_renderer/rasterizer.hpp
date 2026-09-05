@@ -72,7 +72,8 @@ public:
         MaterialState material_state = {},
         BaseColorSource base_color_source = BaseColorSource::Auto,
         CullMode cull_mode = CullMode::None,
-        FrontFace front_face = FrontFace::CounterClockwise)
+        FrontFace front_face = FrontFace::CounterClockwise,
+        DepthState depth_state = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -80,7 +81,8 @@ public:
           material_state_(material_state),
           base_color_source_(base_color_source),
           cull_mode_(cull_mode),
-          front_face_(front_face) {}
+          front_face_(front_face),
+          depth_state_(depth_state) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -103,6 +105,7 @@ private:
     BaseColorSource base_color_source_;
     CullMode cull_mode_;
     FrontFace front_face_;
+    DepthState depth_state_;
 };
 
 }  // namespace tiny_renderer

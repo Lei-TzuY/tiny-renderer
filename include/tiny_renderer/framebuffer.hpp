@@ -10,12 +10,33 @@
 
 namespace tiny_renderer {
 
+enum class DepthCompare {
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Always,
+    Never,
+};
+
+struct DepthState {
+    DepthCompare compare{DepthCompare::Less};
+    bool write_enabled{true};
+};
+
+void validate_depth_state(const DepthState& state);
+
 class Framebuffer {
 public:
     Framebuffer(std::size_t width, std::size_t height);
 
     void clear(const Vec3& color = {0.0F, 0.0F, 0.0F}, float depth = std::numeric_limits<float>::infinity());
-    bool depth_test_and_write(std::size_t x, std::size_t y, float depth, const Vec3& color);
+    bool depth_test_and_write(
+        std::size_t x,
+        std::size_t y,
+        float depth,
+        const Vec3& color,
+        DepthState state = {});
 
     [[nodiscard]] std::size_t width() const noexcept { return width_; }
     [[nodiscard]] std::size_t height() const noexcept { return height_; }

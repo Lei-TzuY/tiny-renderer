@@ -135,4 +135,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_culling_tests tests/test_culling.cpp)
     target_link_libraries(tiny_renderer_culling_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_culling_tests COMMAND tiny_renderer_culling_tests)
+
+    add_executable(tiny_renderer_depth_state_tests tests/test_depth_state.cpp)
+    target_link_libraries(tiny_renderer_depth_state_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_depth_state_tests COMMAND tiny_renderer_depth_state_tests)
 endif()

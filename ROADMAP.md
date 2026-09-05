@@ -62,20 +62,31 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Shared preflight rejects unknown cull/front-face state before framebuffer mutation; prepared-model construction validates the state without a framebuffer.
 - Regression coverage locks both submitted windings, both front-face conventions, front/back culling, clipped triangles, mesh/range execution, model-list propagation, degenerate projected geometry, and default byte/hash compatibility.
 
-## Next frontier — Milestone 24
+### Milestone 24 — explicit depth-test state and reversed-Z-capable execution
 
-The next architectural promotion is **explicit depth-test state with reversed-Z-capable execution**. Depth behavior is currently hard-coded inside `Framebuffer::depth_test_and_write` as strict `depth < stored`, which prevents the renderer from modeling another core fixed-function pipeline stage or expressing reversed-depth projections cleanly.
+- `DepthCompare::{Less, LessEqual, Greater, GreaterEqual, Always, Never}` and explicit depth-write enable/disable state model the framebuffer depth stage directly.
+- Legacy strict `Less` with depth writes enabled remains the default and is regression-locked byte/hash-identically to the pre-state pipeline.
+- All comparison semantics are centralized in `Framebuffer::depth_test_and_write`; triangle, range, model, prepared-instance, and heterogeneous-list layers only propagate validated state.
+- Passing fragments with depth writes disabled update color without mutating stored depth.
+- Equal-depth regressions distinguish strict `Less` first-owner behavior from non-strict `LessEqual` later overwrite behavior.
+- Reversed-Z execution uses the same clipping, perspective divide, NDC-to-depth mapping, coverage, culling, interpolation, and shading path: a reversed clip-space z projection plus zero clear and `Greater` comparison resolves the reference overlap scene byte/hash-identically to conventional forward-Z `Less`.
+- Depth state is carried by `ModelRenderOptions` and prepared plans, including heterogeneous prepared lists.
+- Unknown depth comparison state is rejected before framebuffer mutation and during framebuffer-independent prepared-model construction.
+
+## Next frontier — Milestone 25
+
+The next architectural promotion is **explicit viewport and scissor state**. The viewport transform is currently hard-wired to the full framebuffer and rasterization has no explicit scissor rectangle, so callers cannot render deterministic sub-views or restrict fragment ownership without changing geometry.
 
 Acceptance for that slice should require:
 
-- a bounded `DepthCompare` state covering at least strict/non-strict near and far comparisons (`Less`, `LessEqual`, `Greater`, `GreaterEqual`) plus deterministic unconditional/disabled outcomes where useful;
-- explicit depth-write enable/disable state, with legacy `Less + write enabled` remaining the default and preserving all existing framebuffer/hash contracts;
-- depth compare semantics centralized rather than duplicated across triangle, range, model, prepared, instance, or heterogeneous-list paths;
-- a reversed-Z integration fixture using a clear depth appropriate to `Greater` comparison that resolves overlapping geometry equivalently to the conventional forward-Z scene;
-- equal-depth behavior is regression-locked for strict versus non-strict comparison modes, preserving the current caller-order ownership contract under default strict `Less`;
-- depth-write-disabled passes can update color when the configured comparison passes without mutating stored depth;
-- invalid depth enum/state fails closed before framebuffer mutation, including through prepared-model/list preflight;
-- clipping, NDC-to-depth mapping, fixed-point coverage, interpolation, culling, and shading remain one shared raster path rather than branching into a reversed-Z renderer variant.
+- a bounded viewport state defining pixel-space origin and non-zero extent, with the default exactly covering the full framebuffer and preserving all existing framebuffer/hash output;
+- NDC-to-screen conversion maps into the configured viewport while front-face classification remains defined in pre-viewport NDC and therefore independent of top-left framebuffer orientation;
+- an optional integer scissor rectangle that rejects samples outside its half-open bounds without changing clipping, barycentrics, interpolation, depth, or shading semantics;
+- viewport/scissor bounds are overflow-safe and validated fail-closed before framebuffer mutation, including through range/model/prepared/list preflight;
+- deterministic regressions cover a sub-viewport transform, scissor edge ownership, viewport-plus-scissor composition, clipped geometry crossing a viewport boundary, and default full-frame compatibility;
+- viewport/scissor state propagates through direct triangles/meshes, selected ranges, prepared instances, and heterogeneous prepared lists without a second raster path;
+- empty or invalid rectangles have an explicit contract rather than being silently normalized or clamped;
+- no performance claim is made without a controlled benchmark.
 
 ## Deliberate later work
 
