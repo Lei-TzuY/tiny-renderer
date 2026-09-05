@@ -1,0 +1,6 @@
+# Bounded diffuse material library.
+newmtl warm
+Kd 1.0 0.5 0.25
+
+newmtl cool
+Kd 0.25 0.5 1.0
