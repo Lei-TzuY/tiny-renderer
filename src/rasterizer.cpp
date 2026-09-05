@@ -55,6 +55,10 @@ struct FixedPoint2 {
     std::int64_t y{};
 };
 
+bool finite_vec3(const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
 void validate_pack(const VaryingPack& pack) {
     if (pack.count > kMaxVaryings) {
         throw std::invalid_argument("varying pack count exceeds fixed capacity");
@@ -73,6 +77,16 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
     }
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
         throw std::out_of_range("texture binding references unavailable varying channel");
+    }
+}
+
+void validate_normal_binding(const NormalBinding& binding, const VaryingPack& pack) {
+    if (binding.x >= pack.count || binding.y >= pack.count || binding.z >= pack.count) {
+        throw std::out_of_range("normal binding references unavailable varying channel");
+    }
+    const Interpolation mode = pack.interpolation[binding.x];
+    if (pack.interpolation[binding.y] != mode || pack.interpolation[binding.z] != mode) {
+        throw std::invalid_argument("normal binding channels must use one interpolation qualifier");
     }
 }
 
@@ -100,6 +114,35 @@ void validate_texture_coordinates(const VaryingPack& pack, const TextureBinding&
     }
 }
 
+void validate_normal_value(const VaryingPack& pack, const NormalBinding& binding) {
+    const Vec3 normal{
+        pack.values[binding.x],
+        pack.values[binding.y],
+        pack.values[binding.z],
+    };
+    if (!finite_vec3(normal) || length(normal) <= kEpsilon) {
+        throw std::invalid_argument("vertex normal must be finite and non-zero");
+    }
+}
+
+DirectionalLight prepare_directional_light(const DirectionalLight& light) {
+    if (!light.enabled) {
+        return light;
+    }
+    if (!finite_vec3(light.direction_to_light) || length(light.direction_to_light) <= kEpsilon) {
+        throw std::invalid_argument("directional light direction must be finite and non-zero");
+    }
+    if (!std::isfinite(light.ambient) || !std::isfinite(light.diffuse)
+        || light.ambient < 0.0F || light.diffuse < 0.0F
+        || light.ambient > 1.0F || light.diffuse > 1.0F
+        || light.ambient + light.diffuse > 1.0F + kEpsilon) {
+        throw std::invalid_argument("directional light coefficients must be finite, non-negative, and sum to at most one");
+    }
+    DirectionalLight prepared = light;
+    prepared.direction_to_light = normalize(light.direction_to_light);
+    return prepared;
+}
+
 void validate_layout_match(const VaryingPack& reference, const VaryingPack& candidate) {
     validate_pack(candidate);
     if (candidate.count != reference.count) {
@@ -115,13 +158,20 @@ void validate_layout_match(const VaryingPack& reference, const VaryingPack& cand
 void validate_triangle_varyings(
     const Triangle& triangle,
     const ColorBinding& color_binding,
-    const TextureBinding& texture_binding) {
+    const TextureBinding& texture_binding,
+    const DirectionalLight& light) {
     validate_pack(triangle[0].varyings);
     validate_output_binding(color_binding, texture_binding, triangle[0].varyings.count);
     validate_layout_match(triangle[0].varyings, triangle[1].varyings);
     validate_layout_match(triangle[0].varyings, triangle[2].varyings);
+    if (light.enabled) {
+        validate_normal_binding(light.normal, triangle[0].varyings);
+    }
     for (const Vertex& vertex : triangle) {
         validate_texture_coordinates(vertex.varyings, texture_binding);
+        if (light.enabled) {
+            validate_normal_value(vertex.varyings, light.normal);
+        }
     }
 }
 
@@ -129,6 +179,36 @@ void validate_raster_target(const Framebuffer& framebuffer) {
     if (framebuffer.width() - 1U > kMaxRasterCoordinate || framebuffer.height() - 1U > kMaxRasterCoordinate) {
         throw std::overflow_error("framebuffer dimensions exceed fixed-point rasterizer safety bound");
     }
+}
+
+void transform_normal(VaryingPack& pack, const NormalBinding& binding, const Mat3& matrix) {
+    const Vec3 transformed = matrix * Vec3{
+        pack.values[binding.x],
+        pack.values[binding.y],
+        pack.values[binding.z],
+    };
+    if (!finite_vec3(transformed) || length(transformed) <= kEpsilon) {
+        throw std::invalid_argument("transformed vertex normal is numerically unstable");
+    }
+    pack.values[binding.x] = transformed.x;
+    pack.values[binding.y] = transformed.y;
+    pack.values[binding.z] = transformed.z;
+}
+
+Triangle transform_triangle_normals(const Triangle& triangle, const NormalBinding& binding, const Mat3& matrix) {
+    Triangle transformed = triangle;
+    for (Vertex& vertex : transformed) {
+        transform_normal(vertex.varyings, binding, matrix);
+    }
+    return transformed;
+}
+
+Mesh transform_mesh_normals(const Mesh& mesh, const NormalBinding& binding, const Mat3& matrix) {
+    Mesh transformed = mesh;
+    for (Vertex& vertex : transformed.vertices) {
+        transform_normal(vertex.varyings, binding, matrix);
+    }
+    return transformed;
 }
 
 float lerp_scalar(float a, float b, float t) {
@@ -344,7 +424,7 @@ VaryingPack interpolate_varyings(
     return result;
 }
 
-Vec3 shade_fragment(
+Vec3 base_fragment_color(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding) {
@@ -360,11 +440,41 @@ Vec3 shade_fragment(
     };
 }
 
+Vec3 shade_fragment(
+    const VaryingPack& varyings,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding,
+    const DirectionalLight& light) {
+    const Vec3 base = base_fragment_color(varyings, color_binding, texture_binding);
+    if (!light.enabled) {
+        return base;
+    }
+
+    const Vec3 interpolated_normal{
+        varyings.values[light.normal.x],
+        varyings.values[light.normal.y],
+        varyings.values[light.normal.z],
+    };
+    if (!finite_vec3(interpolated_normal)) {
+        return base * light.ambient;
+    }
+    const float normal_length = length(interpolated_normal);
+    if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
+        return base * light.ambient;
+    }
+
+    const Vec3 normal = interpolated_normal / normal_length;
+    const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
+    const float intensity = light.ambient + light.diffuse * lambert;
+    return base * intensity;
+}
+
 void rasterize_screen_triangle(
     Framebuffer& framebuffer,
     std::array<ScreenVertex, 3> v,
     const ColorBinding& color_binding,
-    const TextureBinding& texture_binding) {
+    const TextureBinding& texture_binding,
+    const DirectionalLight& light) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
         quantize_subpixel(v[1].position),
@@ -434,7 +544,7 @@ void rasterize_screen_triangle(
                 continue;
             }
             const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
-            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding);
+            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, light);
             framebuffer.depth_test_and_write(static_cast<std::size_t>(x), static_cast<std::size_t>(y), depth, color);
         }
     }
@@ -443,7 +553,8 @@ void rasterize_screen_triangle(
 void validate_mesh(
     const Mesh& mesh,
     const ColorBinding& color_binding,
-    const TextureBinding& texture_binding) {
+    const TextureBinding& texture_binding,
+    const DirectionalLight& light) {
     for (const TriangleIndices& triangle : mesh.triangles) {
         for (const std::uint32_t index : triangle) {
             if (static_cast<std::size_t>(index) >= mesh.vertices.size()) {
@@ -456,9 +567,15 @@ void validate_mesh(
     }
     validate_pack(mesh.vertices.front().varyings);
     validate_output_binding(color_binding, texture_binding, mesh.vertices.front().varyings.count);
+    if (light.enabled) {
+        validate_normal_binding(light.normal, mesh.vertices.front().varyings);
+    }
     for (const Vertex& vertex : mesh.vertices) {
         validate_layout_match(mesh.vertices.front().varyings, vertex.varyings);
         validate_texture_coordinates(vertex.varyings, texture_binding);
+        if (light.enabled) {
+            validate_normal_value(vertex.varyings, light.normal);
+        }
     }
 }
 
@@ -466,15 +583,13 @@ Triangle assemble_triangle(const Mesh& mesh, const TriangleIndices& indices) {
     return Triangle{mesh.vertices[indices[0]], mesh.vertices[indices[1]], mesh.vertices[indices[2]]};
 }
 
-}  // namespace
-
-void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
-    draw_triangle(triangle, projection * view * model);
-}
-
-void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
-    validate_raster_target(framebuffer_);
-    validate_triangle_varyings(triangle, color_binding_, texture_binding_);
+void draw_triangle_impl(
+    Framebuffer& framebuffer,
+    const Triangle& triangle,
+    const Mat4& mvp,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding,
+    const DirectionalLight& light) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         clip[i] = {
@@ -490,25 +605,82 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     }
 
     for (std::size_t i = 1; i + 1U < polygon.size(); ++i) {
-        const auto a = to_screen(polygon[0], framebuffer_.width(), framebuffer_.height());
-        const auto b = to_screen(polygon[i], framebuffer_.width(), framebuffer_.height());
-        const auto c = to_screen(polygon[i + 1U], framebuffer_.width(), framebuffer_.height());
+        const auto a = to_screen(polygon[0], framebuffer.width(), framebuffer.height());
+        const auto b = to_screen(polygon[i], framebuffer.width(), framebuffer.height());
+        const auto c = to_screen(polygon[i + 1U], framebuffer.width(), framebuffer.height());
         if (!a || !b || !c) {
             continue;
         }
-        rasterize_screen_triangle(framebuffer_, {*a, *b, *c}, color_binding_, texture_binding_);
+        rasterize_screen_triangle(framebuffer, {*a, *b, *c}, color_binding, texture_binding, light);
     }
 }
 
+}  // namespace
+
+void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
+    validate_raster_target(framebuffer_);
+    const DirectionalLight light = prepare_directional_light(directional_light_);
+    validate_triangle_varyings(triangle, color_binding_, texture_binding_, light);
+
+    Triangle prepared = triangle;
+    if (light.enabled) {
+        prepared = transform_triangle_normals(triangle, light.normal, normal_matrix(model));
+    }
+    draw_triangle_impl(
+        framebuffer_,
+        prepared,
+        projection * view * model,
+        color_binding_,
+        texture_binding_,
+        light);
+}
+
+void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
+    if (directional_light_.enabled) {
+        throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
+    }
+    validate_raster_target(framebuffer_);
+    const DirectionalLight light = prepare_directional_light(directional_light_);
+    validate_triangle_varyings(triangle, color_binding_, texture_binding_, light);
+    draw_triangle_impl(framebuffer_, triangle, mvp, color_binding_, texture_binding_, light);
+}
+
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
-    draw_mesh(mesh, projection * view * model);
+    validate_raster_target(framebuffer_);
+    const DirectionalLight light = prepare_directional_light(directional_light_);
+    validate_mesh(mesh, color_binding_, texture_binding_, light);
+
+    Mesh prepared = mesh;
+    if (light.enabled && !mesh.vertices.empty()) {
+        prepared = transform_mesh_normals(mesh, light.normal, normal_matrix(model));
+    }
+    const Mat4 mvp = projection * view * model;
+    for (const TriangleIndices& indices : prepared.triangles) {
+        draw_triangle_impl(
+            framebuffer_,
+            assemble_triangle(prepared, indices),
+            mvp,
+            color_binding_,
+            texture_binding_,
+            light);
+    }
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
+    if (directional_light_.enabled) {
+        throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
+    }
     validate_raster_target(framebuffer_);
-    validate_mesh(mesh, color_binding_, texture_binding_);
+    const DirectionalLight light = prepare_directional_light(directional_light_);
+    validate_mesh(mesh, color_binding_, texture_binding_, light);
     for (const TriangleIndices& indices : mesh.triangles) {
-        draw_triangle(assemble_triangle(mesh, indices), mvp);
+        draw_triangle_impl(
+            framebuffer_,
+            assemble_triangle(mesh, indices),
+            mvp,
+            color_binding_,
+            texture_binding_,
+            light);
     }
 }
 
