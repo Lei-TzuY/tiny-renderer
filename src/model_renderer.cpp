@@ -82,6 +82,7 @@ void validate_model_structure(const ModelAsset& asset) {
 
 void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptions& options) {
     validate_model_structure(asset);
+    detail::validate_face_culling(options.cull_mode, options.front_face);
     bool sampler_needed = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
@@ -124,6 +125,8 @@ void preflight_prepared_model_transform(
             options.directional_light,
             draw.material,
             base_color_source_for(draw),
+            options.cull_mode,
+            options.front_face,
             &model,
             false);
     }
@@ -144,7 +147,9 @@ void execute_prepared_model_transform(
             texture_binding_for(draw, options),
             options.directional_light,
             draw.material,
-            base_color_source_for(draw));
+            base_color_source_for(draw),
+            options.cull_mode,
+            options.front_face);
         rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
     }
 }
@@ -171,7 +176,9 @@ void draw_validated_model_impl(
             texture_binding_for(draw, options),
             options.directional_light,
             draw.material,
-            base_color_source_for(draw));
+            base_color_source_for(draw),
+            options.cull_mode,
+            options.front_face);
         submit_range(rasterizer, draw.range);
     }
 }
@@ -227,6 +234,8 @@ void draw_prepared_model_instances(
                 options.directional_light,
                 draw.material,
                 base_color_source_for(draw),
+                options.cull_mode,
+                options.front_face,
                 nullptr,
                 true);
         }
@@ -240,7 +249,9 @@ void draw_prepared_model_instances(
                 texture_binding_for(draw, options),
                 options.directional_light,
                 draw.material,
-                base_color_source_for(draw));
+                base_color_source_for(draw),
+                options.cull_mode,
+                options.front_face);
             rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
         }
     }
@@ -255,22 +266,16 @@ void draw_prepared_model_list(
         return;
     }
 
-    // Validate list structure before any dynamic preflight. Entries borrow their
-    // prepared plans only for this call; null plans are never silently skipped.
     for (const PreparedModelListEntry& entry : entries) {
         if (entry.prepared == nullptr) {
             throw std::invalid_argument("prepared model list entry requires a prepared plan");
         }
     }
 
-    // Whole-list fail-closed preflight: a bad later heterogeneous entry cannot
-    // leave fragments from an earlier valid prepared model in the framebuffer.
     for (const PreparedModelListEntry& entry : entries) {
         preflight_prepared_model_transform(framebuffer, *entry.prepared, entry.model);
     }
 
-    // Caller entry order is the submission order; each plan retains its own
-    // canonical material-draw order and owned asset/texture state.
     for (const PreparedModelListEntry& entry : entries) {
         execute_prepared_model_transform(
             framebuffer,
@@ -327,6 +332,8 @@ void draw_model_asset(
                 options.directional_light,
                 draw.material,
                 base_color_source_for(draw),
+                options.cull_mode,
+                options.front_face,
                 &model,
                 false);
         },
@@ -355,6 +362,8 @@ void draw_model_asset(
                 options.directional_light,
                 draw.material,
                 base_color_source_for(draw),
+                options.cull_mode,
+                options.front_face,
                 nullptr,
                 true);
         },
