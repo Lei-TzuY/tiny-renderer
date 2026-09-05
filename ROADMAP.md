@@ -55,7 +55,7 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 ### Milestone 23 — explicit face culling and front-face state
 
 - `CullMode::{None, Back, Front}` and `FrontFace::{CounterClockwise, Clockwise}` are first-class raster state; legacy behavior remains `None` by default.
-- Front-face winding is defined in normalized device coordinates after homogeneous clipping and perspective divide, before the top-left framebuffer viewport transform can invert Y orientation.
+- Front-face winding is defined in normalized device coordinates after homogeneous clipping and perspective divide, before the framebuffer's top-left-origin viewport transform can invert Y orientation.
 - Each triangle in a clipped polygon fan is classified independently before viewport conversion and fixed-point orientation normalization.
 - `CullMode::None` bypasses the new NDC classification path so established tiny-triangle and no-culling framebuffer/hash behavior remains unchanged.
 - Culling state propagates through direct triangles, meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists without creating a parallel raster path.
@@ -105,22 +105,35 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Blend validation and state propagation cover direct triangles/meshes, selected ranges, model submission, prepared plans, instance batches, and heterogeneous prepared lists without duplicating blend math outside `Framebuffer::test_and_write`.
 - Regression coverage locks disabled byte/hash compatibility, analytic factor math, every blend operation, non-commutative draw ordering, channel masking, depth/stencil interaction, scissor-bounded blending, selected ranges, prepared-list equivalence, and fail-closed invalid state.
 
-## Next frontier — Milestone 28
+### Milestone 28 — material opacity and source-alpha RGB blending
 
-The next architectural promotion is **material opacity and source-alpha RGB blending**. The renderer now has deterministic RGB composition but no fragment opacity source, so conventional caller-ordered transparent material rendering cannot be expressed without inventing alpha outside the verified material/shading pipeline.
+- `MaterialState` owns a finite `[0,1]` opacity with default `1.0`, preserving established opaque aggregate initialization and framebuffer output.
+- The bounded MTL parser accepts one optional `d <opacity>` dissolve value per material in both legacy Kd and rich map_Kd paths, defaults missing opacity to one, and rejects malformed, duplicate, non-finite, negative, or greater-than-one values deterministically.
+- Fragment shading carries `ShadedFragment{rgb, opacity}` so opacity remains independent from RGB lighting/material multiplication and no destination-alpha attachment is implied.
+- `BlendFactor::{SourceAlpha, OneMinusSourceAlpha}` replicate the verified fragment opacity scalar across RGB factors while all previous M27 factor/operation semantics remain unchanged.
+- `Framebuffer::test_and_write` validates source opacity before stencil/depth/color mutation and keeps the complete stencil → depth → blend → write-mask ownership sequence centralized.
+- Direct raster, shared range/model preflight, and framebuffer-independent prepared-model construction reject invalid material opacity before mutation.
+- File-driven OBJ/MTL opacity is preserved through `MaterialDraw` and renders byte/hash-equivalently to the same programmatic material under caller-selected source-alpha blending.
+- Regression coverage locks opacity 0/0.5/1 analytic composition, opaque-default compatibility, invalid material/fragment/MTL rejection, depth-write-disabled transparent passes, stencil/scissor interaction, homogeneous clipping continuity, prepared-list equivalence, and caller-order significance.
+- The milestone enables bounded caller-ordered transparency only; it does not add destination alpha, alpha textures, automatic sorting, order-independent transparency, or physically based transmission.
+
+## Next frontier — Milestone 29
+
+The next architectural promotion is **deterministic 4× multisample antialiasing with per-sample ownership and resolve**. Coverage is still evaluated only at the pixel center, so subpixel edge visibility cannot be represented even though the renderer already has deterministic fixed-point coverage and explicit depth/stencil/blend stages.
 
 Acceptance for that slice should require:
 
-- `MaterialState` gains a finite `[0,1]` opacity with default `1.0`, preserving every existing opaque framebuffer/hash result;
-- the bounded MTL path accepts one optional `d <opacity>` dissolve value per material, rejects duplicates/non-finite/out-of-range values deterministically, and defaults missing `d` to fully opaque;
-- fragment shading carries material opacity as a separate scalar alongside RGB rather than multiplying RGB or pretending the RGB framebuffer stores destination alpha;
-- `BlendFactor` gains source-alpha and inverse-source-alpha factors that replicate the fragment opacity scalar across RGB factor components; destination-alpha factors remain out of scope because no destination alpha attachment exists;
-- the framebuffer ownership primitive receives validated fragment opacity and keeps stencil/depth/blend/write-mask ordering centralized, with default opacity `1.0` preserving all existing direct calls;
-- model/prepared submission preserves imported opacity through `MaterialDraw`, and a file-driven MTL opacity fixture renders equivalently to a programmatic material under caller-selected source-alpha blending;
-- deterministic regressions cover opacity `0`, `0.5`, and `1`, source-alpha/inverse-source-alpha analytic composition, caller draw order, depth writes disabled for transparent passes, stencil/scissor interaction, clipping continuity, prepared/list propagation, and fail-closed invalid material/MTL opacity;
-- this milestone enables bounded caller-ordered transparency but does not claim sorting, order-independent transparency, destination alpha, alpha textures, or physically based transmission;
+- an explicit sample-count state supporting the legacy single-sample path and one deterministic 4× mode; single-sample remains the default and must stay byte/hash-identical;
+- a fixed documented 2×2 sample pattern represented exactly in the existing fixed-point subpixel domain rather than using random/jittered positions;
+- top-left edge coverage, barycentrics, perspective interpolation, depth evaluation, material shading, stencil operations, blending, and color write masks execute per covered sample without introducing a parallel triangle pipeline;
+- depth, stencil, and color ownership are isolated per sample so one covered sample cannot incorrectly occlude or update another sample in the same pixel;
+- RGB output performs a deterministic equal-weight resolve of the four float sample colors at the existing framebuffer/output boundary, with explicit sample inspection APIs where needed for regression evidence;
+- viewport/scissor semantics remain pixel-space half-open bounds while each accepted pixel evaluates only its configured sample locations;
+- model, prepared-instance, and heterogeneous-list submission reuse the same multisample-aware raster path without duplicating geometry/material state;
+- deterministic regressions cover single-sample compatibility, edge partial coverage, shared-edge top-left ownership, per-sample depth/stencil independence, blend resolve, clipped geometry, scissor interaction, and prepared/list propagation;
+- the first multisample slice does not claim alpha-to-coverage, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, or performance improvements;
 - no performance claim is made without a controlled benchmark.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing/MSAA, destination alpha, alpha textures, transparency sorting/OIT, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, alpha textures, transparency sorting/OIT, alpha-to-coverage, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
