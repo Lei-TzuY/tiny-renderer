@@ -11,6 +11,7 @@
 
 #include "tiny_renderer/material.hpp"
 #include "tiny_renderer/mesh.hpp"
+#include "tiny_renderer/model.hpp"
 #include "tiny_renderer/texture.hpp"
 
 namespace tiny_renderer {
@@ -48,18 +49,6 @@ struct MaterialAssetBatch {
     std::string material_name;
     MaterialState material{};
     std::shared_ptr<const Texture2D> diffuse_texture;
-};
-
-struct MaterialDraw {
-    DrawRange range{};
-    std::string material_name;
-    MaterialState material{};
-    std::shared_ptr<const Texture2D> diffuse_texture;
-};
-
-struct ModelAsset {
-    Mesh mesh;
-    std::vector<MaterialDraw> draws;
 };
 
 [[nodiscard]] Mesh load_obj(std::istream& input);
