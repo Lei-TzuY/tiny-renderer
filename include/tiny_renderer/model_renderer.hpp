@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <span>
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/model.hpp"
@@ -49,6 +50,18 @@ void draw_prepared_model(
     Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
     const Mat4& mvp);
+
+void draw_prepared_model_instances(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    std::span<const Mat4> models,
+    const Mat4& view,
+    const Mat4& projection);
+
+void draw_prepared_model_instances(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    std::span<const Mat4> mvps);
 
 void draw_model_asset(
     Framebuffer& framebuffer,
