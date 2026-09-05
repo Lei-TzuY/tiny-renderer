@@ -131,4 +131,8 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_prepared_model_list_tests COMMAND tiny_renderer_prepared_model_list_tests)
+
+    add_executable(tiny_renderer_culling_tests tests/test_culling.cpp)
+    target_link_libraries(tiny_renderer_culling_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_culling_tests COMMAND tiny_renderer_culling_tests)
 endif()
