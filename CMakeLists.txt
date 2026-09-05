@@ -16,6 +16,7 @@ add_library(tiny_renderer
     src/ppm_loader.cpp
     src/rasterizer.cpp
     src/rasterizer_range.cpp
+    src/rasterizer_validation.cpp
     src/texture.cpp
 )
 
@@ -112,4 +113,8 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_prepared_model_tests COMMAND tiny_renderer_prepared_model_tests)
+
+    add_executable(tiny_renderer_shared_preflight_tests tests/test_shared_preflight.cpp)
+    target_link_libraries(tiny_renderer_shared_preflight_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_shared_preflight_tests COMMAND tiny_renderer_shared_preflight_tests)
 endif()
