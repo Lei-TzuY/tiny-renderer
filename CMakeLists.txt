@@ -10,6 +10,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 add_library(tiny_renderer
     src/framebuffer.cpp
     src/obj_loader.cpp
+    src/ppm_loader.cpp
     src/rasterizer.cpp
     src/texture.cpp
 )
@@ -53,4 +54,11 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_obj_tests COMMAND tiny_renderer_obj_tests)
+
+    add_executable(tiny_renderer_ppm_tests tests/test_ppm_loader.cpp)
+    target_link_libraries(tiny_renderer_ppm_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_ppm_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_ppm_tests COMMAND tiny_renderer_ppm_tests)
 endif()

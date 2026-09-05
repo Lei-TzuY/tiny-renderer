@@ -1,6 +1,6 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, and Milestone 7 adds a bounded OBJ position/UV/triangle import layer that feeds the same indexed textured pipeline.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, and Milestone 8 adds bounded binary PPM texture-file import so geometry and texture assets can both enter the existing textured pipeline from files.
 
 ## Rendering pipeline
 
@@ -18,7 +18,7 @@ The renderer follows this path for every submitted triangle:
 10. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
 11. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
 
-Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. The OBJ importer is another layer above `Mesh`: it parses a deliberately small asset subset, normalizes OBJ's independent position/UV index pairs into unified vertices, and then hands the resulting ordinary `Mesh` to the unchanged renderer.
+Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. Asset import stays above the rendering core: the OBJ loader converts a bounded geometry subset into ordinary `Mesh`, while the PPM loader converts a bounded image subset into ordinary `Texture2D`. The rasterizer therefore remains unaware of file formats.
 
 ## Build and run
 
@@ -29,13 +29,14 @@ ctest --test-dir build --output-on-failure
 ./build/tiny_renderer_sample milestone1.ppm
 ```
 
-The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling and OBJ import are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
+The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling and file-driven OBJ/PPM import are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
 
 ## Architecture
 
 - `include/tiny_renderer/math.hpp` — vectors, matrices, camera/view and perspective projection math.
 - `include/tiny_renderer/mesh.hpp` — vertices, fixed-capacity `VaryingPack`, per-channel `Interpolation` qualifiers, indexed triangle topology, and the reusable mesh data model.
 - `include/tiny_renderer/obj_loader.hpp`, `src/obj_loader.cpp` — bounded OBJ stream/file parsing, source-line diagnostics, and deterministic position/UV pair normalization into `Mesh`.
+- `include/tiny_renderer/ppm_loader.hpp`, `src/ppm_loader.cpp` — bounded binary PPM stream/file decoding with strict header/raster validation into `Texture2D`.
 - `include/tiny_renderer/texture.hpp`, `src/texture.cpp` — validated in-memory RGB textures plus deterministic normalized-coordinate addressing and nearest/bilinear sampling.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
 - `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — color/texture binding, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation, fragment color selection and depth testing.
@@ -45,6 +46,7 @@ The original sample scene still renders three colored triangles through a perspe
 - `tests/test_interpolation.cpp` — analytic smooth/noperspective/flat semantics, clipping behavior, provoking-vertex preservation, and fail-closed qualifier-layout regressions.
 - `tests/test_texture.cpp` — sampler addressing/filtering, perspective-correct UV, clipping continuity, and fail-closed texture-binding regressions.
 - `tests/test_obj_loader.cpp`, `tests/fixtures/textured_quad.obj` — OBJ syntax/index normalization, rejection, diagnostics, and textured-render equivalence regressions.
+- `tests/test_ppm_loader.cpp`, `tests/fixtures/checker.ppm` — P6 binary decoding, malformed/truncated/overflow rejection, and file-driven OBJ + PPM render equivalence.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
 
 ## Implemented
@@ -128,16 +130,28 @@ The original sample scene still renders three colored triangles through a perspe
 - imported UVs occupy smooth varying channels 0 and 1 exactly as stored in the OBJ; the importer performs no implicit V flip
 - an in-repo fixture deliberately uses independent indices and a UV seam, then proves the imported textured mesh renders byte-identically to an equivalent programmatic `Mesh`
 
+### Milestone 8 — bounded binary PPM texture import
+
+- `load_ppm(std::istream&)` and `load_ppm_file(path)` decode texture files without coupling image I/O to the sampler or rasterizer
+- the accepted subset is binary P6 with positive dimensions and `maxval` exactly 255; ASCII P3 and wider sample depths are deliberately rejected
+- header token parsing accepts ASCII whitespace and `#` comments before tokens, then requires exactly one ASCII whitespace byte between maxval and the binary raster so payload bytes are never heuristically skipped
+- RGB bytes map directly to float texels by division by 255 with row order preserved exactly as stored
+- width/height, pixel-count, and RGB-byte-count arithmetic are checked before allocation; a 64 MiB raster safety bound prevents unbounded file-driven allocation in this educational decoder
+- truncated rasters and any trailing bytes are rejected, making the accepted file representation deterministic rather than silently accepting concatenated data
+- memory-stream regressions exercise arbitrary binary values including `0x00` and `0xff`, plus malformed magic, dimensions, maxval, overflow, truncation, and trailing-data cases
+- the in-repo printable-byte P6 fixture combines with the Milestone 7 OBJ fixture to prove a fully file-driven textured render is byte-identical to the equivalent programmatic mesh and texels
+
 ## Intentionally not implemented yet
 
-The project does **not** yet include image-file texture loading, general/full OBJ support, normal import, material interpretation, Phong or physically based lighting, shadows, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
+The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ support, normal import, material interpretation, Phong or physically based lighting, shadows, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
 
 ## Numerical and graphics limitations
 
 - Homogeneous clipping and attribute interpolation still use single-precision floating point, so geometry extremely close to clip planes remains subject to float precision.
 - The varying payload is deliberately fixed at eight scalar channels for deterministic storage and simple teaching value; there is no dynamic shader interface or semantic type system.
 - `flat` currently uses the first submitted vertex as the fixed provoking-vertex convention; this is deliberate and not configurable yet.
-- Textures are RGB float arrays supplied by the caller; there are no mipmaps, anisotropic filtering, sRGB conversion, compressed formats, or image-file decoders yet.
+- Textures use linear RGB float arrays supplied by the caller or decoded byte-for-byte from the bounded P6 loader; there are no mipmaps, anisotropic filtering, sRGB conversion, compressed formats, or general image decoders.
+- The PPM loader accepts only P6/maxval-255 images, requires exactly one ASCII whitespace raster separator, rejects trailing bytes, and caps raster payloads at 64 MiB. These are deliberate bounded-decoder semantics rather than a claim of full Netpbm conformance.
 - Texture bindings are non-owning and the bound `Texture2D` must outlive rasterizer draw calls.
 - OBJ import is deliberately bounded to positions, 2-D texture coordinates, positive absolute indices, and triangle `v/vt` faces. It does not triangulate polygons, resolve relative indices, import normals, or evaluate material libraries.
 - OBJ texture coordinates are preserved verbatim; because this renderer's in-memory texture rows use a top-origin convention, callers remain responsible for any asset-specific V-coordinate convention conversion.
@@ -149,4 +163,4 @@ The project does **not** yet include image-file texture loading, general/full OB
 
 ## Next milestone
 
-The highest-value next step is a **deterministic PPM texture-file import vertical slice** that closes the remaining asset-I/O gap without pulling in a third-party image library. Decode a tightly specified PPM subset into `Texture2D`, reject malformed/truncated/overflowing images before exposing a texture, and add a file-driven OBJ + PPM integration fixture whose render is byte-identical to the same mesh and texels constructed programmatically. Image color-space conversion, PNG/JPEG, mipmaps, lighting, and materials should remain out of scope until that file-to-textured-render path is proven.
+The highest-value next architectural frontier is **normal attributes plus deterministic directional Lambert lighting**. Extend the existing varying/binding architecture rather than creating a separate shaded rasterizer: define explicit normal-channel binding, transform normals correctly under model transforms, interpolate and renormalize them per fragment, and modulate the existing color/texture result with a bounded directional diffuse term. Acceptance should include non-uniform-transform normal correctness, clipping continuity, textured-lighting integration, and fail-closed normal binding. OBJ normal import can then be promoted as the asset-side follow-up once the runtime normal/shading contract itself is executable and verified.
