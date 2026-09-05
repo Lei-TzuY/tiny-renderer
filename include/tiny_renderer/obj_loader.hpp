@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <istream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -22,6 +23,18 @@ public:
 
 private:
     std::size_t line_{};
+};
+
+struct ObjMaterialUse {
+    std::string name;
+    std::size_t line{};
+};
+
+struct ObjModelSource {
+    Mesh mesh;
+    std::optional<std::string> material_library_filename;
+    std::vector<ObjMaterialUse> used_materials;
+    std::vector<std::string> face_materials;
 };
 
 struct MaterialBatch {
@@ -51,6 +64,8 @@ struct ModelAsset {
 
 [[nodiscard]] Mesh load_obj(std::istream& input);
 [[nodiscard]] Mesh load_obj_file(const std::filesystem::path& path);
+[[nodiscard]] ObjModelSource load_obj_model_source(std::istream& input);
+[[nodiscard]] ObjModelSource load_obj_model_source_file(const std::filesystem::path& path);
 [[nodiscard]] std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem::path& path);
 [[nodiscard]] std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::filesystem::path& path);
 [[nodiscard]] ModelAsset load_obj_model_asset_file(const std::filesystem::path& path);
