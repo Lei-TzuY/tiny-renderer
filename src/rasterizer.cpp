@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <vector>
 
@@ -30,6 +31,14 @@ bool barycentric_inside(const Vec3& barycentric, float epsilon) {
 
 namespace {
 
+constexpr std::int64_t kSubpixelScale = 256;
+constexpr std::int64_t kSubpixelHalf = kSubpixelScale / 2;
+// Keeping every quantized screen coordinate within +/-2e9 guarantees that
+// each 2-D edge-function product and subtraction fits in signed int64_t.
+constexpr std::int64_t kMaxFixedCoordinate = 2'000'000'000LL;
+constexpr std::size_t kMaxRasterCoordinate =
+    static_cast<std::size_t>((kMaxFixedCoordinate - kSubpixelHalf) / kSubpixelScale);
+
 struct ClipVertex {
     Vec4 position;
     VaryingPack varyings;
@@ -40,6 +49,11 @@ struct ScreenVertex {
     float ndc_z{};
     float inv_w{};
     VaryingPack varyings_over_w;
+};
+
+struct FixedPoint2 {
+    std::int64_t x{};
+    std::int64_t y{};
 };
 
 void validate_pack(const VaryingPack& pack) {
@@ -63,6 +77,12 @@ void validate_triangle_varyings(const Triangle& triangle, const ColorBinding& bi
         if (triangle[i].varyings.count != count) {
             throw std::invalid_argument("triangle vertices must use the same varying count");
         }
+    }
+}
+
+void validate_raster_target(const Framebuffer& framebuffer) {
+    if (framebuffer.width() - 1U > kMaxRasterCoordinate || framebuffer.height() - 1U > kMaxRasterCoordinate) {
+        throw std::overflow_error("framebuffer dimensions exceed fixed-point rasterizer safety bound");
     }
 }
 
@@ -178,17 +198,38 @@ float edge(const Vec2& a, const Vec2& b, const Vec2& p) {
     return signed_area_twice(a, b, p);
 }
 
-bool is_top_left(const Vec2& a, const Vec2& b) {
-    const float dy = b.y - a.y;
-    const float dx = b.x - a.x;
-    return (dy < 0.0F) || (nearly_equal(dy, 0.0F) && dx > 0.0F);
+std::int64_t quantize_subpixel(float value) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument("non-finite screen coordinate");
+    }
+    const double scaled = static_cast<double>(value) * static_cast<double>(kSubpixelScale);
+    if (scaled < -static_cast<double>(kMaxFixedCoordinate)
+        || scaled > static_cast<double>(kMaxFixedCoordinate)) {
+        throw std::overflow_error("screen coordinate exceeds fixed-point rasterizer safety bound");
+    }
+    return static_cast<std::int64_t>(std::llround(scaled));
 }
 
-bool edge_accept(float value, bool top_left) {
-    if (value > kEpsilon) {
-        return true;
-    }
-    return std::fabs(value) <= kEpsilon && top_left;
+FixedPoint2 quantize_subpixel(const Vec2& value) {
+    return {quantize_subpixel(value.x), quantize_subpixel(value.y)};
+}
+
+std::int64_t fixed_edge(const FixedPoint2& a, const FixedPoint2& b, const FixedPoint2& p) {
+    const std::int64_t dx_ab = b.x - a.x;
+    const std::int64_t dy_ab = b.y - a.y;
+    const std::int64_t dx_ap = p.x - a.x;
+    const std::int64_t dy_ap = p.y - a.y;
+    return dx_ab * dy_ap - dy_ab * dx_ap;
+}
+
+bool is_top_left(const FixedPoint2& a, const FixedPoint2& b) {
+    const std::int64_t dy = b.y - a.y;
+    const std::int64_t dx = b.x - a.x;
+    return (dy < 0) || (dy == 0 && dx > 0);
+}
+
+bool edge_accept(std::int64_t value, bool top_left) {
+    return value > 0 || (value == 0 && top_left);
 }
 
 Vec3 interpolate_color(const std::array<ScreenVertex, 3>& v, const Vec3& bary, float reciprocal_w, const ColorBinding& binding) {
@@ -204,13 +245,25 @@ Vec3 interpolate_color(const std::array<ScreenVertex, 3>& v, const Vec3& bary, f
 }
 
 void rasterize_screen_triangle(Framebuffer& framebuffer, std::array<ScreenVertex, 3> v, const ColorBinding& binding) {
-    float area = edge(v[0].position, v[1].position, v[2].position);
-    if (!std::isfinite(area) || std::fabs(area) <= kEpsilon) {
+    std::array<FixedPoint2, 3> fixed{
+        quantize_subpixel(v[0].position),
+        quantize_subpixel(v[1].position),
+        quantize_subpixel(v[2].position),
+    };
+
+    std::int64_t fixed_area = fixed_edge(fixed[0], fixed[1], fixed[2]);
+    if (fixed_area == 0) {
         return;
     }
-    if (area < 0.0F) {
+    if (fixed_area < 0) {
         std::swap(v[1], v[2]);
-        area = -area;
+        std::swap(fixed[1], fixed[2]);
+        fixed_area = -fixed_area;
+    }
+
+    const float interpolation_area = edge(v[0].position, v[1].position, v[2].position);
+    if (!std::isfinite(interpolation_area) || std::fabs(interpolation_area) <= kEpsilon) {
+        return;
     }
 
     const float min_x_f = std::min({v[0].position.x, v[1].position.x, v[2].position.x});
@@ -229,21 +282,28 @@ void rasterize_screen_triangle(Framebuffer& framebuffer, std::array<ScreenVertex
         return;
     }
 
-    const bool tl0 = is_top_left(v[1].position, v[2].position);
-    const bool tl1 = is_top_left(v[2].position, v[0].position);
-    const bool tl2 = is_top_left(v[0].position, v[1].position);
+    const bool tl0 = is_top_left(fixed[1], fixed[2]);
+    const bool tl1 = is_top_left(fixed[2], fixed[0]);
+    const bool tl2 = is_top_left(fixed[0], fixed[1]);
 
     for (int y = min_y; y <= max_y; ++y) {
         for (int x = min_x; x <= max_x; ++x) {
+            const FixedPoint2 sample{
+                static_cast<std::int64_t>(x) * kSubpixelScale + kSubpixelHalf,
+                static_cast<std::int64_t>(y) * kSubpixelScale + kSubpixelHalf,
+            };
+            const std::int64_t e0_fixed = fixed_edge(fixed[1], fixed[2], sample);
+            const std::int64_t e1_fixed = fixed_edge(fixed[2], fixed[0], sample);
+            const std::int64_t e2_fixed = fixed_edge(fixed[0], fixed[1], sample);
+            if (!edge_accept(e0_fixed, tl0) || !edge_accept(e1_fixed, tl1) || !edge_accept(e2_fixed, tl2)) {
+                continue;
+            }
+
             const Vec2 p{static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F};
             const float e0 = edge(v[1].position, v[2].position, p);
             const float e1 = edge(v[2].position, v[0].position, p);
             const float e2 = edge(v[0].position, v[1].position, p);
-            if (!edge_accept(e0, tl0) || !edge_accept(e1, tl1) || !edge_accept(e2, tl2)) {
-                continue;
-            }
-
-            const Vec3 bary{e0 / area, e1 / area, e2 / area};
+            const Vec3 bary{e0 / interpolation_area, e1 / interpolation_area, e2 / interpolation_area};
             const float ndc_z = bary.x * v[0].ndc_z + bary.y * v[1].ndc_z + bary.z * v[2].ndc_z;
             const float depth = ndc_z * 0.5F + 0.5F;
             if (depth < 0.0F || depth > 1.0F || !std::isfinite(depth)) {
@@ -293,6 +353,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
+    validate_raster_target(framebuffer_);
     validate_triangle_varyings(triangle, color_binding_);
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
@@ -323,6 +384,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
+    validate_raster_target(framebuffer_);
     validate_mesh(mesh, color_binding_);
     for (const TriangleIndices& indices : mesh.triangles) {
         draw_triangle(assemble_triangle(mesh, indices), mvp);
