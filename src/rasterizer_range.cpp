@@ -30,6 +30,7 @@ void Rasterizer::draw_mesh_range(
         base_color_source_,
         cull_mode_,
         front_face_,
+        depth_state_,
         &model,
         false);
 
@@ -55,6 +56,7 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         base_color_source_,
         cull_mode_,
         front_face_,
+        depth_state_,
         nullptr,
         true);
 
