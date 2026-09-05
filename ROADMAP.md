@@ -73,19 +73,30 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Depth state is carried by `ModelRenderOptions` and prepared plans, including heterogeneous prepared lists.
 - Unknown depth comparison state is rejected before framebuffer mutation and during framebuffer-independent prepared-model construction.
 
-## Next frontier — Milestone 25
+### Milestone 25 — explicit viewport and scissor state
 
-The next architectural promotion is **explicit viewport and scissor state**. The viewport transform is currently hard-wired to the full framebuffer and rasterization has no explicit scissor rectangle, so callers cannot render deterministic sub-views or restrict fragment ownership without changing geometry.
+- `RasterRect` / `ViewportState` make the pixel-space viewport and optional sample scissor explicit while preserving the complete framebuffer as the default viewport.
+- NDC-to-screen conversion maps into a validated viewport; front-face classification remains in post-clip NDC before the top-left viewport transform can invert Y orientation.
+- Scissoring restricts raster samples to integer half-open bounds without changing homogeneous clipping, fixed-point top-left coverage, barycentrics, interpolation, depth testing, or shading.
+- A present viewport must have non-zero extent; a present zero-area scissor is a legal deterministic empty clip.
+- Rectangle addition overflow and framebuffer containment are validated separately and fail closed before mutation rather than silently clamping invalid state.
+- Shared range/model preflight resolves target-dependent state before writes, while prepared-model construction validates framebuffer-independent rectangle definitions.
+- Viewport/scissor state propagates through direct triangles/meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists without a second raster path.
+- Regression coverage locks default full-frame byte/hash compatibility, translated sub-viewport color/depth equivalence, half-open scissor ownership, viewport/scissor composition, clipped+cull ordering, range execution, zero-area scissor behavior, invalid-state rejection, list-wide fail-closed preflight, and prepared list/instance propagation.
+
+## Next frontier — Milestone 26
+
+The next architectural promotion is **an explicit stencil test and update stage**. The framebuffer currently models color and depth but cannot express per-sample masking or state transitions before depth/color ownership, leaving a major fixed-function pipeline stage absent.
 
 Acceptance for that slice should require:
 
-- a bounded viewport state defining pixel-space origin and non-zero extent, with the default exactly covering the full framebuffer and preserving all existing framebuffer/hash output;
-- NDC-to-screen conversion maps into the configured viewport while front-face classification remains defined in pre-viewport NDC and therefore independent of top-left framebuffer orientation;
-- an optional integer scissor rectangle that rejects samples outside its half-open bounds without changing clipping, barycentrics, interpolation, depth, or shading semantics;
-- viewport/scissor bounds are overflow-safe and validated fail-closed before framebuffer mutation, including through range/model/prepared/list preflight;
-- deterministic regressions cover a sub-viewport transform, scissor edge ownership, viewport-plus-scissor composition, clipped geometry crossing a viewport boundary, and default full-frame compatibility;
-- viewport/scissor state propagates through direct triangles/meshes, selected ranges, prepared instances, and heterogeneous prepared lists without a second raster path;
-- empty or invalid rectangles have an explicit contract rather than being silently normalized or clamped;
+- an 8-bit stencil attachment with deterministic clear/read behavior and no change to legacy color/depth output when stencil testing is disabled;
+- a bounded stencil comparison state covering `Never`, ordered comparisons, `Equal`, `NotEqual`, and `Always`, with an explicit reference value and read mask;
+- explicit stencil operations for stencil-test failure, depth-test failure, and stencil+depth pass, including at least keep, zero, replace, saturating increment/decrement, and invert, with a write mask;
+- one centralized per-fragment ordering contract: scissor/coverage first, stencil test before depth, stencil-fail operation on stencil rejection, depth-fail operation when stencil passes but depth rejects, and pass operation when both tests pass; color/depth writes occur only on the final passing path according to existing depth-write state;
+- stencil state validation fails closed before framebuffer mutation through direct, range, model, prepared-instance, and heterogeneous-list submission, without duplicating comparison/operation semantics across those layers;
+- deterministic integration coverage includes a stencil-mask prepass followed by a colored pass, read/write mask behavior, each failure/pass operation path, interaction with depth-write-disabled state, scissor preventing stencil side effects outside its bounds, and default byte/hash compatibility;
+- the existing clipping, viewport, fixed-point coverage, interpolation, culling, material/texture shading, and depth semantics remain one shared raster path;
 - no performance claim is made without a controlled benchmark.
 
 ## Deliberate later work
