@@ -31,6 +31,7 @@ void preflight_mesh_range_submission(
     const DepthState& depth_state,
     const ViewportState& viewport_state,
     const StencilState& stencil_state,
+    const BlendState& blend_state,
     const Mat4* model,
     bool mvp_only);
 

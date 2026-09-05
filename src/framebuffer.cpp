@@ -14,6 +14,18 @@ std::uint8_t to_u8(float value) {
     return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
 }
 
+bool finite_vec3(const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+Vec3 multiply_components(const Vec3& a, const Vec3& b) {
+    return {a.x * b.x, a.y * b.y, a.z * b.z};
+}
+
+Vec3 one_minus(const Vec3& value) {
+    return {1.0F - value.x, 1.0F - value.y, 1.0F - value.z};
+}
+
 bool depth_compare_passes(DepthCompare compare, float incoming, float stored) {
     switch (compare) {
         case DepthCompare::Less:
@@ -93,6 +105,86 @@ void apply_stencil_operation(
     const std::uint8_t written = static_cast<std::uint8_t>(result & write_mask);
     stored = static_cast<std::uint8_t>(preserved | written);
 }
+
+Vec3 blend_factor_value(
+    BlendFactor factor,
+    const Vec3& source,
+    const Vec3& destination,
+    const Vec3& constant_color) {
+    switch (factor) {
+        case BlendFactor::Zero:
+            return {0.0F, 0.0F, 0.0F};
+        case BlendFactor::One:
+            return {1.0F, 1.0F, 1.0F};
+        case BlendFactor::SourceColor:
+            return source;
+        case BlendFactor::OneMinusSourceColor:
+            return one_minus(source);
+        case BlendFactor::DestinationColor:
+            return destination;
+        case BlendFactor::OneMinusDestinationColor:
+            return one_minus(destination);
+        case BlendFactor::ConstantColor:
+            return constant_color;
+        case BlendFactor::OneMinusConstantColor:
+            return one_minus(constant_color);
+    }
+    throw std::invalid_argument("unknown RGB blend factor");
+}
+
+Vec3 blended_rgb(const Vec3& source, const Vec3& destination, const BlendState& state) {
+    if (!state.enabled) {
+        return source;
+    }
+
+    // Min/max intentionally ignore source/destination factors. This is the
+    // renderer's documented RGB teaching contract, not a hardware-API claim.
+    if (state.operation == BlendOp::Min) {
+        return {
+            std::min(source.x, destination.x),
+            std::min(source.y, destination.y),
+            std::min(source.z, destination.z),
+        };
+    }
+    if (state.operation == BlendOp::Max) {
+        return {
+            std::max(source.x, destination.x),
+            std::max(source.y, destination.y),
+            std::max(source.z, destination.z),
+        };
+    }
+
+    const Vec3 source_term = multiply_components(
+        source,
+        blend_factor_value(state.source_factor, source, destination, state.constant_color));
+    const Vec3 destination_term = multiply_components(
+        destination,
+        blend_factor_value(state.destination_factor, source, destination, state.constant_color));
+
+    switch (state.operation) {
+        case BlendOp::Add:
+            return source_term + destination_term;
+        case BlendOp::Subtract:
+            return source_term - destination_term;
+        case BlendOp::ReverseSubtract:
+            return destination_term - source_term;
+        case BlendOp::Min:
+        case BlendOp::Max:
+            break;
+    }
+    throw std::logic_error("unreachable RGB blend operation");
+}
+
+Vec3 apply_color_write_mask(
+    const Vec3& resolved,
+    const Vec3& destination,
+    const ColorWriteMask& mask) {
+    return {
+        mask.red ? resolved.x : destination.x,
+        mask.green ? resolved.y : destination.y,
+        mask.blue ? resolved.z : destination.z,
+    };
+}
 }  // namespace
 
 void validate_depth_state(const DepthState& state) {
@@ -141,6 +233,43 @@ void validate_stencil_state(const StencilState& state) {
     validate_operation(state.pass);
 }
 
+void validate_blend_state(const BlendState& state) {
+    const auto validate_factor = [](BlendFactor factor) {
+        switch (factor) {
+            case BlendFactor::Zero:
+            case BlendFactor::One:
+            case BlendFactor::SourceColor:
+            case BlendFactor::OneMinusSourceColor:
+            case BlendFactor::DestinationColor:
+            case BlendFactor::OneMinusDestinationColor:
+            case BlendFactor::ConstantColor:
+            case BlendFactor::OneMinusConstantColor:
+                return;
+        }
+        throw std::invalid_argument("unknown RGB blend factor");
+    };
+    validate_factor(state.source_factor);
+    validate_factor(state.destination_factor);
+
+    switch (state.operation) {
+        case BlendOp::Add:
+        case BlendOp::Subtract:
+        case BlendOp::ReverseSubtract:
+        case BlendOp::Min:
+        case BlendOp::Max:
+            break;
+        default:
+            throw std::invalid_argument("unknown RGB blend operation");
+    }
+
+    if (!finite_vec3(state.constant_color)
+        || state.constant_color.x < 0.0F || state.constant_color.x > 1.0F
+        || state.constant_color.y < 0.0F || state.constant_color.y > 1.0F
+        || state.constant_color.z < 0.0F || state.constant_color.z > 1.0F) {
+        throw std::invalid_argument("RGB blend constant components must be finite and within [0, 1]");
+    }
+}
+
 Framebuffer::Framebuffer(std::size_t width, std::size_t height)
     : width_(width),
       height_(height),
@@ -165,9 +294,11 @@ bool Framebuffer::test_and_write(
     float depth,
     const Vec3& color,
     DepthState depth_state,
-    StencilState stencil_state) {
+    StencilState stencil_state,
+    BlendState blend_state) {
     validate_depth_state(depth_state);
     validate_stencil_state(stencil_state);
+    validate_blend_state(blend_state);
     if (x >= width_ || y >= height_ || !std::isfinite(depth)) {
         return false;
     }
@@ -198,6 +329,12 @@ bool Framebuffer::test_and_write(
         return false;
     }
 
+    const Vec3 destination = color_[i];
+    const Vec3 resolved_color = apply_color_write_mask(
+        blended_rgb(color, destination, blend_state),
+        destination,
+        blend_state.write_mask);
+
     if (stencil_state.enabled) {
         apply_stencil_operation(
             stencil_[i],
@@ -208,7 +345,7 @@ bool Framebuffer::test_and_write(
     if (depth_state.write_enabled) {
         depth_[i] = depth;
     }
-    color_[i] = color;
+    color_[i] = resolved_color;
     return true;
 }
 
@@ -218,7 +355,7 @@ bool Framebuffer::depth_test_and_write(
     float depth,
     const Vec3& color,
     DepthState state) {
-    return test_and_write(x, y, depth, color, state, {});
+    return test_and_write(x, y, depth, color, state, {}, {});
 }
 
 const Vec3& Framebuffer::color_at(std::size_t x, std::size_t y) const {

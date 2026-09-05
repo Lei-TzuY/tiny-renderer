@@ -589,6 +589,7 @@ void rasterize_screen_triangle(
     const MaterialState& material,
     const DepthState& depth_state,
     const StencilState& stencil_state,
+    const BlendState& blend_state,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
@@ -680,7 +681,8 @@ void rasterize_screen_triangle(
                 depth,
                 color,
                 depth_state,
-                stencil_state);
+                stencil_state,
+                blend_state);
         }
     }
 }
@@ -732,6 +734,7 @@ void draw_triangle_impl(
     FrontFace front_face,
     const DepthState& depth_state,
     const StencilState& stencil_state,
+    const BlendState& blend_state,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
@@ -769,6 +772,7 @@ void draw_triangle_impl(
             material,
             depth_state,
             stencil_state,
+            blend_state,
             viewport_state.scissor);
     }
 }
@@ -779,6 +783,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
+    validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -804,6 +809,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         front_face_,
         depth_state_,
         stencil_state_,
+        blend_state_,
         viewport_state);
 }
 
@@ -814,6 +820,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
+    validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -834,6 +841,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         front_face_,
         depth_state_,
         stencil_state_,
+        blend_state_,
         viewport_state);
 }
 
@@ -841,6 +849,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
+    validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -868,6 +877,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             front_face_,
             depth_state_,
             stencil_state_,
+            blend_state_,
             viewport_state);
     }
 }
@@ -879,6 +889,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
+    validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
@@ -900,6 +911,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             front_face_,
             depth_state_,
             stencil_state_,
+            blend_state_,
             viewport_state);
     }
 }

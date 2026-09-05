@@ -19,6 +19,7 @@ struct ModelRenderOptions {
     DepthState depth_state{};
     ViewportState viewport_state{};
     StencilState stencil_state{};
+    BlendState blend_state{};
 };
 
 class PreparedModelSubmission {

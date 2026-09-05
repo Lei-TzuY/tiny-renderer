@@ -91,7 +91,8 @@ public:
         FrontFace front_face = FrontFace::CounterClockwise,
         DepthState depth_state = {},
         ViewportState viewport_state = {},
-        StencilState stencil_state = {})
+        StencilState stencil_state = {},
+        BlendState blend_state = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -102,7 +103,8 @@ public:
           front_face_(front_face),
           depth_state_(depth_state),
           viewport_state_(viewport_state),
-          stencil_state_(stencil_state) {}
+          stencil_state_(stencil_state),
+          blend_state_(blend_state) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -128,6 +130,7 @@ private:
     DepthState depth_state_;
     ViewportState viewport_state_;
     StencilState stencil_state_;
+    BlendState blend_state_;
 };
 
 }  // namespace tiny_renderer

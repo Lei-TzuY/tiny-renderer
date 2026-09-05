@@ -304,6 +304,7 @@ void preflight_mesh_range_submission(
     const DepthState& depth_state,
     const ViewportState& viewport_state,
     const StencilState& stencil_state,
+    const BlendState& blend_state,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
@@ -314,6 +315,7 @@ void preflight_mesh_range_submission(
     validate_face_culling(cull_mode, front_face);
     validate_depth_state(depth_state);
     validate_stencil_state(stencil_state);
+    validate_blend_state(blend_state);
     validate_raster_target(framebuffer);
     (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);

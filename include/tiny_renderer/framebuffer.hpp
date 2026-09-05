@@ -55,8 +55,43 @@ struct StencilState {
     StencilOp pass{StencilOp::Keep};
 };
 
+enum class BlendFactor {
+    Zero,
+    One,
+    SourceColor,
+    OneMinusSourceColor,
+    DestinationColor,
+    OneMinusDestinationColor,
+    ConstantColor,
+    OneMinusConstantColor,
+};
+
+enum class BlendOp {
+    Add,
+    Subtract,
+    ReverseSubtract,
+    Min,
+    Max,
+};
+
+struct ColorWriteMask {
+    bool red{true};
+    bool green{true};
+    bool blue{true};
+};
+
+struct BlendState {
+    bool enabled{false};
+    BlendFactor source_factor{BlendFactor::One};
+    BlendFactor destination_factor{BlendFactor::Zero};
+    BlendOp operation{BlendOp::Add};
+    Vec3 constant_color{0.0F, 0.0F, 0.0F};
+    ColorWriteMask write_mask{};
+};
+
 void validate_depth_state(const DepthState& state);
 void validate_stencil_state(const StencilState& state);
+void validate_blend_state(const BlendState& state);
 
 class Framebuffer {
 public:
@@ -73,7 +108,8 @@ public:
         float depth,
         const Vec3& color,
         DepthState depth_state = {},
-        StencilState stencil_state = {});
+        StencilState stencil_state = {},
+        BlendState blend_state = {});
 
     bool depth_test_and_write(
         std::size_t x,

@@ -151,4 +151,12 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_stencil_integration_tests tests/test_stencil_integration.cpp)
     target_link_libraries(tiny_renderer_stencil_integration_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_stencil_integration_tests COMMAND tiny_renderer_stencil_integration_tests)
+
+    add_executable(tiny_renderer_blend_tests tests/test_blend.cpp)
+    target_link_libraries(tiny_renderer_blend_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_blend_tests COMMAND tiny_renderer_blend_tests)
+
+    add_executable(tiny_renderer_blend_integration_tests tests/test_blend_integration.cpp)
+    target_link_libraries(tiny_renderer_blend_integration_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_blend_integration_tests COMMAND tiny_renderer_blend_integration_tests)
 endif()
