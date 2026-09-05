@@ -35,6 +35,11 @@ private:
     ModelRenderOptions options_;
 };
 
+struct PreparedModelListEntry {
+    const PreparedModelSubmission* prepared{nullptr};
+    Mat4 model{Mat4::identity()};
+};
+
 [[nodiscard]] PreparedModelSubmission prepare_model_asset(
     ModelAsset asset,
     ModelRenderOptions options = {});
@@ -62,6 +67,12 @@ void draw_prepared_model_instances(
     Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
     std::span<const Mat4> mvps);
+
+void draw_prepared_model_list(
+    Framebuffer& framebuffer,
+    std::span<const PreparedModelListEntry> entries,
+    const Mat4& view,
+    const Mat4& projection);
 
 void draw_model_asset(
     Framebuffer& framebuffer,
