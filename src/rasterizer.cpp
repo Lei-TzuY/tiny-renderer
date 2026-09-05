@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 namespace tiny_renderer {
@@ -206,6 +207,24 @@ void rasterize_screen_triangle(Framebuffer& framebuffer, std::array<ScreenVertex
     }
 }
 
+void validate_mesh_indices(const Mesh& mesh) {
+    for (const TriangleIndices& triangle : mesh.triangles) {
+        for (const std::uint32_t index : triangle) {
+            if (static_cast<std::size_t>(index) >= mesh.vertices.size()) {
+                throw std::out_of_range("mesh triangle index out of range");
+            }
+        }
+    }
+}
+
+Triangle assemble_triangle(const Mesh& mesh, const TriangleIndices& indices) {
+    return Triangle{
+        mesh.vertices[indices[0]],
+        mesh.vertices[indices[1]],
+        mesh.vertices[indices[2]],
+    };
+}
+
 }  // namespace
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
@@ -234,6 +253,17 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
             continue;
         }
         rasterize_screen_triangle(framebuffer_, {*a, *b, *c});
+    }
+}
+
+void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
+    draw_mesh(mesh, projection * view * model);
+}
+
+void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
+    validate_mesh_indices(mesh);
+    for (const TriangleIndices& indices : mesh.triangles) {
+        draw_triangle(assemble_triangle(mesh, indices), mvp);
     }
 }
 
