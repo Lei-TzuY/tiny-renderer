@@ -17,9 +17,9 @@ namespace {
 
 struct PendingMaterial {
     std::string name;
-    MaterialState material{};
+    MaterialAssetDefinition asset{};
     bool has_kd{false};
-    std::size_t line{};
+    bool has_map_kd{false};
 };
 
 [[noreturn]] void fail(std::size_t line, const std::string& message) {
@@ -37,9 +37,18 @@ float parse_unit_float(const std::string& token, std::size_t line, const char* f
     return value;
 }
 
+void validate_sibling_texture_filename(const std::string& token, std::size_t line) {
+    const std::filesystem::path path(token);
+    if (token.empty() || path.is_absolute() || path.has_parent_path()
+        || token.find('/') != std::string::npos || token.find('\\') != std::string::npos
+        || token == "." || token == "..") {
+        fail(line, "map_Kd must name exactly one sibling texture file");
+    }
+}
+
 void finalize_pending(
     std::optional<PendingMaterial>& pending,
-    MaterialLibrary& library,
+    MaterialAssetLibrary& library,
     std::size_t line_for_error) {
     if (!pending) {
         return;
@@ -47,14 +56,12 @@ void finalize_pending(
     if (!pending->has_kd) {
         fail(line_for_error, "material '" + pending->name + "' is missing required Kd");
     }
-    library.emplace(pending->name, pending->material);
+    library.emplace(pending->name, pending->asset);
     pending.reset();
 }
 
-}  // namespace
-
-MaterialLibrary load_mtl(std::istream& input) {
-    MaterialLibrary library;
+MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_kd) {
+    MaterialAssetLibrary library;
     std::optional<PendingMaterial> pending;
 
     std::string line_text;
@@ -82,7 +89,7 @@ MaterialLibrary load_mtl(std::istream& input) {
             if (library.find(name) != library.end()) {
                 fail(line_number, "duplicate material name '" + name + "'");
             }
-            pending = PendingMaterial{name, MaterialState{}, false, line_number};
+            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false};
             continue;
         }
 
@@ -100,12 +107,30 @@ MaterialLibrary load_mtl(std::istream& input) {
             if (!(line >> r_token >> g_token >> b_token) || (line >> extra)) {
                 fail(line_number, "Kd must contain exactly three components");
             }
-            pending->material.albedo = {
+            pending->asset.material.albedo = {
                 parse_unit_float(r_token, line_number, "Kd red"),
                 parse_unit_float(g_token, line_number, "Kd green"),
                 parse_unit_float(b_token, line_number, "Kd blue"),
             };
             pending->has_kd = true;
+            continue;
+        }
+
+        if (directive == "map_Kd" && allow_map_kd) {
+            if (!pending) {
+                fail(line_number, "map_Kd requires a preceding newmtl");
+            }
+            if (pending->has_map_kd) {
+                fail(line_number, "material '" + pending->name + "' defines map_Kd more than once");
+            }
+            std::string filename;
+            std::string extra;
+            if (!(line >> filename) || (line >> extra)) {
+                fail(line_number, "map_Kd must contain exactly one filename and no options");
+            }
+            validate_sibling_texture_filename(filename, line_number);
+            pending->asset.diffuse_map_filename = filename;
+            pending->has_map_kd = true;
             continue;
         }
 
@@ -119,12 +144,35 @@ MaterialLibrary load_mtl(std::istream& input) {
     return library;
 }
 
+}  // namespace
+
+MaterialLibrary load_mtl(std::istream& input) {
+    const MaterialAssetLibrary assets = parse_material_assets(input, false);
+    MaterialLibrary library;
+    for (const auto& [name, asset] : assets) {
+        library.emplace(name, asset.material);
+    }
+    return library;
+}
+
 MaterialLibrary load_mtl_file(const std::filesystem::path& path) {
     std::ifstream input(path);
     if (!input) {
         throw std::runtime_error("failed to open MTL file: " + path.string());
     }
     return load_mtl(input);
+}
+
+MaterialAssetLibrary load_mtl_assets(std::istream& input) {
+    return parse_material_assets(input, true);
+}
+
+MaterialAssetLibrary load_mtl_assets_file(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open MTL file: " + path.string());
+    }
+    return load_mtl_assets(input);
 }
 
 }  // namespace tiny_renderer
