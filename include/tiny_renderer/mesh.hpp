@@ -13,8 +13,15 @@ namespace tiny_renderer {
 
 constexpr std::size_t kMaxVaryings = 8U;
 
+enum class Interpolation {
+    Smooth,
+    NoPerspective,
+    Flat,
+};
+
 struct VaryingPack {
     std::array<float, kMaxVaryings> values{};
+    std::array<Interpolation, kMaxVaryings> interpolation{};
     std::size_t count{};
 
     VaryingPack() = default;
@@ -31,8 +38,17 @@ struct VaryingPack {
         }
     }
 
+    VaryingPack& set_interpolation(std::size_t index, Interpolation mode) {
+        if (index >= count) {
+            throw std::out_of_range("varying interpolation index out of range");
+        }
+        interpolation[index] = mode;
+        return *this;
+    }
+
     [[nodiscard]] float operator[](std::size_t index) const { return values.at(index); }
     [[nodiscard]] float& operator[](std::size_t index) { return values.at(index); }
+    [[nodiscard]] Interpolation interpolation_at(std::size_t index) const { return interpolation.at(index); }
 };
 
 struct Vertex {
