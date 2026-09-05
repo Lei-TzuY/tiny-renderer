@@ -581,7 +581,8 @@ void rasterize_screen_triangle(
     const TextureBinding& texture_binding,
     BaseColorSource source,
     const DirectionalLight& light,
-    const MaterialState& material) {
+    const MaterialState& material,
+    const DepthState& depth_state) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
         quantize_subpixel(v[1].position),
@@ -652,7 +653,12 @@ void rasterize_screen_triangle(
             }
             const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
             const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, source, light, material);
-            framebuffer.depth_test_and_write(static_cast<std::size_t>(x), static_cast<std::size_t>(y), depth, color);
+            framebuffer.depth_test_and_write(
+                static_cast<std::size_t>(x),
+                static_cast<std::size_t>(y),
+                depth,
+                color,
+                depth_state);
         }
     }
 }
@@ -701,7 +707,8 @@ void draw_triangle_impl(
     const DirectionalLight& light,
     const MaterialState& material,
     CullMode cull_mode,
-    FrontFace front_face) {
+    FrontFace front_face,
+    const DepthState& depth_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         clip[i] = {
@@ -735,7 +742,8 @@ void draw_triangle_impl(
             texture_binding,
             source,
             light,
-            material);
+            material,
+            depth_state);
     }
 }
 
@@ -743,6 +751,7 @@ void draw_triangle_impl(
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
     detail::validate_face_culling(cull_mode_, front_face_);
+    validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -763,7 +772,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         light,
         material,
         cull_mode_,
-        front_face_);
+        front_face_,
+        depth_state_);
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
@@ -771,6 +781,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
     detail::validate_face_culling(cull_mode_, front_face_);
+    validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -786,11 +797,13 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         light,
         material,
         cull_mode_,
-        front_face_);
+        front_face_,
+        depth_state_);
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
     detail::validate_face_culling(cull_mode_, front_face_);
+    validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -813,7 +826,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             light,
             material,
             cull_mode_,
-            front_face_);
+            front_face_,
+            depth_state_);
     }
 }
 
@@ -822,6 +836,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
         throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
     }
     detail::validate_face_culling(cull_mode_, front_face_);
+    validate_depth_state(depth_state_);
     validate_raster_target(framebuffer_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
@@ -838,7 +853,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             light,
             material,
             cull_mode_,
-            front_face_);
+            front_face_,
+            depth_state_);
     }
 }
 
