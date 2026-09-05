@@ -22,6 +22,20 @@ struct TextureBinding {
     SamplerState sampler{};
 };
 
+struct NormalBinding {
+    std::size_t x{0U};
+    std::size_t y{1U};
+    std::size_t z{2U};
+};
+
+struct DirectionalLight {
+    bool enabled{false};
+    NormalBinding normal{};
+    Vec3 direction_to_light{0.0F, 0.0F, 1.0F};
+    float ambient{0.0F};
+    float diffuse{1.0F};
+};
+
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);
 [[nodiscard]] std::optional<Vec3> barycentric_coordinates(const Vec2& a, const Vec2& b, const Vec2& c, const Vec2& p);
 [[nodiscard]] bool barycentric_inside(const Vec3& barycentric, float epsilon = 1.0e-6F);
@@ -31,8 +45,12 @@ public:
     explicit Rasterizer(
         Framebuffer& framebuffer,
         ColorBinding color_binding = {},
-        TextureBinding texture_binding = {})
-        : framebuffer_(framebuffer), color_binding_(color_binding), texture_binding_(texture_binding) {}
+        TextureBinding texture_binding = {},
+        DirectionalLight directional_light = {})
+        : framebuffer_(framebuffer),
+          color_binding_(color_binding),
+          texture_binding_(texture_binding),
+          directional_light_(directional_light) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -43,6 +61,7 @@ private:
     Framebuffer& framebuffer_;
     ColorBinding color_binding_;
     TextureBinding texture_binding_;
+    DirectionalLight directional_light_;
 };
 
 }  // namespace tiny_renderer
