@@ -287,7 +287,7 @@ void test_viewport_and_scissor_compose_without_changing_shading() {
 }
 
 void test_clipped_geometry_preserves_ndc_culling_before_subviewport_mapping() {
-    const Triangle crossing = left_clipped_triangle({0.2F, 0.9F, 0.3F});
+    const Triangle crossing = left_clipped_triangle({0.2F, 0.8F, 0.4F});
 
     Framebuffer reference(37U, 31U);
     rasterizer_with_viewport(reference, {}, CullMode::Back)
