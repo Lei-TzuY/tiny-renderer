@@ -28,6 +28,8 @@ void Rasterizer::draw_mesh_range(
         directional_light_,
         material_state_,
         base_color_source_,
+        cull_mode_,
+        front_face_,
         &model,
         false);
 
@@ -51,6 +53,8 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         directional_light_,
         material_state_,
         base_color_source_,
+        cull_mode_,
+        front_face_,
         nullptr,
         true);
 

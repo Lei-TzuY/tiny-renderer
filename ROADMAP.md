@@ -52,20 +52,31 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Equal-depth differently colored prepared plans make caller order observably deterministic under strict `<` depth testing.
 - Empty lists are deterministic no-ops; no new raster path or performance claim is introduced.
 
-## Next frontier — Milestone 23
+### Milestone 23 — explicit face culling and front-face state
 
-The next architectural promotion is **explicit face-culling state with a defined front-face convention** in the raster core. The current renderer normalizes both triangle orientations and therefore cannot model the culling stage present in conventional graphics pipelines.
+- `CullMode::{None, Back, Front}` and `FrontFace::{CounterClockwise, Clockwise}` are first-class raster state; legacy behavior remains `None` by default.
+- Front-face winding is defined in normalized device coordinates after homogeneous clipping and perspective divide, before the top-left framebuffer viewport transform can invert Y orientation.
+- Each triangle in a clipped polygon fan is classified independently before viewport conversion and fixed-point orientation normalization.
+- `CullMode::None` bypasses the new NDC classification path so established tiny-triangle and no-culling framebuffer/hash behavior remains unchanged.
+- Culling state propagates through direct triangles, meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists without creating a parallel raster path.
+- Shared preflight rejects unknown cull/front-face state before framebuffer mutation; prepared-model construction validates the state without a framebuffer.
+- Regression coverage locks both submitted windings, both front-face conventions, front/back culling, clipped triangles, mesh/range execution, model-list propagation, degenerate projected geometry, and default byte/hash compatibility.
+
+## Next frontier — Milestone 24
+
+The next architectural promotion is **explicit depth-test state with reversed-Z-capable execution**. Depth behavior is currently hard-coded inside `Framebuffer::depth_test_and_write` as strict `depth < stored`, which prevents the renderer from modeling another core fixed-function pipeline stage or expressing reversed-depth projections cleanly.
 
 Acceptance for that slice should require:
 
-- explicit `CullMode` state supporting at least `None`, `Back`, and `Front`, with legacy behavior remaining `None` by default;
-- an explicit clockwise/counter-clockwise front-face convention defined in a coordinate space that is independent of the framebuffer's top-left image origin;
-- culling after homogeneous clipping/perspective divide so clipped fan triangles obey the same visible-face contract as unclipped geometry;
-- winding/culling behavior proven for both submitted orientations, clipped triangles, indexed meshes/ranges, and model-list execution without creating a parallel draw path;
-- degenerate triangles remain discarded deterministically rather than being misclassified as a face;
-- invalid culling enum/state fails closed before framebuffer mutation;
-- the baseline sample and all prior no-culling framebuffer/hash contracts remain unchanged under default state.
+- a bounded `DepthCompare` state covering at least strict/non-strict near and far comparisons (`Less`, `LessEqual`, `Greater`, `GreaterEqual`) plus deterministic unconditional/disabled outcomes where useful;
+- explicit depth-write enable/disable state, with legacy `Less + write enabled` remaining the default and preserving all existing framebuffer/hash contracts;
+- depth compare semantics centralized rather than duplicated across triangle, range, model, prepared, instance, or heterogeneous-list paths;
+- a reversed-Z integration fixture using a clear depth appropriate to `Greater` comparison that resolves overlapping geometry equivalently to the conventional forward-Z scene;
+- equal-depth behavior is regression-locked for strict versus non-strict comparison modes, preserving the current caller-order ownership contract under default strict `Less`;
+- depth-write-disabled passes can update color when the configured comparison passes without mutating stored depth;
+- invalid depth enum/state fails closed before framebuffer mutation, including through prepared-model/list preflight;
+- clipping, NDC-to-depth mapping, fixed-point coverage, interpolation, culling, and shading remain one shared raster path rather than branching into a reversed-Z renderer variant.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, configurable depth functions/reversed-Z, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.

@@ -14,6 +14,8 @@ struct ModelRenderOptions {
     std::size_t v_channel{1U};
     SamplerState sampler{};
     DirectionalLight directional_light{};
+    CullMode cull_mode{CullMode::None};
+    FrontFace front_face{FrontFace::CounterClockwise};
 };
 
 class PreparedModelSubmission {
