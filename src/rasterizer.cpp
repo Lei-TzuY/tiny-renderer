@@ -36,6 +36,7 @@ constexpr std::int64_t kSubpixelHalf = kSubpixelScale / 2;
 constexpr std::int64_t kMaxFixedCoordinate = 2'000'000'000LL;
 constexpr std::size_t kMaxRasterCoordinate =
     static_cast<std::size_t>((kMaxFixedCoordinate - kSubpixelHalf) / kSubpixelScale);
+constexpr float kMaxTextureCoordinateMagnitude = 1.0e20F;
 
 struct ClipVertex {
     Vec4 position;
@@ -60,9 +61,42 @@ void validate_pack(const VaryingPack& pack) {
     }
 }
 
-void validate_binding(const ColorBinding& binding, std::size_t varying_count) {
+void validate_color_binding(const ColorBinding& binding, std::size_t varying_count) {
     if (binding.red >= varying_count || binding.green >= varying_count || binding.blue >= varying_count) {
         throw std::out_of_range("color binding references unavailable varying channel");
+    }
+}
+
+void validate_texture_binding(const TextureBinding& binding, std::size_t varying_count) {
+    if (binding.texture == nullptr) {
+        return;
+    }
+    if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
+        throw std::out_of_range("texture binding references unavailable varying channel");
+    }
+}
+
+void validate_output_binding(
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding,
+    std::size_t varying_count) {
+    if (texture_binding.texture != nullptr) {
+        validate_texture_binding(texture_binding, varying_count);
+    } else {
+        validate_color_binding(color_binding, varying_count);
+    }
+}
+
+void validate_texture_coordinates(const VaryingPack& pack, const TextureBinding& binding) {
+    if (binding.texture == nullptr) {
+        return;
+    }
+    const float u = pack.values[binding.u_channel];
+    const float v = pack.values[binding.v_channel];
+    if (!std::isfinite(u) || !std::isfinite(v)
+        || std::fabs(u) > kMaxTextureCoordinateMagnitude
+        || std::fabs(v) > kMaxTextureCoordinateMagnitude) {
+        throw std::invalid_argument("texture coordinates exceed safe finite range");
     }
 }
 
@@ -78,11 +112,17 @@ void validate_layout_match(const VaryingPack& reference, const VaryingPack& cand
     }
 }
 
-void validate_triangle_varyings(const Triangle& triangle, const ColorBinding& binding) {
+void validate_triangle_varyings(
+    const Triangle& triangle,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding) {
     validate_pack(triangle[0].varyings);
-    validate_binding(binding, triangle[0].varyings.count);
+    validate_output_binding(color_binding, texture_binding, triangle[0].varyings.count);
     validate_layout_match(triangle[0].varyings, triangle[1].varyings);
     validate_layout_match(triangle[0].varyings, triangle[2].varyings);
+    for (const Vertex& vertex : triangle) {
+        validate_texture_coordinates(vertex.varyings, texture_binding);
+    }
 }
 
 void validate_raster_target(const Framebuffer& framebuffer) {
@@ -275,7 +315,10 @@ bool edge_accept(std::int64_t value, bool top_left) {
     return value > 0 || (value == 0 && top_left);
 }
 
-Vec3 interpolate_color(const std::array<ScreenVertex, 3>& v, const Vec3& bary, float reciprocal_w, const ColorBinding& binding) {
+VaryingPack interpolate_varyings(
+    const std::array<ScreenVertex, 3>& v,
+    const Vec3& bary,
+    float reciprocal_w) {
     VaryingPack result;
     result.count = v[0].interpolation_terms.count;
     result.interpolation = v[0].interpolation_terms.interpolation;
@@ -298,10 +341,30 @@ Vec3 interpolate_color(const std::array<ScreenVertex, 3>& v, const Vec3& bary, f
                 break;
         }
     }
-    return {result.values[binding.red], result.values[binding.green], result.values[binding.blue]};
+    return result;
 }
 
-void rasterize_screen_triangle(Framebuffer& framebuffer, std::array<ScreenVertex, 3> v, const ColorBinding& binding) {
+Vec3 shade_fragment(
+    const VaryingPack& varyings,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding) {
+    if (texture_binding.texture != nullptr) {
+        return texture_binding.texture->sample(
+            {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+            texture_binding.sampler);
+    }
+    return {
+        varyings.values[color_binding.red],
+        varyings.values[color_binding.green],
+        varyings.values[color_binding.blue],
+    };
+}
+
+void rasterize_screen_triangle(
+    Framebuffer& framebuffer,
+    std::array<ScreenVertex, 3> v,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
         quantize_subpixel(v[1].position),
@@ -370,13 +433,17 @@ void rasterize_screen_triangle(Framebuffer& framebuffer, std::array<ScreenVertex
             if (std::fabs(reciprocal_w) <= kEpsilon || !std::isfinite(reciprocal_w)) {
                 continue;
             }
-            const Vec3 color = interpolate_color(v, bary, reciprocal_w, binding);
+            const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
+            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding);
             framebuffer.depth_test_and_write(static_cast<std::size_t>(x), static_cast<std::size_t>(y), depth, color);
         }
     }
 }
 
-void validate_mesh(const Mesh& mesh, const ColorBinding& binding) {
+void validate_mesh(
+    const Mesh& mesh,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding) {
     for (const TriangleIndices& triangle : mesh.triangles) {
         for (const std::uint32_t index : triangle) {
             if (static_cast<std::size_t>(index) >= mesh.vertices.size()) {
@@ -388,9 +455,10 @@ void validate_mesh(const Mesh& mesh, const ColorBinding& binding) {
         return;
     }
     validate_pack(mesh.vertices.front().varyings);
-    validate_binding(binding, mesh.vertices.front().varyings.count);
+    validate_output_binding(color_binding, texture_binding, mesh.vertices.front().varyings.count);
     for (const Vertex& vertex : mesh.vertices) {
         validate_layout_match(mesh.vertices.front().varyings, vertex.varyings);
+        validate_texture_coordinates(vertex.varyings, texture_binding);
     }
 }
 
@@ -406,7 +474,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     validate_raster_target(framebuffer_);
-    validate_triangle_varyings(triangle, color_binding_);
+    validate_triangle_varyings(triangle, color_binding_, texture_binding_);
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         clip[i] = {
@@ -428,7 +496,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         if (!a || !b || !c) {
             continue;
         }
-        rasterize_screen_triangle(framebuffer_, {*a, *b, *c}, color_binding_);
+        rasterize_screen_triangle(framebuffer_, {*a, *b, *c}, color_binding_, texture_binding_);
     }
 }
 
@@ -438,7 +506,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     validate_raster_target(framebuffer_);
-    validate_mesh(mesh, color_binding_);
+    validate_mesh(mesh, color_binding_, texture_binding_);
     for (const TriangleIndices& indices : mesh.triangles) {
         draw_triangle(assemble_triangle(mesh, indices), mvp);
     }
