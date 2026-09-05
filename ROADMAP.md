@@ -84,21 +84,33 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Viewport/scissor state propagates through direct triangles/meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists without a second raster path.
 - Regression coverage locks default full-frame byte/hash compatibility, translated sub-viewport color/depth equivalence, half-open scissor ownership, viewport/scissor composition, clipped+cull ordering, range execution, zero-area scissor behavior, invalid-state rejection, list-wide fail-closed preflight, and prepared list/instance propagation.
 
-## Next frontier — Milestone 26
+### Milestone 26 — explicit stencil test and update stage
 
-The next architectural promotion is **an explicit stencil test and update stage**. The framebuffer currently models color and depth but cannot express per-sample masking or state transitions before depth/color ownership, leaving a major fixed-function pipeline stage absent.
+- `Framebuffer` owns an 8-bit stencil attachment with deterministic clear/read behavior while stencil testing remains disabled by default.
+- `StencilCompare::{Never, Less, LessEqual, Greater, GreaterEqual, Equal, NotEqual, Always}` compares masked reference and stored values through one framebuffer primitive.
+- `StencilOp::{Keep, Zero, Replace, IncrementClamp, DecrementClamp, Invert}` plus a write mask model stencil-fail, depth-fail, and full-pass state transitions.
+- Per-fragment ordering is centralized in `Framebuffer::test_and_write`: coverage/scissor resolve first in the rasterizer, stencil rejects before depth, depth rejection selects the depth-fail operation, and a full pass performs the pass operation before the existing depth/color ownership updates.
+- `depth_test_and_write` remains a stencil-disabled compatibility wrapper instead of creating a second ownership implementation.
+- Stencil state is validated fail-closed and propagated through direct triangles/meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists.
+- Regression coverage locks read/write masks, every compare and operation, saturating increment/decrement, stencil/depth/pass ordering, depth-write-disabled interaction, stencil-mask prepass execution, scissor-bounded side effects, range propagation, prepared-list equivalence, invalid-state rejection, and disabled-stencil byte/hash compatibility.
+- The existing clipping, viewport, fixed-point coverage, interpolation, culling, material/texture shading, and depth semantics remain on the same raster path.
+
+## Next frontier — Milestone 27
+
+The next architectural promotion is **an explicit final color blend and write-mask stage**. Passing fragments currently replace framebuffer RGB directly after depth/stencil acceptance, so the pipeline cannot express deterministic source/destination composition or selective channel ownership.
 
 Acceptance for that slice should require:
 
-- an 8-bit stencil attachment with deterministic clear/read behavior and no change to legacy color/depth output when stencil testing is disabled;
-- a bounded stencil comparison state covering `Never`, ordered comparisons, `Equal`, `NotEqual`, and `Always`, with an explicit reference value and read mask;
-- explicit stencil operations for stencil-test failure, depth-test failure, and stencil+depth pass, including at least keep, zero, replace, saturating increment/decrement, and invert, with a write mask;
-- one centralized per-fragment ordering contract: scissor/coverage first, stencil test before depth, stencil-fail operation on stencil rejection, depth-fail operation when stencil passes but depth rejects, and pass operation when both tests pass; color/depth writes occur only on the final passing path according to existing depth-write state;
-- stencil state validation fails closed before framebuffer mutation through direct, range, model, prepared-instance, and heterogeneous-list submission, without duplicating comparison/operation semantics across those layers;
-- deterministic integration coverage includes a stencil-mask prepass followed by a colored pass, read/write mask behavior, each failure/pass operation path, interaction with depth-write-disabled state, scissor preventing stencil side effects outside its bounds, and default byte/hash compatibility;
-- the existing clipping, viewport, fixed-point coverage, interpolation, culling, material/texture shading, and depth semantics remain one shared raster path;
+- a bounded `BlendState` whose disabled/default behavior is byte/hash-identical to the current replacement path;
+- RGB source/destination blend factors sufficient for deterministic fixed-function composition, including `Zero`, `One`, source color, destination color, inverse source/destination color, and an explicit constant blend color where appropriate;
+- explicit blend operations including add, subtract, reverse-subtract, minimum, and maximum, with precisely documented factor behavior for min/max rather than hardware-equivalence claims;
+- an RGB write mask applied only at the final color-store step, so masked channels preserve their previous framebuffer values while depth/stencil side effects still obey the already-established pass ordering;
+- one centralized framebuffer color-ownership implementation after stencil/depth acceptance; rasterizer/model/prepared layers only propagate validated state and do not duplicate blend math;
+- fail-closed validation of unknown blend factors/operations and non-finite or out-of-contract blend constants before framebuffer mutation, including prepared/list submission;
+- deterministic regressions for disabled compatibility, source/destination factor composition, non-commutative draw order, each blend operation, channel write masking, interaction with depth-write-disabled and stencil pass operations, scissor-bounded blended output, and heterogeneous prepared-list propagation;
+- no alpha/transparency semantics are claimed unless a separate fragment-alpha source is implemented and regression-covered; the first slice is explicitly RGB blending;
 - no performance claim is made without a controlled benchmark.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, alpha/transparency, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
