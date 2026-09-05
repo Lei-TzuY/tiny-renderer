@@ -1,0 +1,4 @@
+# Bounded diffuse opacity material.
+newmtl glass
+Kd 1.0 0.0 0.0
+d 0.5
