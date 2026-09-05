@@ -26,6 +26,10 @@ Vec3 one_minus(const Vec3& value) {
     return {1.0F - value.x, 1.0F - value.y, 1.0F - value.z};
 }
 
+Vec3 replicated(float value) {
+    return {value, value, value};
+}
+
 bool depth_compare_passes(DepthCompare compare, float incoming, float stored) {
     switch (compare) {
         case DepthCompare::Less:
@@ -110,7 +114,8 @@ Vec3 blend_factor_value(
     BlendFactor factor,
     const Vec3& source,
     const Vec3& destination,
-    const Vec3& constant_color) {
+    const Vec3& constant_color,
+    float source_alpha) {
     switch (factor) {
         case BlendFactor::Zero:
             return {0.0F, 0.0F, 0.0F};
@@ -128,11 +133,19 @@ Vec3 blend_factor_value(
             return constant_color;
         case BlendFactor::OneMinusConstantColor:
             return one_minus(constant_color);
+        case BlendFactor::SourceAlpha:
+            return replicated(source_alpha);
+        case BlendFactor::OneMinusSourceAlpha:
+            return replicated(1.0F - source_alpha);
     }
     throw std::invalid_argument("unknown RGB blend factor");
 }
 
-Vec3 blended_rgb(const Vec3& source, const Vec3& destination, const BlendState& state) {
+Vec3 blended_rgb(
+    const Vec3& source,
+    const Vec3& destination,
+    const BlendState& state,
+    float source_alpha) {
     if (!state.enabled) {
         return source;
     }
@@ -156,10 +169,20 @@ Vec3 blended_rgb(const Vec3& source, const Vec3& destination, const BlendState& 
 
     const Vec3 source_term = multiply_components(
         source,
-        blend_factor_value(state.source_factor, source, destination, state.constant_color));
+        blend_factor_value(
+            state.source_factor,
+            source,
+            destination,
+            state.constant_color,
+            source_alpha));
     const Vec3 destination_term = multiply_components(
         destination,
-        blend_factor_value(state.destination_factor, source, destination, state.constant_color));
+        blend_factor_value(
+            state.destination_factor,
+            source,
+            destination,
+            state.constant_color,
+            source_alpha));
 
     switch (state.operation) {
         case BlendOp::Add:
@@ -244,6 +267,8 @@ void validate_blend_state(const BlendState& state) {
             case BlendFactor::OneMinusDestinationColor:
             case BlendFactor::ConstantColor:
             case BlendFactor::OneMinusConstantColor:
+            case BlendFactor::SourceAlpha:
+            case BlendFactor::OneMinusSourceAlpha:
                 return;
         }
         throw std::invalid_argument("unknown RGB blend factor");
@@ -295,10 +320,14 @@ bool Framebuffer::test_and_write(
     const Vec3& color,
     DepthState depth_state,
     StencilState stencil_state,
-    BlendState blend_state) {
+    BlendState blend_state,
+    float source_alpha) {
     validate_depth_state(depth_state);
     validate_stencil_state(stencil_state);
     validate_blend_state(blend_state);
+    if (!std::isfinite(source_alpha) || source_alpha < 0.0F || source_alpha > 1.0F) {
+        throw std::invalid_argument("fragment source alpha must be finite and within [0, 1]");
+    }
     if (x >= width_ || y >= height_ || !std::isfinite(depth)) {
         return false;
     }
@@ -331,7 +360,7 @@ bool Framebuffer::test_and_write(
 
     const Vec3 destination = color_[i];
     const Vec3 resolved_color = apply_color_write_mask(
-        blended_rgb(color, destination, blend_state),
+        blended_rgb(color, destination, blend_state, source_alpha),
         destination,
         blend_state.write_mask);
 
@@ -355,7 +384,7 @@ bool Framebuffer::depth_test_and_write(
     float depth,
     const Vec3& color,
     DepthState state) {
-    return test_and_write(x, y, depth, color, state, {}, {});
+    return test_and_write(x, y, depth, color, state, {}, {}, 1.0F);
 }
 
 const Vec3& Framebuffer::color_at(std::size_t x, std::size_t y) const {
