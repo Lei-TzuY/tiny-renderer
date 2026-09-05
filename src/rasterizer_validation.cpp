@@ -244,6 +244,7 @@ void preflight_mesh_range_submission(
     BaseColorSource base_color_source,
     CullMode cull_mode,
     FrontFace front_face,
+    const DepthState& depth_state,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
@@ -252,6 +253,7 @@ void preflight_mesh_range_submission(
     }
 
     validate_face_culling(cull_mode, front_face);
+    validate_depth_state(depth_state);
     validate_raster_target(framebuffer);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
