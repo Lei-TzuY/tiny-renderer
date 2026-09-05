@@ -1,6 +1,6 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, Milestone 10 added bounded OBJ normal import, Milestone 11 added bounded runtime material albedo, Milestone 12 added strict diffuse MTL import plus ordered OBJ material draw batches, Milestone 13 added an explicit base-color source contract, Milestone 14 added bounded owned MTL `map_Kd` diffuse textures without changing the legacy strict material APIs, and Milestone 15 consolidates the rich asset path into one canonical mesh plus ordered material draw ranges.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, Milestone 10 added bounded OBJ normal import, Milestone 11 added bounded runtime material albedo, Milestone 12 added strict diffuse MTL import plus ordered OBJ material draw batches, Milestone 13 added an explicit base-color source contract, Milestone 14 added bounded owned MTL `map_Kd` diffuse textures, Milestone 15 consolidated rich assets into one canonical mesh plus ordered material draw ranges, and Milestone 16 executes those ranges directly without transient mesh-container materialization.
 
 ## Rendering pipeline
 
@@ -20,7 +20,7 @@ The renderer follows this path for every submitted triangle:
 12. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
 13. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
 
-Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. `DrawRange` adds a bounded contiguous-triangle submission contract above the same mesh path. The rich asset layer now stores one canonical `Mesh` in `ModelAsset` plus ordered `MaterialDraw` records that reference contiguous triangle ranges and retain material/texture ownership; the older texture-owning batch API is generated as a compatibility adapter rather than acting as the primary stored model representation. Asset import remains above the rendering core, so the rasterizer remains unaware of OBJ, MTL, and PPM file formats.
+Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. `DrawRange` provides a bounded contiguous-triangle submission contract above the same triangle core. The rich asset layer stores one canonical `Mesh` in `ModelAsset` plus ordered `MaterialDraw` records; direct range execution now preflights the requested range against that canonical mesh and submits selected faces one at a time without constructing a temporary `Mesh` or selected triangle vector. Asset import remains above the rendering core, so the rasterizer remains unaware of OBJ, MTL, and PPM file formats.
 
 ## Build and run
 
@@ -31,7 +31,7 @@ ctest --test-dir build --output-on-failure
 ./build/tiny_renderer_sample milestone1.ppm
 ```
 
-The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, lighting, runtime material albedo, ordered OBJ/MTL materials, Kd-only rendering, owned `map_Kd` textures, and canonical model draw ranges are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
+The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, lighting, runtime material albedo, ordered OBJ/MTL materials, Kd-only rendering, owned `map_Kd` textures, canonical model draw ranges, and direct range execution are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
 
 ## Architecture
 
@@ -44,7 +44,8 @@ The original sample scene still renders three colored triangles through a perspe
 - `include/tiny_renderer/ppm_loader.hpp`, `src/ppm_loader.cpp` — bounded binary PPM stream/file decoding with strict header/raster validation into `Texture2D`.
 - `include/tiny_renderer/texture.hpp`, `src/texture.cpp` — validated in-memory RGB textures plus deterministic normalized-coordinate addressing and nearest/bilinear sampling.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
-- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp`, `src/rasterizer_range.cpp` — explicit base-color source state, color/texture/normal bindings, bounded runtime material state, full-mesh and bounded-range submission, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation, source selection, material modulation, directional Lambert modulation, and depth testing.
+- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — explicit base-color source state, color/texture/normal bindings, bounded runtime material state, full-mesh submission, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation, source selection, material modulation, directional Lambert modulation, and depth testing.
+- `src/rasterizer_range.cpp` — direct bounded-range preflight and selected-face submission. It preserves fail-closed range/index/state/normal-transform behavior while avoiding the Milestone 15 transient mesh-container copy; accepted faces still enter the existing `draw_triangle` core.
 - `src/main.cpp` — deterministic end-to-end baseline sample scene.
 - `tests/test_main.cpp` — dependency-free mathematical, rasterization, mesh, varying, and integration correctness tests.
 - `tests/test_fixed_point.cpp` — fixed-point ownership, quantization-stability, and subpixel-degeneracy regressions.
@@ -56,6 +57,7 @@ The original sample scene still renders three colored triangles through a perspe
 - `tests/test_material.cpp` — default-material/source byte stability, explicit varying/texture compatibility, constant-white material/Lambert composition, clipping equivalence, and fail-closed material/source validation.
 - `tests/test_material_import.cpp` plus material fixtures — strict/rich MTL parsing, ordered compatibility batches, Kd-only stability, owned `map_Kd` lifetime/deduplication, metadata/path rejection, and file-driven mixed texture/material render equivalence.
 - `tests/test_model_asset.cpp` — bounded draw-range fail-closed behavior, selected-only index semantics, canonical model range coverage/order, shared texture lifetime, and byte/hash equivalence against Milestone 14 compatibility batches.
+- `tests/test_direct_range.cpp` — direct range execution under non-uniform lit transforms, singular normal-matrix fail-closed behavior, and empty-range state validation.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
 
 ## Implemented
@@ -171,7 +173,7 @@ The original sample scene still renders three colored triangles through a perspe
 - every corner of a face must use one index layout, and all faces in one loaded mesh must consistently use either `v/vt` or `v/vt/vn`; mixed schemas fail closed before a `Mesh` is returned
 - only positive absolute 1-based position, texture-coordinate, and normal indices are accepted; `v//vn`, zero/relative indices, missing attributes, and out-of-range references remain rejected
 - normal-bearing unified vertices use `(position index, UV index, normal index)` identity, preserving deterministic first-seen reuse/splitting across UV and normal seams
-- normal-bearing imports emit five smooth varying channels `[u, v, nx, ny,nz]`, directly compatible with `TextureBinding{...,0,1,...}` and `NormalBinding{2,3,4}`
+- normal-bearing imports emit five smooth varying channels `[u, v, nx, ny, nz]`, directly compatible with `TextureBinding{...,0,1,...}` and `NormalBinding{2,3,4}`
 - legacy `v/vt` imports remain two-channel UV payloads and retain Milestone 7 byte/hash-equivalent rendering behavior
 - regressions cover triple-index normalization, malformed/zero/out-of-range/relative normals, missing UVs, mixed corner/mesh layouts, and unsupported directives
 - an in-repo independent-index `v/vt/vn` fixture plus the existing P6 fixture drives the real textured Lambert path and is framebuffer byte/hash-identical to the equivalent programmatic normal-bearing mesh
@@ -232,15 +234,24 @@ The original sample scene still renders three colored triangles through a perspe
 ### Milestone 15 — canonical model assets and ordered draw ranges
 
 - `DrawRange{first_triangle, triangle_count}` gives contiguous indexed-triangle subsets an explicit bounded submission contract
-- `Rasterizer::draw_mesh_range` rejects ranges extending outside the triangle list before drawing and routes the selected subset back through the existing `draw_mesh` validation/rendering path rather than introducing another rasterizer
-- selected invalid indices therefore fail before color/depth mutation, while invalid triangle indices outside the selected range do not poison a valid range submission
 - `ModelAsset` owns one canonical normalized `Mesh`; `MaterialDraw` records carry only an ordered `DrawRange`, material name/state, and optional shared diffuse texture ownership
 - `load_obj_model_asset_file` preserves contiguous A→B→A material order as separate ranges over the canonical triangle sequence, deduplicates mapped texture ownership, and emits no synthetic texture for Kd-only/default draws
-- the older `load_obj_material_asset_batches_file` remains source-compatible but is now derived from `ModelAsset` as a compatibility adapter instead of being the primary rich stored representation
-- range rendering is regression-proven byte/hash-identical to explicit triangle-subset submission
-- mixed `map_Kd`/Kd-only canonical-model rendering is byte/hash-identical to Milestone 14 compatibility batches; Kd-only assets retain the same equivalence
+- the older `load_obj_material_asset_batches_file` remains source-compatible but is derived from `ModelAsset` as a compatibility adapter rather than the primary rich stored representation
+- range rendering is regression-proven byte/hash-identical to explicit triangle-subset submission and to Milestone 14 compatibility batches for Kd-only and mixed `map_Kd` assets
 - generated ranges are verified contiguous, non-empty, ordered, and collectively cover the canonical triangle list exactly once
 - retained texture ownership remains sampleable after the originating `ModelAsset` object is destroyed
+
+### Milestone 16 — direct draw-range execution
+
+- `draw_mesh_range` no longer constructs a transient `Mesh`, copied vertex vector, or selected triangle vector before rendering
+- range bounds are checked first, then every selected triangle index is preflighted before any framebuffer mutation; invalid indices outside the selected range remain irrelevant
+- varying layout, source bindings, texture-coordinate bounds, normal binding/value state, material/light state, and raster-target safety are preflighted before selected faces are submitted
+- lighting ranges additionally compute the inverse-transpose normal matrix and validate transformed-normal stability before writes, preserving the copy-backed Milestone 15 fail-closed contract
+- selected indexed faces are assembled only as small stack `Triangle` values and then enter the existing `draw_triangle` path; clipping, interpolation, fixed-point coverage, shading, depth, and framebuffer code remain single-sourced
+- non-uniform-scale lit range rendering is byte/hash-identical to the equivalent explicit submesh
+- singular normal transforms and invalid empty-range renderer state fail before framebuffer mutation
+- existing canonical `ModelAsset` regressions prove Kd-only and mixed `map_Kd` draw records remain byte/hash stable on the direct path
+- this is an allocation/copy-structure change only; no wall-clock performance improvement is claimed without controlled benchmarking
 
 ## Intentionally not implemented yet
 
@@ -258,7 +269,8 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 - The material-aware OBJ loaders accept exactly one simple sibling `mtllib` filename. Nested paths, multiple libraries, late libraries, unknown `usemtl` names, and faces without an active material after a library is declared are rejected.
 - Legacy MTL import is limited to `newmtl` plus diffuse `Kd`; the richer asset API additionally accepts one simple sibling `map_Kd`. Material names are single tokens; map options, opacity, specular/emissive terms, illumination models, and general MTL syntax are not supported.
 - `ModelAsset` is the canonical rich stored representation, but the legacy `MaterialBatch` / `MaterialAssetBatch` compatibility APIs still materialize full mesh copies by design.
-- `draw_mesh_range` currently materializes a transient selected-triangle `Mesh` before delegating to the established full-mesh path. This preserves validation semantics but is not a zero-copy submission implementation and carries no performance claim.
+- Direct range execution avoids transient mesh-container copies but still assembles each selected indexed face into a small stack `Triangle`; no zero-copy vertex-reference API or measured performance claim exists yet.
+- Range preflight currently mirrors the core draw-state validation contract in `rasterizer_range.cpp`. The duplication is intentional for this bounded slice and should be centralized before broadening renderer state further.
 - Rich model loading still performs canonical geometry parsing followed by a separate bounded material-metadata scan of the OBJ file; those two passes are cross-checked by face count but are not yet one parser result.
 - OBJ texture coordinates and normals are preserved verbatim; the importer does not flip V, normalize normal magnitudes, generate normals, or infer smoothing.
 - Runtime material state is one constant bounded RGB albedo per `Rasterizer`; model draws expose owned texture/material state but the caller still constructs the corresponding `TextureBinding` / `BaseColorSource` for each draw.
@@ -272,4 +284,4 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 
 ## Next milestone
 
-The highest-value next architectural frontier is **direct zero-copy draw-range execution**. Keep `DrawRange` and `ModelAsset` unchanged, but move range awareness into the existing mesh validation/normal-transform/draw loops so a range submission no longer constructs a transient vertex/triangle copy before rendering. The new path must still preflight the entire selected range before the first framebuffer mutation, preserve selected-only index semantics, keep model/view/projection normal handling correct, and remain byte/hash-identical to the current copy-backed range adapter for Kd-only and `map_Kd` model assets. This milestone should make an architectural allocation/copy reduction claim only from implementation evidence; controlled performance benchmarking remains separate. After range execution is direct, the next importer frontier is to unify geometry and material metadata into one canonical OBJ parse result rather than two cross-checked passes.
+The highest-value next architectural frontier is a **single canonical OBJ parse result for geometry plus material metadata**. Rich model loading currently parses normalized geometry once and then reopens the OBJ for a second bounded `mtllib`/`usemtl`/face-material scan, with face counts cross-checked afterward. Replace those two passes with one parser result that emits the canonical `Mesh` and ordered per-face material association from the same accepted face records, while keeping legacy `load_obj` behavior source-compatible. Acceptance should prove legacy geometry byte/hash stability, A→B→A draw-range preservation, identical Kd-only and `map_Kd` `ModelAsset` rendering, deterministic source-line diagnostics for material metadata errors, and no disagreement state that requires a post-hoc face-count check. General OBJ syntax, multiple material libraries, relative indices, polygon triangulation, generated normals, smoothing groups, and broader MTL support remain later phases.
