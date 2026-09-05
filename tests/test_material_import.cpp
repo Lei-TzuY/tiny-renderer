@@ -34,6 +34,12 @@ void check_near(float actual, float expected, const std::string& message, float 
           message + " (actual=" + std::to_string(actual) + ", expected=" + std::to_string(expected) + ")");
 }
 
+void check_color(const Vec3& actual, const Vec3& expected, const std::string& message) {
+    check_near(actual.x, expected.x, message + " red", 2.0e-4F);
+    check_near(actual.y, expected.y, message + " green", 2.0e-4F);
+    check_near(actual.z, expected.z, message + " blue", 2.0e-4F);
+}
+
 MaterialLibrary parse_mtl(std::string_view text) {
     std::istringstream input{std::string(text)};
     return load_mtl(input);
@@ -150,6 +156,58 @@ void test_material_batches_render_like_programmatic_submission() {
           "file-driven material batches preserve deterministic programmatic framebuffer hash");
 }
 
+void test_kd_only_material_batches_render_without_texture() {
+    const std::vector<MaterialBatch> imported =
+        load_obj_material_batches_file(fixture_path("material_sequence.obj"));
+    const Mesh geometry = load_obj_file(fixture_path("material_sequence.obj"));
+    const DirectionalLight light{
+        true,
+        NormalBinding{2U, 3U, 4U},
+        {0.0F, 0.0F, 1.0F},
+        0.2F,
+        0.8F,
+    };
+
+    Framebuffer imported_fb(65U, 65U);
+    for (const MaterialBatch& batch : imported) {
+        Rasterizer rasterizer(
+            imported_fb,
+            ColorBinding{99U, 99U, 99U},
+            {},
+            light,
+            batch.material,
+            BaseColorSource::ConstantWhite);
+        rasterizer.draw_mesh(batch.mesh, Mat4::identity(), Mat4::identity(), Mat4::identity());
+    }
+
+    const MaterialState warm{{1.0F, 0.5F, 0.25F}};
+    const MaterialState cool{{0.25F, 0.5F, 1.0F}};
+    const std::vector<MaterialState> expected_materials{warm, cool, warm};
+    Framebuffer manual_fb(65U, 65U);
+    for (std::size_t i = 0U; i < geometry.triangles.size() && i < expected_materials.size(); ++i) {
+        Mesh one_face;
+        one_face.vertices = geometry.vertices;
+        one_face.triangles.push_back(geometry.triangles[i]);
+        Rasterizer rasterizer(
+            manual_fb,
+            ColorBinding{99U, 99U, 99U},
+            {},
+            light,
+            expected_materials[i],
+            BaseColorSource::ConstantWhite);
+        rasterizer.draw_mesh(one_face, Mat4::identity(), Mat4::identity(), Mat4::identity());
+    }
+
+    check(imported_fb.rgb8() == manual_fb.rgb8(),
+          "Kd-only OBJ/MTL batches render byte-identically without requiring an unrelated texture");
+    check(imported_fb.fnv1a64() == manual_fb.fnv1a64(),
+          "Kd-only constant-white material rendering preserves deterministic submission semantics");
+    check_color(imported_fb.color_at(48U, 48U), {1.0F, 0.5F, 0.25F},
+                "warm Kd is the visible base color on the warm face without a texture");
+    check_color(imported_fb.color_at(16U, 16U), {0.25F, 0.5F, 1.0F},
+                "cool Kd is the visible base color on the cool face without a texture");
+}
+
 void test_legacy_obj_without_material_library_becomes_default_batch() {
     const std::filesystem::path path = fixture_path("lit_textured_quad.obj");
     const Mesh legacy = load_obj_file(path);
@@ -189,6 +247,7 @@ int main() {
         test_mtl_diffuse_subset_and_rejections();
         test_contiguous_batch_order_and_material_values();
         test_material_batches_render_like_programmatic_submission();
+        test_kd_only_material_batches_render_without_texture();
         test_legacy_obj_without_material_library_becomes_default_batch();
         test_obj_material_metadata_fail_closed();
     } catch (const std::exception& error) {
