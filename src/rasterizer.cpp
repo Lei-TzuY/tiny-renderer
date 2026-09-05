@@ -57,6 +57,11 @@ struct FixedPoint2 {
     std::int64_t y{};
 };
 
+struct ShadedFragment {
+    Vec3 rgb;
+    float opacity{1.0F};
+};
+
 bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
@@ -188,6 +193,9 @@ MaterialState prepare_material_state(const MaterialState& material) {
         || material.albedo.y < 0.0F || material.albedo.y > 1.0F
         || material.albedo.z < 0.0F || material.albedo.z > 1.0F) {
         throw std::invalid_argument("material albedo components must be finite and within [0, 1]");
+    }
+    if (!std::isfinite(material.opacity) || material.opacity < 0.0F || material.opacity > 1.0F) {
+        throw std::invalid_argument("material opacity must be finite and within [0, 1]");
     }
     return material;
 }
@@ -543,7 +551,7 @@ Vec3 base_fragment_color(
     throw std::logic_error("unreachable base-color source shading state");
 }
 
-Vec3 shade_fragment(
+ShadedFragment shade_fragment(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
@@ -557,7 +565,7 @@ Vec3 shade_fragment(
         source_color.z * material.albedo.z,
     };
     if (!light.enabled) {
-        return base;
+        return {base, material.opacity};
     }
 
     const Vec3 interpolated_normal{
@@ -566,17 +574,17 @@ Vec3 shade_fragment(
         varyings.values[light.normal.z],
     };
     if (!finite_vec3(interpolated_normal)) {
-        return base * light.ambient;
+        return {base * light.ambient, material.opacity};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return base * light.ambient;
+        return {base * light.ambient, material.opacity};
     }
 
     const Vec3 normal = interpolated_normal / normal_length;
     const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
     const float intensity = light.ambient + light.diffuse * lambert;
-    return base * intensity;
+    return {base * intensity, material.opacity};
 }
 
 void rasterize_screen_triangle(
@@ -674,15 +682,22 @@ void rasterize_screen_triangle(
                 continue;
             }
             const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
-            const Vec3 color = shade_fragment(varyings, color_binding, texture_binding, source, light, material);
+            const ShadedFragment fragment = shade_fragment(
+                varyings,
+                color_binding,
+                texture_binding,
+                source,
+                light,
+                material);
             framebuffer.test_and_write(
                 static_cast<std::size_t>(x),
                 static_cast<std::size_t>(y),
                 depth,
-                color,
+                fragment.rgb,
                 depth_state,
                 stencil_state,
-                blend_state);
+                blend_state,
+                fragment.opacity);
         }
     }
 }
