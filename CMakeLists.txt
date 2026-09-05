@@ -36,4 +36,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_fixed_point_tests tests/test_fixed_point.cpp)
     target_link_libraries(tiny_renderer_fixed_point_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_fixed_point_tests COMMAND tiny_renderer_fixed_point_tests)
+
+    add_executable(tiny_renderer_interpolation_tests tests/test_interpolation.cpp)
+    target_link_libraries(tiny_renderer_interpolation_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_interpolation_tests COMMAND tiny_renderer_interpolation_tests)
 endif()
