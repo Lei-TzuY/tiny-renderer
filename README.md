@@ -1,6 +1,6 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, Milestone 10 added bounded OBJ normal import, Milestone 11 added bounded runtime material albedo, and Milestone 12 adds strict diffuse MTL import plus ordered OBJ material draw batches.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, Milestone 10 added bounded OBJ normal import, Milestone 11 added bounded runtime material albedo, Milestone 12 added strict diffuse MTL import plus ordered OBJ material draw batches, and Milestone 13 adds an explicit base-color source contract so imported diffuse materials can render without synthetic RGB varyings or unrelated textures.
 
 ## Rendering pipeline
 
@@ -13,9 +13,9 @@ The renderer follows this path for every submitted triangle:
 5. **Viewport transform** — NDC is mapped to pixel coordinates with a top-left image origin.
 6. **Fixed-point triangle setup/coverage** — screen-space vertices are quantized to a 1/256-pixel grid; signed 64-bit integer edge equations plus an exact top-left rule decide pixel-center ownership. Quantized zero-area triangles are discarded.
 7. **Qualified barycentric interpolation** — accepted samples use the original floating screen positions. `smooth` channels use perspective-correct `varying / w` and `1 / w`, `noperspective` channels use screen-linear barycentric interpolation, and `flat` channels use the first submitted vertex as the provoking vertex.
-8. **Fragment color source** — without a texture binding, three validated varying channels supply framebuffer RGB. With a texture binding, two validated varying channels supply UV coordinates to the bound `Texture2D` sampler; this uses the exact same clipping/interpolation/coverage path rather than a separate textured rasterizer.
-9. **Texture sampling** — normalized UVs use explicit `Clamp` or `Repeat` addressing and `Nearest` or texel-center `Bilinear` filtering. Texture output replaces the untextured color binding for the fragment.
-10. **Material albedo** — a validated runtime `MaterialState` multiplies the current varying or sampled-texture base color component-wise. The default white albedo `(1,1,1)` is byte-compatible with earlier milestones. Material-aware OBJ loading maps bounded MTL `Kd` values directly onto this same state.
+8. **Base-color source selection** — `BaseColorSource::Auto` preserves the legacy contract by choosing a bound texture when present and RGB varyings otherwise. Explicit `VaryingColor` and `Texture` modes validate only their relevant bindings, while `ConstantWhite` contributes `(1,1,1)` without consuming RGB or UV channels. Conflicting or invalid source/binding state fails before framebuffer mutation.
+9. **Texture sampling** — when the resolved source is `Texture`, normalized UVs use explicit `Clamp` or `Repeat` addressing and `Nearest` or texel-center `Bilinear` filtering. Texture sampling stays on the same clipping/interpolation/coverage path rather than introducing a textured rasterizer.
+10. **Material albedo** — a validated runtime `MaterialState` multiplies the selected base color component-wise. The default white albedo `(1,1,1)` is byte-compatible with earlier milestones. Material-aware OBJ loading maps bounded MTL `Kd` values directly onto this same state; with `ConstantWhite`, `Kd` itself becomes the visible diffuse base color.
 11. **Directional Lambert lighting** — when enabled, the interpolated world-space normal is renormalized per fragment. The material-modulated base color is multiplied by `ambient + diffuse * max(dot(normal, direction_to_light), 0)`, with validated bounded coefficients. Lighting-disabled rendering retains the same fragment path without the Lambert factor.
 12. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
 13. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
@@ -31,7 +31,7 @@ ctest --test-dir build --output-on-failure
 ./build/tiny_renderer_sample milestone1.ppm
 ```
 
-The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, lighting, runtime material albedo, and OBJ/MTL material batching are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
+The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, lighting, runtime material albedo, ordered OBJ/MTL material batching, and Kd-only constant-source rendering are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ The original sample scene still renders three colored triangles through a perspe
 - `include/tiny_renderer/ppm_loader.hpp`, `src/ppm_loader.cpp` — bounded binary PPM stream/file decoding with strict header/raster validation into `Texture2D`.
 - `include/tiny_renderer/texture.hpp`, `src/texture.cpp` — validated in-memory RGB textures plus deterministic normalized-coordinate addressing and nearest/bilinear sampling.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
-- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — color/texture/normal bindings, bounded runtime material state, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation, fragment color selection, material modulation, directional Lambert modulation, and depth testing.
+- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — explicit base-color source state, color/texture/normal bindings, bounded runtime material state, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation, source selection, material modulation, directional Lambert modulation, and depth testing.
 - `src/main.cpp` — deterministic end-to-end baseline sample scene.
 - `tests/test_main.cpp` — dependency-free mathematical, rasterization, mesh, varying, and integration correctness tests.
 - `tests/test_fixed_point.cpp` — fixed-point ownership, quantization-stability, and subpixel-degeneracy regressions.
@@ -52,8 +52,8 @@ The original sample scene still renders three colored triangles through a perspe
 - `tests/test_obj_loader.cpp`, `tests/fixtures/textured_quad.obj`, `tests/fixtures/lit_textured_quad.obj` — OBJ pair/triple index normalization, rejection, diagnostics, legacy textured equivalence, and file-driven textured-Lambert normal-import equivalence.
 - `tests/test_ppm_loader.cpp`, `tests/fixtures/checker.ppm` — P6 binary decoding, malformed/truncated/overflow rejection, and file-driven OBJ + PPM render equivalence.
 - `tests/test_lighting.cpp` — inverse-transpose normal correctness, non-uniform-transform lighting, texture modulation, lit clipping equivalence, and fail-closed lighting-contract regressions.
-- `tests/test_material.cpp` — default-material byte stability, untextured and textured albedo modulation, Lambert composition, clipping equivalence, and fail-closed material validation.
-- `tests/test_material_import.cpp`, `tests/fixtures/diffuse.mtl`, `tests/fixtures/material_sequence.obj` — bounded MTL parsing, ordered OBJ material batches, metadata rejection, legacy fallback, and file-driven material render equivalence.
+- `tests/test_material.cpp` — default-material/source byte stability, explicit varying/texture compatibility, constant-white material/Lambert composition, clipping equivalence, and fail-closed material/source validation.
+- `tests/test_material_import.cpp`, `tests/fixtures/diffuse.mtl`, `tests/fixtures/material_sequence.obj` — bounded MTL parsing, ordered OBJ material batches, metadata rejection, legacy fallback, textured material equivalence, and Kd-only file-driven rendering without a texture.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
 
 ## Implemented
@@ -201,9 +201,22 @@ The original sample scene still renders three colored triangles through a perspe
 - integration regression loads OBJ + MTL + PPM + explicit normals, renders ordered material batches through existing texture/albedo/Lambert stages, and proves byte/hash equality with equivalent programmatic material submissions
 - regressions also cover unknown `usemtl`, `usemtl` without `mtllib`, bounded sibling-library path enforcement, duplicate/missing MTL data, and unsupported material directives
 
+### Milestone 13 — explicit base-color source state
+
+- `BaseColorSource` makes the fragment source an explicit renderer state with `Auto`, `VaryingColor`, `Texture`, and `ConstantWhite` modes
+- `Auto` remains the default and preserves the complete earlier source-selection contract: bound texture first, otherwise RGB varyings
+- explicit `VaryingColor` and `Texture` modes validate only the bindings they consume, while source/binding conflicts are rejected before framebuffer mutation
+- `Texture` requires an actual bound `Texture2D`; `VaryingColor` and `ConstantWhite` reject a simultaneously bound texture so ignored state cannot silently change intent
+- `ConstantWhite` supplies `(1,1,1)` before material modulation and consumes neither RGB nor UV channels, allowing UV/normal-only imported meshes to use MTL `Kd` as their real diffuse color
+- material modulation, clipping, fixed-point coverage, interpolation, Lambert lighting, depth testing, and framebuffer output remain one shared path after source selection
+- explicit varying and texture modes are regression-proven byte-identical to their corresponding legacy automatic paths
+- constant-white × albedo × Lambert is verified analytically, and clipped constant-white geometry is byte-identical to equivalent explicitly clipped triangles
+- invalid source enum values and invalid source/binding combinations are fail-closed before framebuffer writes
+- the real OBJ/MTL normal-bearing fixture now renders imported warm/cool `Kd` values without loading any texture, with byte/hash equality to equivalent programmatic material batches
+
 ## Intentionally not implemented yet
 
-The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ/MTL support, material texture-map import, a material-only constant fragment source, specular/Phong or physically based lighting, shadows, normal maps, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
+The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ/MTL support, MTL texture-map import/ownership, specular/Phong or physically based lighting, shadows, normal maps, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
 
 ## Numerical and graphics limitations
 
@@ -218,7 +231,7 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 - MTL import is deliberately limited to `newmtl` plus diffuse `Kd`. Material names are single tokens; texture maps, opacity, specular/emissive terms, illumination models, and general MTL syntax are not supported.
 - `MaterialBatch` owns a mesh copy for each contiguous material run in this educational implementation; no shared immutable model/primitive buffer or material-indexed draw-command structure exists yet.
 - OBJ texture coordinates and normals are preserved verbatim; the importer does not flip V, normalize normal magnitudes, generate normals, or infer smoothing.
-- Runtime material state is one constant bounded RGB albedo per `Rasterizer`. Imported `Kd` currently modulates the caller-selected varying or texture base source; it is not yet a standalone constant base-color source for UV/normal-only imported meshes.
+- Runtime material state is one constant bounded RGB albedo per `Rasterizer`. `ConstantWhite` now makes imported `Kd` independently renderable, but material texture ownership and automatic per-batch source/texture selection are not implemented yet.
 - Directional lighting is intentionally a bounded diffuse model: one world-space light direction, no attenuation, no specular term, no multiple lights, no normal maps, and no shadowing.
 - Lighting-enabled calls require separate model/view/projection matrices so normal transformation remains correct; precomposed-MVP lighting is deliberately unsupported.
 - Fixed-point coverage quantizes screen-space positions to 1/256 pixel. Geometry smaller than the quantized grid can collapse to zero area by design.
@@ -229,4 +242,4 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 
 ## Next milestone
 
-The highest-value next architectural frontier is an **explicit constant base-color source for material-driven meshes**. Runtime `MaterialState` already represents diffuse albedo and MTL now imports `Kd`, but normal-bearing OBJ meshes use their varying channels for UV and normals rather than RGB. Add an explicit base-color source mode that can select constant white before material modulation, alongside the existing varying-color and texture paths, so a Kd-only OBJ/MTL asset can render correctly without abusing UV/normal channels or requiring an unrelated texture. The default mode must preserve every existing call site and framebuffer hash. Acceptance should prove Kd-only file-driven material rendering, color/texture compatibility, clipping continuity, invalid source/binding fail-closed behavior, and unchanged default output. Once that source contract is executable, bounded MTL `map_Kd` texture ownership can be promoted cleanly as the next asset layer.
+The highest-value next architectural frontier is **bounded MTL `map_Kd` texture ownership and material-driven texture binding**. Extend the material asset representation so one imported material can retain its verified `Kd` plus an optional sibling texture reference, decode the currently supported bounded P6 texture format with owned lifetime, and expose deterministic draw data that selects `BaseColorSource::Texture` only when a material actually owns a diffuse map and `ConstantWhite` otherwise. Keep legacy `load_mtl`/geometry APIs source-compatible or introduce a clearly separate richer asset-loading API rather than changing old return types silently. Acceptance should prove a file-driven OBJ + MTL `map_Kd` + PPM + normals + Lambert render against equivalent programmatic texture/material submissions, preserve A→B→A draw order and texture lifetime, reject missing/unsafe/unsupported texture paths and duplicate `map_Kd` fail-closed, and keep Kd-only/default rendering byte-stable. PNG/JPEG, multiple libraries, general MTL option syntax, opacity, specular maps, normal maps, and PBR remain later phases.
