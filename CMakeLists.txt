@@ -10,6 +10,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 add_library(tiny_renderer
     src/framebuffer.cpp
     src/rasterizer.cpp
+    src/texture.cpp
 )
 
 target_include_directories(tiny_renderer PUBLIC include)
@@ -40,4 +41,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_interpolation_tests tests/test_interpolation.cpp)
     target_link_libraries(tiny_renderer_interpolation_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_interpolation_tests COMMAND tiny_renderer_interpolation_tests)
+
+    add_executable(tiny_renderer_texture_tests tests/test_texture.cpp)
+    target_link_libraries(tiny_renderer_texture_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_texture_tests COMMAND tiny_renderer_texture_tests)
 endif()
