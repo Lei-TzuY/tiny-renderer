@@ -1,18 +1,18 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, and Milestone 4 hardens triangle coverage with fixed-point subpixel semantics.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, and Milestone 5 adds explicit per-varying interpolation semantics.
 
 ## Rendering pipeline
 
 The renderer follows this path for every submitted triangle:
 
-1. **Object space** — user-supplied positions plus a fixed-capacity scalar varying payload. The convenience RGB vertex form occupies varying channels 0–2.
+1. **Object space** — user-supplied positions plus a fixed-capacity scalar varying payload. The convenience RGB vertex form occupies varying channels 0–2 and defaults them to smooth interpolation.
 2. **Model / view / projection** — home-grown `Vec*` and `Mat4` types transform each position into homogeneous clip space.
-3. **Homogeneous clipping** — Sutherland-Hodgman clipping against all six canonical clip planes (`-w <= x,y,z <= w`) prevents invalid/off-screen geometry from reaching rasterization and linearly interpolates every active varying channel at generated clip vertices.
+3. **Homogeneous clipping** — Sutherland-Hodgman clipping against all six canonical clip planes (`-w <= x,y,z <= w`) prevents invalid/off-screen geometry from reaching rasterization. Generated vertices preserve the interpolation contract: smooth channels use the homogeneous edge parameter, noperspective channels use the corresponding projected edge parameter, and flat channels retain the submitted primitive's provoking value.
 4. **Perspective divide** — `(x, y, z) / w` produces normalized device coordinates.
 5. **Viewport transform** — NDC is mapped to pixel coordinates with a top-left image origin.
 6. **Fixed-point triangle setup/coverage** — screen-space vertices are quantized to a 1/256-pixel grid; signed 64-bit integer edge equations plus an exact top-left rule decide pixel-center ownership. Quantized zero-area triangles are discarded.
-7. **Barycentric interpolation** — accepted samples use the original floating screen positions for barycentric depth and perspective-correct varying interpolation through `varying / w` and `1 / w`; coverage hardening therefore does not quantize interpolation semantics.
+7. **Qualified barycentric interpolation** — accepted samples use the original floating screen positions. `smooth` channels use perspective-correct `varying / w` and `1 / w`, `noperspective` channels use screen-linear barycentric interpolation, and `flat` channels use the first submitted vertex as the provoking vertex.
 8. **Color binding** — three validated varying-channel indices select the RGB value written to the framebuffer; the default binding is channels 0, 1, and 2.
 9. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
 10. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
@@ -33,12 +33,13 @@ The sample scene renders three colored triangles through a perspective camera. T
 ## Architecture
 
 - `include/tiny_renderer/math.hpp` — vectors, matrices, camera/view and perspective projection math.
-- `include/tiny_renderer/mesh.hpp` — vertices, fixed-capacity `VaryingPack`, indexed triangle topology, and the reusable mesh data model.
+- `include/tiny_renderer/mesh.hpp` — vertices, fixed-capacity `VaryingPack`, per-channel `Interpolation` qualifiers, indexed triangle topology, and the reusable mesh data model.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
-- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — color-channel binding, mesh preflight/assembly, clip-space polygon clipping, perspective divide, fixed-point subpixel coverage, generic varying interpolation and depth testing.
+- `include/tiny_renderer/rasterizer.hpp`, `src/rasterizer.cpp` — color-channel binding, mesh preflight/assembly, qualifier-aware clip-space interpolation, perspective divide, fixed-point subpixel coverage, qualified raster interpolation and depth testing.
 - `src/main.cpp` — deterministic end-to-end sample scene.
 - `tests/test_main.cpp` — dependency-free mathematical, rasterization, mesh, varying, and integration correctness tests.
 - `tests/test_fixed_point.cpp` — fixed-point ownership, quantization-stability, and subpixel-degeneracy regressions.
+- `tests/test_interpolation.cpp` — analytic smooth/noperspective/flat semantics, clipping behavior, provoking-vertex preservation, and fail-closed qualifier-layout regressions.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
 
 ## Implemented
@@ -86,6 +87,17 @@ The sample scene renders three colored triangles through a perspective camera. T
 - regression proving subpixel perturbations that quantize to identical coordinates have identical coverage
 - quantized zero-area triangles are deterministically rejected
 
+### Milestone 5 — interpolation qualifiers
+
+- each active varying channel carries an explicit `Smooth`, `NoPerspective`, or `Flat` interpolation mode
+- legacy RGB and initializer-list payloads remain smooth by default, preserving existing rendering behavior
+- smooth channels retain perspective-correct interpolation through `varying / w` and `1 / w`
+- noperspective channels interpolate linearly in post-divide screen space, including clip-generated vertices via projected edge parameters
+- flat channels use the first submitted triangle vertex as a deterministic provoking vertex; its value is propagated before clipping so clipping, fan triangulation, and winding normalization cannot change it
+- triangles and meshes reject qualifier-layout mismatches before framebuffer mutation
+- analytic regression exercises smooth, noperspective, and flat channels simultaneously in one projected primitive
+- clipping regressions prove noperspective equivalence and flat provoking-value preservation when the provoking vertex itself lies outside the clip volume
+
 ## Intentionally not implemented yet
 
 The project does **not** yet include textures, OBJ/model-file loading, Phong or physically based lighting, shadows, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
@@ -93,8 +105,8 @@ The project does **not** yet include textures, OBJ/model-file loading, Phong or 
 ## Numerical and graphics limitations
 
 - Homogeneous clipping and attribute interpolation still use single-precision floating point, so geometry extremely close to clip planes remains subject to float precision.
-- Varyings currently use one interpolation class: smooth perspective-correct interpolation. There are no `flat` or `noperspective` qualifiers yet.
 - The varying payload is deliberately fixed at eight scalar channels for deterministic storage and simple teaching value; there is no dynamic shader interface or semantic type system.
+- `flat` currently uses the first submitted vertex as the fixed provoking-vertex convention; this is deliberate and not configurable yet.
 - Fixed-point coverage quantizes screen-space positions to 1/256 pixel. Geometry smaller than the quantized grid can collapse to zero area by design.
 - Raster targets are rejected if their dimensions would make 64-bit fixed-point edge arithmetic unsafe; this is an explicit fail-closed numerical bound.
 - Depth uses the conventional finite OpenGL-style projection and a strict `<` comparison; there is no configurable depth function, reversed-Z, polygon offset, or depth precision analysis yet.
@@ -103,4 +115,4 @@ The project does **not** yet include textures, OBJ/model-file loading, Phong or 
 
 ## Next milestone
 
-The highest-value next step is **per-varying interpolation qualifiers**. The existing generalized payload can be promoted from one hard-coded smooth mode to an explicit interpolation contract supporting perspective-correct `smooth`, screen-linear `noperspective`, and provoking-vertex `flat` channels, with clipping/rasterization regressions proving each semantic end to end. That deepens the attribute architecture without prematurely introducing textures, lighting, or programmable shader execution.
+The highest-value next step is an **in-memory texture sampling vertical slice**. Add a small CPU texture representation plus explicit UV-channel binding, deterministic address/filter semantics, and textured triangle/mesh rendering through the existing smooth varying pipeline. Acceptance should prove perspective-correct UV sampling, clipping continuity, deterministic nearest/bilinear behavior, and fail-closed texture/binding validation before later adding image-file or OBJ loading.
