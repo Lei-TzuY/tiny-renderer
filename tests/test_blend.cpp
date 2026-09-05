@@ -101,7 +101,7 @@ void test_source_and_destination_color_factors() {
         {0.25F, 0.5F, 0.75F},
         {0.5F, 0.25F, 0.75F},
         state);
-    check(same_color(destination_result, {0.5F, 0.375F, 0.75F}),
+    check(same_color(destination_result, {0.3125F, 0.375F, 0.75F}),
           "destination-color and inverse-destination-color factors compose component-wise");
 }
 
