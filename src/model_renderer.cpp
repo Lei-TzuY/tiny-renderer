@@ -119,9 +119,6 @@ void draw_validated_model_impl(
         return;
     }
 
-    // Validate every dynamic draw state before any real range can write color or
-    // depth. This now calls the same internal preflight used by draw_mesh_range
-    // directly instead of relying on a no-op empty-range submission side effect.
     for (const MaterialDraw& draw : asset.draws) {
         preflight_draw(draw);
     }
@@ -148,19 +145,22 @@ PreparedModelSubmission prepare_model_asset(ModelAsset asset, ModelRenderOptions
     return PreparedModelSubmission{std::move(asset), options};
 }
 
-void draw_prepared_model(
+void draw_prepared_model_instances(
     Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
-    const Mat4& model,
+    std::span<const Mat4> models,
     const Mat4& view,
     const Mat4& projection) {
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
-    draw_validated_model_impl(
-        framebuffer,
-        asset,
-        options,
-        [&](const MaterialDraw& draw) {
+    if (models.empty() || asset.draws.empty()) {
+        return;
+    }
+
+    // Batch-level fail-closed preflight: every instance and every material draw
+    // must validate before the first submitted range can mutate color or depth.
+    for (const Mat4& model : models) {
+        for (const MaterialDraw& draw : asset.draws) {
             detail::preflight_mesh_range_submission(
                 framebuffer,
                 asset.mesh,
@@ -172,23 +172,38 @@ void draw_prepared_model(
                 base_color_source_for(draw),
                 &model,
                 false);
-        },
-        [&](Rasterizer& rasterizer, DrawRange range) {
-            rasterizer.draw_mesh_range(asset.mesh, range, model, view, projection);
-        });
+        }
+    }
+
+    // Execution order is deterministic: instance input order, then canonical
+    // material draw order within each instance.
+    for (const Mat4& model : models) {
+        for (const MaterialDraw& draw : asset.draws) {
+            Rasterizer rasterizer(
+                framebuffer,
+                {},
+                texture_binding_for(draw, options),
+                options.directional_light,
+                draw.material,
+                base_color_source_for(draw));
+            rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
+        }
+    }
 }
 
-void draw_prepared_model(
+void draw_prepared_model_instances(
     Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
-    const Mat4& mvp) {
+    std::span<const Mat4> mvps) {
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
-    draw_validated_model_impl(
-        framebuffer,
-        asset,
-        options,
-        [&](const MaterialDraw& draw) {
+    if (mvps.empty() || asset.draws.empty()) {
+        return;
+    }
+
+    for (const Mat4& mvp : mvps) {
+        (void)mvp;
+        for (const MaterialDraw& draw : asset.draws) {
             detail::preflight_mesh_range_submission(
                 framebuffer,
                 asset.mesh,
@@ -200,10 +215,45 @@ void draw_prepared_model(
                 base_color_source_for(draw),
                 nullptr,
                 true);
-        },
-        [&](Rasterizer& rasterizer, DrawRange range) {
-            rasterizer.draw_mesh_range(asset.mesh, range, mvp);
-        });
+        }
+    }
+
+    for (const Mat4& mvp : mvps) {
+        for (const MaterialDraw& draw : asset.draws) {
+            Rasterizer rasterizer(
+                framebuffer,
+                {},
+                texture_binding_for(draw, options),
+                options.directional_light,
+                draw.material,
+                base_color_source_for(draw));
+            rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
+        }
+    }
+}
+
+void draw_prepared_model(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& model,
+    const Mat4& view,
+    const Mat4& projection) {
+    draw_prepared_model_instances(
+        framebuffer,
+        prepared,
+        std::span<const Mat4>{&model, 1U},
+        view,
+        projection);
+}
+
+void draw_prepared_model(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& mvp) {
+    draw_prepared_model_instances(
+        framebuffer,
+        prepared,
+        std::span<const Mat4>{&mvp, 1U});
 }
 
 void draw_model_asset(
