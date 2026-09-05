@@ -1,12 +1,12 @@
 # tiny-renderer
 
-`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, and Milestone 9 adds inverse-transpose normal handling plus deterministic world-space directional Lambert lighting through the same fragment path.
+`tiny-renderer` is a correctness-first educational CPU software rasterizer written in modern C++20 without OpenGL, Vulkan, Direct3D, SDL rendering APIs, or an existing rasterization library. Milestone 1 established the end-to-end triangle pipeline, Milestone 2 added indexed meshes, Milestone 3 generalized vertex varyings, Milestone 4 hardened fixed-point coverage, Milestone 5 added explicit interpolation semantics, Milestone 6 added deterministic in-memory texture sampling, Milestone 7 added bounded OBJ position/UV import, Milestone 8 added bounded binary PPM texture-file import, Milestone 9 added inverse-transpose normal handling plus deterministic world-space directional Lambert lighting, and Milestone 10 adds bounded OBJ normal import that feeds that lighting path directly.
 
 ## Rendering pipeline
 
 The renderer follows this path for every submitted triangle:
 
-1. **Object space** — user-supplied or imported positions plus a fixed-capacity scalar varying payload. The convenience RGB vertex form occupies varying channels 0–2 and defaults them to smooth interpolation; the bounded OBJ importer emits raw OBJ UVs in smooth channels 0–1.
+1. **Object space** — user-supplied or imported positions plus a fixed-capacity scalar varying payload. The convenience RGB vertex form occupies varying channels 0–2 and defaults them to smooth interpolation. Bounded OBJ `v/vt` import emits UV in channels 0–1; bounded `v/vt/vn` import emits `[u, v, nx, ny, nz]` in channels 0–4.
 2. **Model / view / projection** — home-grown `Vec*` and `Mat4` types transform each position into homogeneous clip space. When directional lighting is enabled, explicitly bound object-space normal channels are transformed into world space by the model matrix's inverse-transpose 3×3 normal matrix before clipping.
 3. **Homogeneous clipping** — Sutherland-Hodgman clipping against all six canonical clip planes (`-w <= x,y,z <= w`) prevents invalid/off-screen geometry from reaching rasterization. Generated vertices preserve the interpolation contract: smooth channels use the homogeneous edge parameter, noperspective channels use the corresponding projected edge parameter, and flat channels retain the submitted primitive's provoking value. Transformed normal channels remain ordinary varyings here, so normal clipping shares the same deterministic path.
 4. **Perspective divide** — `(x, y, z) / w` produces normalized device coordinates.
@@ -19,7 +19,7 @@ The renderer follows this path for every submitted triangle:
 11. **Depth testing** — NDC depth is mapped to `[0, 1]` and compared against a floating-point z-buffer.
 12. **Framebuffer / image output** — RGB float pixels plus depth are stored in CPU memory and emitted as binary PPM (`P6`) without a GUI.
 
-Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. Asset import stays above the rendering core: the OBJ loader converts a bounded geometry subset into ordinary `Mesh`, while the PPM loader converts a bounded image subset into ordinary `Texture2D`. The rasterizer therefore remains unaware of file formats.
+Indexed meshes are deliberately a submission/assembly layer above this pipeline: triangle indices reference reusable vertices, topology and varying contracts are validated before drawing, and each assembled face then enters the same clipping/rasterization/depth path as an explicitly submitted triangle. Asset import stays above the rendering core: the OBJ loader converts a bounded geometry/attribute subset into ordinary `Mesh`, while the PPM loader converts a bounded image subset into ordinary `Texture2D`. The rasterizer therefore remains unaware of file formats.
 
 ## Build and run
 
@@ -30,13 +30,13 @@ ctest --test-dir build --output-on-failure
 ./build/tiny_renderer_sample milestone1.ppm
 ```
 
-The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, and lighting are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
+The original sample scene still renders three colored triangles through a perspective camera. Two overlap at different depths to make z-buffer visibility obvious, and one crosses the left clip plane to exercise clipping. Texture sampling, file-driven OBJ/PPM import, normal import, and lighting are exercised by dedicated tests without changing this baseline sample or its deterministic framebuffer contract.
 
 ## Architecture
 
 - `include/tiny_renderer/math.hpp` — vectors, `Mat3`/`Mat4`, camera/view and perspective projection math, plus inverse-transpose model normal-matrix construction.
 - `include/tiny_renderer/mesh.hpp` — vertices, fixed-capacity `VaryingPack`, per-channel `Interpolation` qualifiers, indexed triangle topology, and the reusable mesh data model.
-- `include/tiny_renderer/obj_loader.hpp`, `src/obj_loader.cpp` — bounded OBJ stream/file parsing, source-line diagnostics, and deterministic position/UV pair normalization into `Mesh`.
+- `include/tiny_renderer/obj_loader.hpp`, `src/obj_loader.cpp` — bounded OBJ stream/file parsing, source-line diagnostics, deterministic position/UV pair or position/UV/normal triple normalization into `Mesh`, and a single-layout-per-mesh contract.
 - `include/tiny_renderer/ppm_loader.hpp`, `src/ppm_loader.cpp` — bounded binary PPM stream/file decoding with strict header/raster validation into `Texture2D`.
 - `include/tiny_renderer/texture.hpp`, `src/texture.cpp` — validated in-memory RGB textures plus deterministic normalized-coordinate addressing and nearest/bilinear sampling.
 - `include/tiny_renderer/framebuffer.hpp`, `src/framebuffer.cpp` — RGB/depth storage, depth writes, deterministic byte conversion and PPM output.
@@ -46,7 +46,7 @@ The original sample scene still renders three colored triangles through a perspe
 - `tests/test_fixed_point.cpp` — fixed-point ownership, quantization-stability, and subpixel-degeneracy regressions.
 - `tests/test_interpolation.cpp` — analytic smooth/noperspective/flat semantics, clipping behavior, provoking-vertex preservation, and fail-closed qualifier-layout regressions.
 - `tests/test_texture.cpp` — sampler addressing/filtering, perspective-correct UV, clipping continuity, and fail-closed texture-binding regressions.
-- `tests/test_obj_loader.cpp`, `tests/fixtures/textured_quad.obj` — OBJ syntax/index normalization, rejection, diagnostics, and textured-render equivalence regressions.
+- `tests/test_obj_loader.cpp`, `tests/fixtures/textured_quad.obj`, `tests/fixtures/lit_textured_quad.obj` — OBJ pair/triple index normalization, rejection, diagnostics, legacy textured equivalence, and file-driven textured-Lambert normal-import equivalence.
 - `tests/test_ppm_loader.cpp`, `tests/fixtures/checker.ppm` — P6 binary decoding, malformed/truncated/overflow rejection, and file-driven OBJ + PPM render equivalence.
 - `tests/test_lighting.cpp` — inverse-transpose normal correctness, non-uniform-transform lighting, texture modulation, lit clipping equivalence, and fail-closed lighting-contract regressions.
 - `.github/workflows/ci.yml` — Linux/macOS build/test plus Linux ASan/UBSan coverage.
@@ -125,7 +125,7 @@ The original sample scene still renders three colored triangles through a perspe
 - `load_obj(std::istream&)` and `load_obj_file(path)` parse OBJ data without coupling asset I/O to rasterization
 - the accepted geometry subset is intentionally explicit: `v x y z`, `vt u v`, and exactly-three-corner `f v/vt v/vt v/vt` records
 - comments and non-geometric `o`, `g`, `s`, `usemtl`, and `mtllib` metadata are tolerated; material libraries are not loaded or interpreted
-- only positive absolute 1-based indices are accepted; zero, relative indices, missing UVs, out-of-range references, malformed finite numbers, normals, `v/vt/vn`, quads, ngons, and other unsupported directives fail closed with `ObjParseError`
+- only positive absolute 1-based indices are accepted; zero, relative indices, missing UVs, out-of-range references, malformed finite numbers, quads, ngons, and other unsupported directives fail closed with `ObjParseError`
 - parse errors preserve the failing source line number for deterministic diagnostics
 - independent OBJ position/UV references are normalized into the renderer's unified vertex representation using `(position index, UV index)` as the identity; the same pair reuses a vertex while one position paired with two UVs is split
 - unified vertices and triangle indices are emitted in deterministic first-seen face/corner order
@@ -157,9 +157,21 @@ The original sample scene still renders three colored triangles through a perspe
 - regressions prove inverse-transpose correctness under non-uniform scaling, transformed tangent orthogonality, textured Lambert composition, lit clipping equivalence, and fail-closed invalid binding/MVP/singular-model cases
 - lighting is disabled by default, so the earlier baseline sample and unlit rendering contract remain unchanged
 
+### Milestone 10 — bounded OBJ normal import
+
+- accepts finite, non-zero `vn x y z` records while preserving the existing `v` and two-component `vt` subset
+- accepts exactly-three-corner `v/vt/vn` faces in addition to the legacy triangle `v/vt` form
+- every corner of a face must use one index layout, and all faces in one loaded mesh must consistently use either `v/vt` or `v/vt/vn`; mixed schemas fail closed before a `Mesh` is returned
+- only positive absolute 1-based position, texture-coordinate, and normal indices are accepted; `v//vn`, zero/relative indices, missing attributes, and out-of-range references remain rejected
+- normal-bearing unified vertices use `(position index, UV index, normal index)` identity, preserving deterministic first-seen reuse/splitting across UV and normal seams
+- normal-bearing imports emit five smooth varying channels `[u, v, nx, ny, nz]`, directly compatible with `TextureBinding{...,0,1,...}` and `NormalBinding{2,3,4}`
+- legacy `v/vt` imports remain two-channel UV payloads and retain Milestone 7 byte/hash-equivalent rendering behavior
+- regressions cover triple-index normalization, malformed/zero/out-of-range/relative normals, missing UVs, mixed corner/mesh layouts, and unsupported directives
+- an in-repo independent-index `v/vt/vn` fixture plus the existing P6 fixture drives the real textured Lambert path and is framebuffer byte/hash-identical to the equivalent programmatic normal-bearing mesh
+
 ## Intentionally not implemented yet
 
-The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ support, OBJ normal import, material interpretation, specular/Phong or physically based lighting, shadows, normal maps, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
+The project does **not** yet include PNG/JPEG or general Netpbm input, general/full OBJ support, material interpretation, specular/Phong or physically based lighting, shadows, normal maps, ray tracing, GPU acceleration, anti-aliasing, a scene graph, programmable shaders, or a windowing/GUI layer.
 
 ## Numerical and graphics limitations
 
@@ -169,8 +181,8 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 - Textures use linear RGB float arrays supplied by the caller or decoded byte-for-byte from the bounded P6 loader; there are no mipmaps, anisotropic filtering, sRGB conversion, compressed formats, or general image decoders.
 - The PPM loader accepts only P6/maxval-255 images, requires exactly one ASCII whitespace raster separator, rejects trailing bytes, and caps raster payloads at 64 MiB. These are deliberate bounded-decoder semantics rather than a claim of full Netpbm conformance.
 - Texture bindings are non-owning and the bound `Texture2D` must outlive rasterizer draw calls.
-- OBJ import remains deliberately bounded to positions, 2-D texture coordinates, positive absolute indices, and triangle `v/vt` faces. It does not yet import normals, triangulate polygons, resolve relative indices, or evaluate material libraries.
-- OBJ texture coordinates are preserved verbatim; because this renderer's in-memory texture rows use a top-origin convention, callers remain responsible for any asset-specific V-coordinate convention conversion.
+- OBJ import remains deliberately bounded to positions, 2-D texture coordinates, optional explicit normals, positive absolute indices, and triangle faces. A loaded mesh must consistently use either `v/vt` or `v/vt/vn`; `v//vn`, mixed layouts, polygon triangulation, relative indices, generated normals, smoothing-group semantics, and material-library evaluation are not supported.
+- OBJ texture coordinates and normals are preserved verbatim; the importer does not flip V, normalize normal magnitudes, generate normals, or infer smoothing.
 - Directional lighting is intentionally a bounded diffuse model: one world-space light direction, no attenuation, no specular term, no multiple lights, no materials, no normal maps, and no shadowing.
 - Lighting-enabled calls require separate model/view/projection matrices so normal transformation remains correct; precomposed-MVP lighting is deliberately unsupported.
 - Fixed-point coverage quantizes screen-space positions to 1/256 pixel. Geometry smaller than the quantized grid can collapse to zero area by design.
@@ -181,4 +193,4 @@ The project does **not** yet include PNG/JPEG or general Netpbm input, general/f
 
 ## Next milestone
 
-The highest-value next architectural frontier is **bounded OBJ normal import**. Extend the existing strict OBJ layer to accept finite `vn` records and triangle `v/vt/vn` faces, normalize independent position/UV/normal index triples into unified vertices, and emit UV plus normal varyings that bind directly to the already-verified textured Lambert path. Acceptance should prove deterministic triple-index splitting/reuse, malformed/out-of-range normal rejection, and a file-driven `OBJ(v/vt/vn) + PPM + lighting` render that is byte-identical to the equivalent programmatic mesh/texture/normals. Polygon triangulation, relative indices, materials, specular lighting, and general OBJ conformance should remain out of scope until that normal-bearing asset path is proven.
+The highest-value next architectural frontier is **runtime material/albedo state**. Add a bounded material state that multiplies the existing base varying color or sampled texture before the already-verified Lambert stage, with a byte-identical default state and fail-closed validation for non-finite/out-of-range material values. Acceptance should prove untextured and textured albedo modulation, composition with directional lighting and clipping, and unchanged output when the default white albedo is used. Only after that runtime material contract is executable and verified should OBJ `usemtl` / MTL import be promoted, so file-format names never outrun actual rendering semantics.
