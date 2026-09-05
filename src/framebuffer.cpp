@@ -12,7 +12,38 @@ std::uint8_t to_u8(float value) {
     const float clamped = std::clamp(value, 0.0F, 1.0F);
     return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
 }
+
+bool depth_compare_passes(DepthCompare compare, float incoming, float stored) {
+    switch (compare) {
+        case DepthCompare::Less:
+            return incoming < stored;
+        case DepthCompare::LessEqual:
+            return incoming <= stored;
+        case DepthCompare::Greater:
+            return incoming > stored;
+        case DepthCompare::GreaterEqual:
+            return incoming >= stored;
+        case DepthCompare::Always:
+            return true;
+        case DepthCompare::Never:
+            return false;
+    }
+    throw std::invalid_argument("unknown depth comparison mode");
+}
 }  // namespace
+
+void validate_depth_state(const DepthState& state) {
+    switch (state.compare) {
+        case DepthCompare::Less:
+        case DepthCompare::LessEqual:
+        case DepthCompare::Greater:
+        case DepthCompare::GreaterEqual:
+        case DepthCompare::Always:
+        case DepthCompare::Never:
+            return;
+    }
+    throw std::invalid_argument("unknown depth comparison mode");
+}
 
 Framebuffer::Framebuffer(std::size_t width, std::size_t height)
     : width_(width), height_(height), color_(width * height), depth_(width * height) {
@@ -27,17 +58,27 @@ void Framebuffer::clear(const Vec3& color, float depth) {
     std::fill(depth_.begin(), depth_.end(), depth);
 }
 
-bool Framebuffer::depth_test_and_write(std::size_t x, std::size_t y, float depth, const Vec3& color) {
+bool Framebuffer::depth_test_and_write(
+    std::size_t x,
+    std::size_t y,
+    float depth,
+    const Vec3& color,
+    DepthState state) {
+    validate_depth_state(state);
     if (x >= width_ || y >= height_ || !std::isfinite(depth)) {
         return false;
     }
+
     const std::size_t i = index(x, y);
-    if (depth < depth_[i]) {
-        depth_[i] = depth;
-        color_[i] = color;
-        return true;
+    if (!depth_compare_passes(state.compare, depth, depth_[i])) {
+        return false;
     }
-    return false;
+
+    if (state.write_enabled) {
+        depth_[i] = depth;
+    }
+    color_[i] = color;
+    return true;
 }
 
 const Vec3& Framebuffer::color_at(std::size_t x, std::size_t y) const {
