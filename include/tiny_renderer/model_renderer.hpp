@@ -18,6 +18,7 @@ struct ModelRenderOptions {
     FrontFace front_face{FrontFace::CounterClockwise};
     DepthState depth_state{};
     ViewportState viewport_state{};
+    StencilState stencil_state{};
 };
 
 class PreparedModelSubmission {

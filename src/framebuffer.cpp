@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace tiny_renderer {
@@ -30,6 +31,68 @@ bool depth_compare_passes(DepthCompare compare, float incoming, float stored) {
     }
     throw std::invalid_argument("unknown depth comparison mode");
 }
+
+bool stencil_compare_passes(
+    StencilCompare compare,
+    std::uint8_t reference,
+    std::uint8_t stored,
+    std::uint8_t read_mask) {
+    const std::uint8_t masked_reference = static_cast<std::uint8_t>(reference & read_mask);
+    const std::uint8_t masked_stored = static_cast<std::uint8_t>(stored & read_mask);
+    switch (compare) {
+        case StencilCompare::Never:
+            return false;
+        case StencilCompare::Less:
+            return masked_reference < masked_stored;
+        case StencilCompare::LessEqual:
+            return masked_reference <= masked_stored;
+        case StencilCompare::Greater:
+            return masked_reference > masked_stored;
+        case StencilCompare::GreaterEqual:
+            return masked_reference >= masked_stored;
+        case StencilCompare::Equal:
+            return masked_reference == masked_stored;
+        case StencilCompare::NotEqual:
+            return masked_reference != masked_stored;
+        case StencilCompare::Always:
+            return true;
+    }
+    throw std::invalid_argument("unknown stencil comparison mode");
+}
+
+std::uint8_t stencil_operation_result(
+    StencilOp operation,
+    std::uint8_t stored,
+    std::uint8_t reference) {
+    switch (operation) {
+        case StencilOp::Keep:
+            return stored;
+        case StencilOp::Zero:
+            return 0U;
+        case StencilOp::Replace:
+            return reference;
+        case StencilOp::IncrementClamp:
+            return stored == std::numeric_limits<std::uint8_t>::max()
+                ? stored
+                : static_cast<std::uint8_t>(stored + 1U);
+        case StencilOp::DecrementClamp:
+            return stored == 0U ? stored : static_cast<std::uint8_t>(stored - 1U);
+        case StencilOp::Invert:
+            return static_cast<std::uint8_t>(~stored);
+    }
+    throw std::invalid_argument("unknown stencil operation");
+}
+
+void apply_stencil_operation(
+    std::uint8_t& stored,
+    StencilOp operation,
+    std::uint8_t reference,
+    std::uint8_t write_mask) {
+    const std::uint8_t result = stencil_operation_result(operation, stored, reference);
+    const std::uint8_t preserved = static_cast<std::uint8_t>(stored & static_cast<std::uint8_t>(~write_mask));
+    const std::uint8_t written = static_cast<std::uint8_t>(result & write_mask);
+    stored = static_cast<std::uint8_t>(preserved | written);
+}
 }  // namespace
 
 void validate_depth_state(const DepthState& state) {
@@ -45,17 +108,108 @@ void validate_depth_state(const DepthState& state) {
     throw std::invalid_argument("unknown depth comparison mode");
 }
 
+void validate_stencil_state(const StencilState& state) {
+    switch (state.compare) {
+        case StencilCompare::Never:
+        case StencilCompare::Less:
+        case StencilCompare::LessEqual:
+        case StencilCompare::Greater:
+        case StencilCompare::GreaterEqual:
+        case StencilCompare::Equal:
+        case StencilCompare::NotEqual:
+        case StencilCompare::Always:
+            break;
+        default:
+            throw std::invalid_argument("unknown stencil comparison mode");
+    }
+
+    const auto validate_operation = [](StencilOp operation) {
+        switch (operation) {
+            case StencilOp::Keep:
+            case StencilOp::Zero:
+            case StencilOp::Replace:
+            case StencilOp::IncrementClamp:
+            case StencilOp::DecrementClamp:
+            case StencilOp::Invert:
+                return;
+        }
+        throw std::invalid_argument("unknown stencil operation");
+    };
+
+    validate_operation(state.stencil_fail);
+    validate_operation(state.depth_fail);
+    validate_operation(state.pass);
+}
+
 Framebuffer::Framebuffer(std::size_t width, std::size_t height)
-    : width_(width), height_(height), color_(width * height), depth_(width * height) {
+    : width_(width),
+      height_(height),
+      color_(width * height),
+      depth_(width * height),
+      stencil_(width * height) {
     if (width == 0 || height == 0) {
         throw std::invalid_argument("framebuffer dimensions must be non-zero");
     }
     clear();
 }
 
-void Framebuffer::clear(const Vec3& color, float depth) {
+void Framebuffer::clear(const Vec3& color, float depth, std::uint8_t stencil) {
     std::fill(color_.begin(), color_.end(), color);
     std::fill(depth_.begin(), depth_.end(), depth);
+    std::fill(stencil_.begin(), stencil_.end(), stencil);
+}
+
+bool Framebuffer::test_and_write(
+    std::size_t x,
+    std::size_t y,
+    float depth,
+    const Vec3& color,
+    DepthState depth_state,
+    StencilState stencil_state) {
+    validate_depth_state(depth_state);
+    validate_stencil_state(stencil_state);
+    if (x >= width_ || y >= height_ || !std::isfinite(depth)) {
+        return false;
+    }
+
+    const std::size_t i = index(x, y);
+    if (stencil_state.enabled
+        && !stencil_compare_passes(
+            stencil_state.compare,
+            stencil_state.reference,
+            stencil_[i],
+            stencil_state.read_mask)) {
+        apply_stencil_operation(
+            stencil_[i],
+            stencil_state.stencil_fail,
+            stencil_state.reference,
+            stencil_state.write_mask);
+        return false;
+    }
+
+    if (!depth_compare_passes(depth_state.compare, depth, depth_[i])) {
+        if (stencil_state.enabled) {
+            apply_stencil_operation(
+                stencil_[i],
+                stencil_state.depth_fail,
+                stencil_state.reference,
+                stencil_state.write_mask);
+        }
+        return false;
+    }
+
+    if (stencil_state.enabled) {
+        apply_stencil_operation(
+            stencil_[i],
+            stencil_state.pass,
+            stencil_state.reference,
+            stencil_state.write_mask);
+    }
+    if (depth_state.write_enabled) {
+        depth_[i] = depth;
+    }
+    color_[i] = color;
+    return true;
 }
 
 bool Framebuffer::depth_test_and_write(
@@ -64,21 +218,7 @@ bool Framebuffer::depth_test_and_write(
     float depth,
     const Vec3& color,
     DepthState state) {
-    validate_depth_state(state);
-    if (x >= width_ || y >= height_ || !std::isfinite(depth)) {
-        return false;
-    }
-
-    const std::size_t i = index(x, y);
-    if (!depth_compare_passes(state.compare, depth, depth_[i])) {
-        return false;
-    }
-
-    if (state.write_enabled) {
-        depth_[i] = depth;
-    }
-    color_[i] = color;
-    return true;
+    return test_and_write(x, y, depth, color, state, {});
 }
 
 const Vec3& Framebuffer::color_at(std::size_t x, std::size_t y) const {
@@ -87,6 +227,10 @@ const Vec3& Framebuffer::color_at(std::size_t x, std::size_t y) const {
 
 float Framebuffer::depth_at(std::size_t x, std::size_t y) const {
     return depth_.at(index(x, y));
+}
+
+std::uint8_t Framebuffer::stencil_at(std::size_t x, std::size_t y) const {
+    return stencil_.at(index(x, y));
 }
 
 std::vector<std::uint8_t> Framebuffer::rgb8() const {
