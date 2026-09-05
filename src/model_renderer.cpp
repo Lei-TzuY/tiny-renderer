@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "rasterizer_validation.hpp"
+
 namespace tiny_renderer {
 namespace {
 
@@ -106,31 +108,24 @@ BaseColorSource base_color_source_for(const MaterialDraw& draw) {
     return draw.diffuse_texture ? BaseColorSource::Texture : BaseColorSource::ConstantWhite;
 }
 
-template <typename SubmitRange>
+template <typename PreflightDraw, typename SubmitRange>
 void draw_validated_model_impl(
     Framebuffer& framebuffer,
     const ModelAsset& asset,
     const ModelRenderOptions& options,
+    PreflightDraw&& preflight_draw,
     SubmitRange&& submit_range) {
     if (asset.draws.empty()) {
         return;
     }
 
-    // Dynamic preflight: reuse the range submission's empty-range contract to
-    // validate framebuffer, varying/UV, light and transform-dependent state for
-    // every material draw without touching color or depth.
+    // Validate every dynamic draw state before any real range can write color or
+    // depth. This now calls the same internal preflight used by draw_mesh_range
+    // directly instead of relying on a no-op empty-range submission side effect.
     for (const MaterialDraw& draw : asset.draws) {
-        Rasterizer rasterizer(
-            framebuffer,
-            {},
-            texture_binding_for(draw, options),
-            options.directional_light,
-            draw.material,
-            base_color_source_for(draw));
-        submit_range(rasterizer, DrawRange{0U, 0U});
+        preflight_draw(draw);
     }
 
-    // All static model state and dynamic draw state is now known valid.
     for (const MaterialDraw& draw : asset.draws) {
         Rasterizer rasterizer(
             framebuffer,
@@ -165,6 +160,19 @@ void draw_prepared_model(
         framebuffer,
         asset,
         options,
+        [&](const MaterialDraw& draw) {
+            detail::preflight_mesh_range_submission(
+                framebuffer,
+                asset.mesh,
+                DrawRange{0U, 0U},
+                {},
+                texture_binding_for(draw, options),
+                options.directional_light,
+                draw.material,
+                base_color_source_for(draw),
+                &model,
+                false);
+        },
         [&](Rasterizer& rasterizer, DrawRange range) {
             rasterizer.draw_mesh_range(asset.mesh, range, model, view, projection);
         });
@@ -180,6 +188,19 @@ void draw_prepared_model(
         framebuffer,
         asset,
         options,
+        [&](const MaterialDraw& draw) {
+            detail::preflight_mesh_range_submission(
+                framebuffer,
+                asset.mesh,
+                DrawRange{0U, 0U},
+                {},
+                texture_binding_for(draw, options),
+                options.directional_light,
+                draw.material,
+                base_color_source_for(draw),
+                nullptr,
+                true);
+        },
         [&](Rasterizer& rasterizer, DrawRange range) {
             rasterizer.draw_mesh_range(asset.mesh, range, mvp);
         });
@@ -197,6 +218,19 @@ void draw_model_asset(
         framebuffer,
         asset,
         options,
+        [&](const MaterialDraw& draw) {
+            detail::preflight_mesh_range_submission(
+                framebuffer,
+                asset.mesh,
+                DrawRange{0U, 0U},
+                {},
+                texture_binding_for(draw, options),
+                options.directional_light,
+                draw.material,
+                base_color_source_for(draw),
+                &model,
+                false);
+        },
         [&](Rasterizer& rasterizer, DrawRange range) {
             rasterizer.draw_mesh_range(asset.mesh, range, model, view, projection);
         });
@@ -212,6 +246,19 @@ void draw_model_asset(
         framebuffer,
         asset,
         options,
+        [&](const MaterialDraw& draw) {
+            detail::preflight_mesh_range_submission(
+                framebuffer,
+                asset.mesh,
+                DrawRange{0U, 0U},
+                {},
+                texture_binding_for(draw, options),
+                options.directional_light,
+                draw.material,
+                base_color_source_for(draw),
+                nullptr,
+                true);
+        },
         [&](Rasterizer& rasterizer, DrawRange range) {
             rasterizer.draw_mesh_range(asset.mesh, range, mvp);
         });
