@@ -113,6 +113,39 @@ void test_mvp_batch_matches_sequential_submission() {
           "MVP instance batch preserves sequential deterministic hashing");
 }
 
+void test_instance_order_is_observable_and_deterministic() {
+    ModelAsset asset = load_obj_model_asset_file(fixture_path("material_texture_sequence.obj"));
+    const PreparedModelSubmission prepared = prepare_model_asset(std::move(asset), lit_fixture_options());
+
+    // Both transforms leave z=0 geometry at the same projected location/depth.
+    // The second transform flips the normal, so Lambert shading differs. With
+    // strict '<' depth testing the first submitted instance owns equal-depth
+    // samples, making input order directly observable in framebuffer bytes.
+    const Mat4 lit = Mat4::identity();
+    const Mat4 flipped = Mat4::scale({1.0F, 1.0F, -1.0F});
+    const std::array<Mat4, 2U> forward{lit, flipped};
+    const std::array<Mat4, 2U> reverse{flipped, lit};
+
+    Framebuffer forward_fb(65U, 65U);
+    draw_prepared_model_instances(
+        forward_fb,
+        prepared,
+        std::span<const Mat4>{forward},
+        Mat4::identity(),
+        Mat4::identity());
+
+    Framebuffer reverse_fb(65U, 65U);
+    draw_prepared_model_instances(
+        reverse_fb,
+        prepared,
+        std::span<const Mat4>{reverse},
+        Mat4::identity(),
+        Mat4::identity());
+
+    check(forward_fb.rgb8() != reverse_fb.rgb8(),
+          "reversing equal-depth lit instances changes ownership, proving instance input order is preserved");
+}
+
 void test_later_singular_instance_fails_before_any_batch_write() {
     ModelAsset asset = load_obj_model_asset_file(fixture_path("material_texture_sequence.obj"));
     const PreparedModelSubmission prepared = prepare_model_asset(std::move(asset), lit_fixture_options());
@@ -192,6 +225,7 @@ int main() {
     try {
         test_model_transform_batch_matches_sequential_submission();
         test_mvp_batch_matches_sequential_submission();
+        test_instance_order_is_observable_and_deterministic();
         test_later_singular_instance_fails_before_any_batch_write();
         test_empty_instance_batches_are_noops();
         test_nonempty_mvp_batch_preserves_lighting_restriction();
