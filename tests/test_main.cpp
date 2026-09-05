@@ -46,6 +46,21 @@ Triangle ndc_triangle(float z, const Vec3& color) {
     }};
 }
 
+Mesh centered_quad(const Vec3& color) {
+    Mesh mesh;
+    mesh.vertices = {
+        {{-0.5F, -0.5F, 0.0F}, color},
+        {{0.5F, -0.5F, 0.0F}, color},
+        {{0.5F, 0.5F, 0.0F}, color},
+        {{-0.5F, 0.5F, 0.0F}, color},
+    };
+    mesh.triangles = {
+        TriangleIndices{0U, 1U, 2U},
+        TriangleIndices{0U, 2U, 3U},
+    };
+    return mesh;
+}
+
 void test_math() {
     const Vec3 a{1.0F, 2.0F, 3.0F};
     const Vec3 b{-2.0F, 0.5F, 4.0F};
@@ -166,6 +181,86 @@ void test_deterministic_hash() {
     check(hash == expected, "deterministic framebuffer hash");
 }
 
+void test_indexed_mesh_matches_explicit_triangles() {
+    const Mesh mesh = centered_quad({0.2F, 0.7F, 0.4F});
+
+    Framebuffer indexed(33, 33);
+    Rasterizer indexed_rasterizer(indexed);
+    indexed_rasterizer.draw_mesh(mesh, Mat4::identity());
+
+    Framebuffer explicit_triangles(33, 33);
+    Rasterizer explicit_rasterizer(explicit_triangles);
+    explicit_rasterizer.draw_triangle(Triangle{mesh.vertices[0], mesh.vertices[1], mesh.vertices[2]}, Mat4::identity());
+    explicit_rasterizer.draw_triangle(Triangle{mesh.vertices[0], mesh.vertices[2], mesh.vertices[3]}, Mat4::identity());
+
+    check(indexed.rgb8() == explicit_triangles.rgb8(), "indexed mesh matches equivalent explicit triangle submission");
+}
+
+void test_shared_edge_crack_free() {
+    Framebuffer fb(33, 33);
+    Rasterizer rasterizer(fb);
+    rasterizer.draw_mesh(centered_quad({1.0F, 1.0F, 1.0F}), Mat4::identity());
+
+    check(count_non_black(fb) == 256U, "two indexed triangles cover their shared-edge quad without cracks or double-coverage spill");
+}
+
+void test_invalid_mesh_is_fail_closed() {
+    Mesh mesh = centered_quad({0.8F, 0.3F, 0.1F});
+    mesh.triangles.push_back(TriangleIndices{0U, 2U, 99U});
+
+    Framebuffer fb(33, 33);
+    Rasterizer rasterizer(fb);
+    const std::uint64_t before = fb.fnv1a64();
+    bool threw = false;
+    try {
+        rasterizer.draw_mesh(mesh, Mat4::identity());
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+
+    check(threw, "out-of-range mesh index is rejected");
+    check(fb.fnv1a64() == before, "malformed indexed mesh is rejected before any framebuffer write");
+}
+
+void test_perspective_correct_color() {
+    const Triangle triangle{{
+        {{-0.5F, -0.5F, 1.0F}, {1.0F, 0.0F, 0.0F}},
+        {{1.0F, -1.0F, 2.0F}, {0.0F, 1.0F, 0.0F}},
+        {{-2.0F, 2.0F, 4.0F}, {0.0F, 0.0F, 1.0F}},
+    }};
+
+    Mat4 projective{};
+    projective(0, 0) = 1.0F;
+    projective(1, 1) = 1.0F;
+    projective(3, 2) = 1.0F;
+
+    Framebuffer fb(33, 33);
+    Rasterizer rasterizer(fb);
+    rasterizer.draw_triangle(triangle, projective);
+
+    const Vec2 screen_a{8.0F, 24.0F};
+    const Vec2 screen_b{24.0F, 24.0F};
+    const Vec2 screen_c{8.0F, 8.0F};
+    const Vec2 probe{13.5F, 18.5F};
+    const auto bary = barycentric_coordinates(screen_a, screen_b, screen_c, probe);
+    check(bary.has_value(), "perspective interpolation probe has barycentric coordinates");
+    if (!bary) {
+        return;
+    }
+
+    const float denominator = bary->x / 1.0F + bary->y / 2.0F + bary->z / 4.0F;
+    const Vec3 expected{
+        (bary->x / 1.0F) / denominator,
+        (bary->y / 2.0F) / denominator,
+        (bary->z / 4.0F) / denominator,
+    };
+    const Vec3& actual = fb.color_at(13U, 18U);
+    check_near(actual.x, expected.x, "perspective-correct red", 2.0e-4F);
+    check_near(actual.y, expected.y, "perspective-correct green", 2.0e-4F);
+    check_near(actual.z, expected.z, "perspective-correct blue", 2.0e-4F);
+    check(std::fabs(actual.x - bary->x) > 0.1F, "perspective-correct result is observably different from affine interpolation");
+}
+
 }  // namespace
 
 int main() {
@@ -178,6 +273,10 @@ int main() {
         test_depth_ordering();
         test_clipping_and_bounds();
         test_deterministic_hash();
+        test_indexed_mesh_matches_explicit_triangles();
+        test_shared_edge_crack_free();
+        test_invalid_mesh_is_fail_closed();
+        test_perspective_correct_color();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
