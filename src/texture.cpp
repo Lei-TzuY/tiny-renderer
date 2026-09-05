@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace tiny_renderer {
 
