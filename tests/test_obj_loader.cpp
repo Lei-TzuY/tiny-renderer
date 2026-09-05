@@ -13,6 +13,7 @@
 #include "tiny_renderer/math.hpp"
 #include "tiny_renderer/mesh.hpp"
 #include "tiny_renderer/obj_loader.hpp"
+#include "tiny_renderer/ppm_loader.hpp"
 #include "tiny_renderer/rasterizer.hpp"
 #include "tiny_renderer/texture.hpp"
 
@@ -41,6 +42,10 @@ Mesh parse_text(std::string_view text) {
 
 Vertex uv_vertex(const Vec3& position, float u, float v) {
     return Vertex::with_varyings(position, VaryingPack{u, v});
+}
+
+Vertex uvn_vertex(const Vec3& position, float u, float v, const Vec3& normal) {
+    return Vertex::with_varyings(position, VaryingPack{u, v, normal.x, normal.y, normal.z});
 }
 
 std::size_t count_non_black(const Framebuffer& framebuffer) {
@@ -88,11 +93,54 @@ void test_pair_normalization_and_first_seen_order() {
         check_near(mesh.vertices[3].varyings[0], 0.25F, "split position-3 pair u");
         check_near(mesh.vertices[3].varyings[1], 0.75F, "split position-3 pair v");
         for (const Vertex& vertex : mesh.vertices) {
-            check(vertex.varyings.count == 2U, "OBJ importer emits exactly two UV varying channels");
+            check(vertex.varyings.count == 2U, "legacy OBJ v/vt import still emits exactly two UV varying channels");
             check(vertex.varyings.interpolation_at(0U) == Interpolation::Smooth,
                   "imported U defaults to smooth interpolation");
             check(vertex.varyings.interpolation_at(1U) == Interpolation::Smooth,
                   "imported V defaults to smooth interpolation");
+        }
+    }
+}
+
+void test_triple_normalization_and_normal_channels() {
+    const Mesh mesh = parse_text(
+        "v -0.8 -0.8 0\n"
+        "v 0.8 -0.8 0\n"
+        "v 0.8 0.8 0\n"
+        "v -0.8 0.8 0\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "vt 1 1\n"
+        "vt 0.25 0.75\n"
+        "vt 0 1\n"
+        "vn 0 0 1\n"
+        "vn 0.6 0 0.8\n"
+        "f 1/1/1 2/2/1 3/3/1\n"
+        "f 1/1/1 3/4/2 4/5/2\n");
+
+    check(mesh.vertices.size() == 5U,
+          "position reused with a different UV/normal tuple is split into a distinct unified vertex");
+    check(mesh.triangles.size() == 2U, "normal-bearing OBJ faces become indexed mesh triangles");
+    if (mesh.triangles.size() == 2U) {
+        check(mesh.triangles[0] == TriangleIndices{0U, 1U, 2U}, "first normal-bearing face preserves first-seen tuple order");
+        check(mesh.triangles[1] == TriangleIndices{0U, 3U, 4U}, "second normal-bearing face reuses and splits tuple indices deterministically");
+    }
+
+    if (mesh.vertices.size() == 5U) {
+        check_near(mesh.vertices[2].varyings[2], 0.0F, "first position-3 tuple normal x");
+        check_near(mesh.vertices[2].varyings[3], 0.0F, "first position-3 tuple normal y");
+        check_near(mesh.vertices[2].varyings[4], 1.0F, "first position-3 tuple normal z");
+        check_near(mesh.vertices[3].varyings[0], 0.25F, "split position-3 tuple u");
+        check_near(mesh.vertices[3].varyings[1], 0.75F, "split position-3 tuple v");
+        check_near(mesh.vertices[3].varyings[2], 0.6F, "split position-3 tuple normal x");
+        check_near(mesh.vertices[3].varyings[3], 0.0F, "split position-3 tuple normal y");
+        check_near(mesh.vertices[3].varyings[4], 0.8F, "split position-3 tuple normal z");
+        for (const Vertex& vertex : mesh.vertices) {
+            check(vertex.varyings.count == 5U, "v/vt/vn import emits UV plus three normal channels");
+            for (std::size_t channel = 0U; channel < 5U; ++channel) {
+                check(vertex.varyings.interpolation_at(channel) == Interpolation::Smooth,
+                      "all imported UV/normal channels default to smooth interpolation");
+            }
         }
     }
 }
@@ -115,6 +163,7 @@ void test_invalid_and_unsupported_input_is_rejected() {
         "vt 0 0\n"
         "vt 1 0\n"
         "vt 0 1\n";
+    const std::string normal_prefix = prefix + "vn 0 0 1\n";
 
     expect_parse_error(prefix + "f 1/1 2/2 3/3 1/1\n", "quad/ngon face is rejected rather than triangulated implicitly");
     expect_parse_error(prefix + "f 1 2 3\n", "face without texture-coordinate indices is rejected");
@@ -123,8 +172,18 @@ void test_invalid_and_unsupported_input_is_rejected() {
     expect_parse_error(prefix + "f 4/1 2/2 3/3\n", "out-of-range position index is rejected");
     expect_parse_error(prefix + "f 1/4 2/2 3/3\n", "out-of-range texture index is rejected");
     expect_parse_error("v nope 0 0\n", "malformed floating-point vertex coordinate is rejected");
-    expect_parse_error(prefix + "vn 0 0 1\n", "unsupported normal directive is rejected rather than silently claimed as imported");
-    expect_parse_error(prefix + "f 1/1/1 2/2/1 3/3/1\n", "v/vt/vn face syntax is rejected in the position-UV-only milestone");
+    expect_parse_error("vn 0 nope 1\n", "malformed normal coordinate is rejected");
+    expect_parse_error("vn 0 0 0\n", "zero-length OBJ normal is rejected at import time");
+    expect_parse_error(normal_prefix + "f 1//1 2/2/1 3/3/1\n", "v//vn face syntax is rejected because UVs remain mandatory");
+    expect_parse_error(normal_prefix + "f 1/1/2 2/2/1 3/3/1\n", "out-of-range normal index is rejected");
+    expect_parse_error(normal_prefix + "f 1/1/-1 2/2/1 3/3/1\n", "relative normal indices are rejected");
+    expect_parse_error(normal_prefix + "f 1/1/1 2/2 3/3/1\n", "mixed corner layouts inside one face are rejected");
+    expect_parse_error(
+        normal_prefix +
+        "f 1/1 2/2 3/3\n"
+        "f 1/1/1 2/2/1 3/3/1\n",
+        "mixing v/vt and v/vt/vn faces in one OBJ mesh is rejected");
+    expect_parse_error(prefix + "vp 0 0 0\n", "unsupported geometry directives remain fail-closed");
 }
 
 void test_file_fixture_renders_identically_to_manual_mesh() {
@@ -171,9 +230,61 @@ void test_file_fixture_renders_identically_to_manual_mesh() {
 
     check(count_non_black(imported_fb) > 0U, "imported textured fixture produces visible fragments");
     check(imported_fb.rgb8() == manual_fb.rgb8(),
-          "OBJ-imported mesh renders byte-identically to equivalent programmatic textured mesh");
+          "legacy OBJ-imported mesh renders byte-identically to equivalent programmatic textured mesh");
     check(imported_fb.fnv1a64() == manual_fb.fnv1a64(),
-          "OBJ-imported mesh and manual mesh retain the same deterministic framebuffer hash");
+          "legacy OBJ-imported mesh and manual mesh retain the same deterministic framebuffer hash");
+}
+
+void test_normal_fixture_drives_file_textured_lambert_path() {
+#ifndef TINY_RENDERER_SOURCE_DIR
+#error TINY_RENDERER_SOURCE_DIR must be provided for OBJ fixture tests
+#endif
+    const std::filesystem::path root = TINY_RENDERER_SOURCE_DIR;
+    const Mesh imported = load_obj_file(root / "tests" / "fixtures" / "lit_textured_quad.obj");
+    const Texture2D texture = load_ppm_file(root / "tests" / "fixtures" / "checker.ppm");
+
+    Mesh manual;
+    manual.vertices = {
+        uvn_vertex({-0.8F, -0.8F, 0.0F}, 0.0F, 0.0F, {0.0F, 0.0F, 1.0F}),
+        uvn_vertex({0.8F, -0.8F, 0.0F}, 1.0F, 0.0F, {0.0F, 0.0F, 1.0F}),
+        uvn_vertex({0.8F, 0.8F, 0.0F}, 1.0F, 1.0F, {0.0F, 0.0F, 1.0F}),
+        uvn_vertex({0.8F, 0.8F, 0.0F}, 0.25F, 0.75F, {0.6F, 0.0F, 0.8F}),
+        uvn_vertex({-0.8F, 0.8F, 0.0F}, 0.0F, 1.0F, {0.6F, 0.0F, 0.8F}),
+    };
+    manual.triangles = {
+        TriangleIndices{0U, 1U, 2U},
+        TriangleIndices{0U, 3U, 4U},
+    };
+
+    const TextureBinding texture_binding{
+        &texture,
+        0U,
+        1U,
+        SamplerState{AddressMode::Clamp, AddressMode::Clamp, FilterMode::Bilinear},
+    };
+    const DirectionalLight light{
+        true,
+        NormalBinding{2U, 3U, 4U},
+        {0.0F, 0.0F, 1.0F},
+        0.2F,
+        0.8F,
+    };
+    const Mat4 model = Mat4::scale({1.1F, 0.75F, 1.0F});
+
+    Framebuffer imported_fb(65U, 65U);
+    Rasterizer imported_rasterizer(imported_fb, {}, texture_binding, light);
+    imported_rasterizer.draw_mesh(imported, model, Mat4::identity(), Mat4::identity());
+
+    Framebuffer manual_fb(65U, 65U);
+    Rasterizer manual_rasterizer(manual_fb, {}, texture_binding, light);
+    manual_rasterizer.draw_mesh(manual, model, Mat4::identity(), Mat4::identity());
+
+    check(count_non_black(imported_fb) > 0U,
+          "normal-bearing OBJ plus PPM fixture produces visible textured Lambert fragments");
+    check(imported_fb.rgb8() == manual_fb.rgb8(),
+          "file-imported OBJ normals feed the existing textured Lambert path byte-identically to manual assets");
+    check(imported_fb.fnv1a64() == manual_fb.fnv1a64(),
+          "file-imported normal mesh preserves the manual textured Lambert framebuffer hash");
 }
 
 void test_parse_error_reports_source_line() {
@@ -196,8 +307,10 @@ void test_parse_error_reports_source_line() {
 int main() {
     try {
         test_pair_normalization_and_first_seen_order();
+        test_triple_normalization_and_normal_channels();
         test_invalid_and_unsupported_input_is_rejected();
         test_file_fixture_renders_identically_to_manual_mesh();
+        test_normal_fixture_drives_file_textured_lambert_path();
         test_parse_error_reports_source_line();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
