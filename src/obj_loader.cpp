@@ -31,22 +31,16 @@ enum class FaceLayout {
     PositionTexcoordNormal,
 };
 
+enum class MaterialMetadataMode {
+    Ignore,
+    CaptureStrict,
+};
+
 struct FaceReference {
     std::int64_t position{};
     std::int64_t texcoord{};
     std::int64_t normal{};
     FaceLayout layout{FaceLayout::Unknown};
-};
-
-struct UsedMaterial {
-    std::string name;
-    std::size_t line{};
-};
-
-struct MaterialMetadata {
-    std::optional<std::string> library_filename;
-    std::vector<UsedMaterial> used_materials;
-    std::vector<std::string> face_materials;
 };
 
 constexpr std::size_t kMissingNormalIndex = std::numeric_limits<std::size_t>::max();
@@ -122,8 +116,7 @@ std::size_t resolve_index(std::int64_t one_based, std::size_t extent, std::size_
 }
 
 bool is_ignored_metadata_directive(const std::string& directive) {
-    return directive == "o" || directive == "g" || directive == "s"
-        || directive == "usemtl" || directive == "mtllib";
+    return directive == "o" || directive == "g" || directive == "s";
 }
 
 void validate_nonzero_normal(const Vec3& normal, std::size_t line) {
@@ -146,8 +139,13 @@ void validate_sibling_library_filename(const std::string& token, std::size_t lin
     }
 }
 
-MaterialMetadata scan_material_metadata(std::istream& input) {
-    MaterialMetadata metadata;
+ObjModelSource parse_obj(std::istream& input, MaterialMetadataMode material_mode) {
+    std::vector<Vec3> positions;
+    std::vector<Vec2> texcoords;
+    std::vector<Vec3> normals;
+    std::map<std::array<std::size_t, 3>, std::uint32_t> unified_indices;
+    FaceLayout mesh_layout = FaceLayout::Unknown;
+    ObjModelSource result;
     std::optional<std::string> active_material;
     bool saw_face = false;
 
@@ -167,6 +165,9 @@ MaterialMetadata scan_material_metadata(std::istream& input) {
         }
 
         if (directive == "mtllib") {
+            if (material_mode == MaterialMetadataMode::Ignore) {
+                continue;
+            }
             std::string filename;
             std::string extra;
             if (!(line >> filename) || (line >> extra)) {
@@ -175,65 +176,28 @@ MaterialMetadata scan_material_metadata(std::istream& input) {
             if (saw_face) {
                 fail(line_number, "mtllib must appear before material-bound faces");
             }
-            if (metadata.library_filename) {
+            if (result.material_library_filename) {
                 fail(line_number, "only one mtllib directive is supported");
             }
             validate_sibling_library_filename(filename, line_number);
-            metadata.library_filename = filename;
+            result.material_library_filename = filename;
             continue;
         }
 
         if (directive == "usemtl") {
+            if (material_mode == MaterialMetadataMode::Ignore) {
+                continue;
+            }
             std::string name;
             std::string extra;
             if (!(line >> name) || (line >> extra)) {
                 fail(line_number, "usemtl must contain exactly one material name");
             }
-            if (!metadata.library_filename) {
+            if (!result.material_library_filename) {
                 fail(line_number, "usemtl requires a preceding mtllib directive");
             }
             active_material = name;
-            metadata.used_materials.push_back({name, line_number});
-            continue;
-        }
-
-        if (directive == "f") {
-            saw_face = true;
-            if (metadata.library_filename && !active_material) {
-                fail(line_number, "material-aware OBJ faces require an active usemtl material");
-            }
-            metadata.face_materials.push_back(active_material.value_or(std::string{}));
-        }
-    }
-
-    if (input.bad()) {
-        throw std::runtime_error("failed while reading OBJ material metadata");
-    }
-    return metadata;
-}
-
-}  // namespace
-
-Mesh load_obj(std::istream& input) {
-    std::vector<Vec3> positions;
-    std::vector<Vec2> texcoords;
-    std::vector<Vec3> normals;
-    std::map<std::array<std::size_t, 3>, std::uint32_t> unified_indices;
-    FaceLayout mesh_layout = FaceLayout::Unknown;
-    Mesh mesh;
-
-    std::string line_text;
-    std::size_t line_number = 0U;
-    while (std::getline(input, line_text)) {
-        ++line_number;
-        const std::size_t comment = line_text.find('#');
-        if (comment != std::string::npos) {
-            line_text.erase(comment);
-        }
-
-        std::istringstream line(line_text);
-        std::string directive;
-        if (!(line >> directive)) {
+            result.used_materials.push_back({name, line_number});
             continue;
         }
 
@@ -327,25 +291,33 @@ Mesh load_obj(std::istream& input) {
                     continue;
                 }
 
-                if (mesh.vertices.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+                if (result.mesh.vertices.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
                     fail(line_number, "unified vertex count exceeds uint32 index capacity");
                 }
-                const std::uint32_t unified_index = static_cast<std::uint32_t>(mesh.vertices.size());
+                const std::uint32_t unified_index = static_cast<std::uint32_t>(result.mesh.vertices.size());
                 const Vec2& uv = texcoords[texcoord_index];
                 if (face_layout == FaceLayout::PositionTexcoordNormal) {
                     const Vec3& normal = normals[normal_index];
-                    mesh.vertices.push_back(Vertex::with_varyings(
+                    result.mesh.vertices.push_back(Vertex::with_varyings(
                         positions[position_index],
                         VaryingPack{uv.x, uv.y, normal.x, normal.y, normal.z}));
                 } else {
-                    mesh.vertices.push_back(Vertex::with_varyings(
+                    result.mesh.vertices.push_back(Vertex::with_varyings(
                         positions[position_index],
                         VaryingPack{uv.x, uv.y}));
                 }
                 unified_indices.emplace(key, unified_index);
                 triangle[corner] = unified_index;
             }
-            mesh.triangles.push_back(triangle);
+            result.mesh.triangles.push_back(triangle);
+
+            if (material_mode == MaterialMetadataMode::CaptureStrict) {
+                saw_face = true;
+                if (result.material_library_filename && !active_material) {
+                    fail(line_number, "material-aware OBJ faces require an active usemtl material");
+                }
+                result.face_materials.push_back(active_material.value_or(std::string{}));
+            }
             continue;
         }
 
@@ -359,7 +331,13 @@ Mesh load_obj(std::istream& input) {
     if (input.bad()) {
         throw std::runtime_error("failed while reading OBJ stream");
     }
-    return mesh;
+    return result;
+}
+
+}  // namespace
+
+Mesh load_obj(std::istream& input) {
+    return parse_obj(input, MaterialMetadataMode::Ignore).mesh;
 }
 
 Mesh load_obj_file(const std::filesystem::path& path) {
@@ -370,28 +348,32 @@ Mesh load_obj_file(const std::filesystem::path& path) {
     return load_obj(input);
 }
 
+ObjModelSource load_obj_model_source(std::istream& input) {
+    return parse_obj(input, MaterialMetadataMode::CaptureStrict);
+}
+
+ObjModelSource load_obj_model_source_file(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open OBJ file: " + path.string());
+    }
+    return load_obj_model_source(input);
+}
+
 std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem::path& path) {
-    const Mesh geometry = load_obj_file(path);
+    const ObjModelSource source = load_obj_model_source_file(path);
+    const Mesh& geometry = source.mesh;
 
-    std::ifstream metadata_input(path);
-    if (!metadata_input) {
-        throw std::runtime_error("failed to reopen OBJ file for material metadata: " + path.string());
-    }
-    const MaterialMetadata metadata = scan_material_metadata(metadata_input);
-    if (metadata.face_materials.size() != geometry.triangles.size()) {
-        throw std::runtime_error("OBJ geometry/material face count changed between parsing passes");
-    }
-
-    if (!metadata.library_filename) {
+    if (!source.material_library_filename) {
         if (geometry.triangles.empty()) {
             return {};
         }
         return {MaterialBatch{geometry, std::string{}, MaterialState{}}};
     }
 
-    const std::filesystem::path library_path = path.parent_path() / *metadata.library_filename;
+    const std::filesystem::path library_path = path.parent_path() / *source.material_library_filename;
     const MaterialLibrary library = load_mtl_file(library_path);
-    for (const UsedMaterial& used : metadata.used_materials) {
+    for (const ObjMaterialUse& used : source.used_materials) {
         if (library.find(used.name) == library.end()) {
             fail(used.line, "usemtl references unknown material '" + used.name + "'");
         }
@@ -399,7 +381,7 @@ std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem:
 
     std::vector<MaterialBatch> batches;
     for (std::size_t face = 0U; face < geometry.triangles.size(); ++face) {
-        const std::string& material_name = metadata.face_materials[face];
+        const std::string& material_name = source.face_materials[face];
         const MaterialState material = library.at(material_name);
         if (batches.empty() || batches.back().material_name != material_name) {
             MaterialBatch batch;
