@@ -39,6 +39,9 @@ void validate_material(const MaterialState& material) {
         || albedo.z < 0.0F || albedo.z > 1.0F) {
         throw std::invalid_argument("model material albedo components must be finite and within [0, 1]");
     }
+    if (!std::isfinite(material.opacity) || material.opacity < 0.0F || material.opacity > 1.0F) {
+        throw std::invalid_argument("model material opacity must be finite and within [0, 1]");
+    }
 }
 
 void validate_model_structure(const ModelAsset& asset) {

@@ -64,6 +64,8 @@ enum class BlendFactor {
     OneMinusDestinationColor,
     ConstantColor,
     OneMinusConstantColor,
+    SourceAlpha,
+    OneMinusSourceAlpha,
 };
 
 enum class BlendOp {
@@ -109,7 +111,8 @@ public:
         const Vec3& color,
         DepthState depth_state = {},
         StencilState stencil_state = {},
-        BlendState blend_state = {});
+        BlendState blend_state = {},
+        float source_alpha = 1.0F);
 
     bool depth_test_and_write(
         std::size_t x,

@@ -20,6 +20,7 @@ struct PendingMaterial {
     MaterialAssetDefinition asset{};
     bool has_kd{false};
     bool has_map_kd{false};
+    bool has_d{false};
 };
 
 [[noreturn]] void fail(std::size_t line, const std::string& message) {
@@ -89,7 +90,7 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_k
             if (library.find(name) != library.end()) {
                 fail(line_number, "duplicate material name '" + name + "'");
             }
-            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false};
+            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false, false};
             continue;
         }
 
@@ -113,6 +114,23 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_k
                 parse_unit_float(b_token, line_number, "Kd blue"),
             };
             pending->has_kd = true;
+            continue;
+        }
+
+        if (directive == "d") {
+            if (!pending) {
+                fail(line_number, "d requires a preceding newmtl");
+            }
+            if (pending->has_d) {
+                fail(line_number, "material '" + pending->name + "' defines d more than once");
+            }
+            std::string opacity_token;
+            std::string extra;
+            if (!(line >> opacity_token) || (line >> extra)) {
+                fail(line_number, "d must contain exactly one opacity component");
+            }
+            pending->asset.material.opacity = parse_unit_float(opacity_token, line_number, "d opacity");
+            pending->has_d = true;
             continue;
         }
 

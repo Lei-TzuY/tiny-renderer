@@ -159,4 +159,11 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_blend_integration_tests tests/test_blend_integration.cpp)
     target_link_libraries(tiny_renderer_blend_integration_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_blend_integration_tests COMMAND tiny_renderer_blend_integration_tests)
+
+    add_executable(tiny_renderer_opacity_tests tests/test_opacity.cpp)
+    target_link_libraries(tiny_renderer_opacity_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_opacity_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_opacity_tests COMMAND tiny_renderer_opacity_tests)
 endif()
