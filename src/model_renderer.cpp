@@ -1,8 +1,10 @@
 #include "tiny_renderer/model_renderer.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 
 namespace tiny_renderer {
 namespace {
@@ -25,6 +27,16 @@ void validate_sampler(const SamplerState& sampler) {
             return;
     }
     throw std::invalid_argument("model texture sampler uses an unknown filter mode");
+}
+
+void validate_material(const MaterialState& material) {
+    const Vec3& albedo = material.albedo;
+    if (!std::isfinite(albedo.x) || !std::isfinite(albedo.y) || !std::isfinite(albedo.z)
+        || albedo.x < 0.0F || albedo.x > 1.0F
+        || albedo.y < 0.0F || albedo.y > 1.0F
+        || albedo.z < 0.0F || albedo.z > 1.0F) {
+        throw std::invalid_argument("model material albedo components must be finite and within [0, 1]");
+    }
 }
 
 void validate_model_structure(const ModelAsset& asset) {
@@ -66,11 +78,22 @@ void validate_model_structure(const ModelAsset& asset) {
     }
 }
 
+void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptions& options) {
+    validate_model_structure(asset);
+    bool sampler_needed = false;
+    for (const MaterialDraw& draw : asset.draws) {
+        validate_material(draw.material);
+        sampler_needed = sampler_needed || static_cast<bool>(draw.diffuse_texture);
+    }
+    if (sampler_needed) {
+        validate_sampler(options.sampler);
+    }
+}
+
 TextureBinding texture_binding_for(const MaterialDraw& draw, const ModelRenderOptions& options) {
     if (!draw.diffuse_texture) {
         return {};
     }
-    validate_sampler(options.sampler);
     return TextureBinding{
         draw.diffuse_texture.get(),
         options.u_channel,
@@ -84,19 +107,18 @@ BaseColorSource base_color_source_for(const MaterialDraw& draw) {
 }
 
 template <typename SubmitRange>
-void draw_model_asset_impl(
+void draw_validated_model_impl(
     Framebuffer& framebuffer,
     const ModelAsset& asset,
     const ModelRenderOptions& options,
     SubmitRange&& submit_range) {
-    validate_model_structure(asset);
     if (asset.draws.empty()) {
         return;
     }
 
-    // First pass: reuse the range submission's empty-range contract to validate
-    // every draw state without touching color or depth. This prevents a bad later
-    // material/texture/light state from partially committing earlier draws.
+    // Dynamic preflight: reuse the range submission's empty-range contract to
+    // validate framebuffer, varying/UV, light and transform-dependent state for
+    // every material draw without touching color or depth.
     for (const MaterialDraw& draw : asset.draws) {
         Rasterizer rasterizer(
             framebuffer,
@@ -108,7 +130,7 @@ void draw_model_asset_impl(
         submit_range(rasterizer, DrawRange{0U, 0U});
     }
 
-    // Second pass: all model structure and per-draw renderer state is known valid.
+    // All static model state and dynamic draw state is now known valid.
     for (const MaterialDraw& draw : asset.draws) {
         Rasterizer rasterizer(
             framebuffer,
@@ -123,6 +145,46 @@ void draw_model_asset_impl(
 
 }  // namespace
 
+PreparedModelSubmission::PreparedModelSubmission(ModelAsset asset, ModelRenderOptions options)
+    : asset_(std::move(asset)), options_(options) {}
+
+PreparedModelSubmission prepare_model_asset(ModelAsset asset, ModelRenderOptions options) {
+    validate_static_model_state(asset, options);
+    return PreparedModelSubmission{std::move(asset), options};
+}
+
+void draw_prepared_model(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& model,
+    const Mat4& view,
+    const Mat4& projection) {
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    draw_validated_model_impl(
+        framebuffer,
+        asset,
+        options,
+        [&](Rasterizer& rasterizer, DrawRange range) {
+            rasterizer.draw_mesh_range(asset.mesh, range, model, view, projection);
+        });
+}
+
+void draw_prepared_model(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mat4& mvp) {
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    draw_validated_model_impl(
+        framebuffer,
+        asset,
+        options,
+        [&](Rasterizer& rasterizer, DrawRange range) {
+            rasterizer.draw_mesh_range(asset.mesh, range, mvp);
+        });
+}
+
 void draw_model_asset(
     Framebuffer& framebuffer,
     const ModelAsset& asset,
@@ -130,7 +192,8 @@ void draw_model_asset(
     const Mat4& view,
     const Mat4& projection,
     ModelRenderOptions options) {
-    draw_model_asset_impl(
+    validate_static_model_state(asset, options);
+    draw_validated_model_impl(
         framebuffer,
         asset,
         options,
@@ -144,7 +207,8 @@ void draw_model_asset(
     const ModelAsset& asset,
     const Mat4& mvp,
     ModelRenderOptions options) {
-    draw_model_asset_impl(
+    validate_static_model_state(asset, options);
+    draw_validated_model_impl(
         framebuffer,
         asset,
         options,
