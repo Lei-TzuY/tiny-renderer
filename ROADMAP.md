@@ -95,22 +95,32 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Regression coverage locks read/write masks, every compare and operation, saturating increment/decrement, stencil/depth/pass ordering, depth-write-disabled interaction, stencil-mask prepass execution, scissor-bounded side effects, range propagation, prepared-list equivalence, invalid-state rejection, and disabled-stencil byte/hash compatibility.
 - The existing clipping, viewport, fixed-point coverage, interpolation, culling, material/texture shading, and depth semantics remain on the same raster path.
 
-## Next frontier — Milestone 27
+### Milestone 27 — explicit RGB blending and color write masks
 
-The next architectural promotion is **an explicit final color blend and write-mask stage**. Passing fragments currently replace framebuffer RGB directly after depth/stencil acceptance, so the pipeline cannot express deterministic source/destination composition or selective channel ownership.
+- `BlendState` adds bounded RGB source/destination factors, a validated constant blend color, blend operation, and independent red/green/blue write mask while disabled/default state remains replacement-compatible.
+- Factors cover zero/one, source/destination color and their inverses, plus constant color and its inverse; the first slice is deliberately RGB-only and makes no alpha/transparency claim.
+- `BlendOp::{Add, Subtract, ReverseSubtract, Min, Max}` is centralized in the framebuffer ownership primitive. Min/max intentionally ignore factors and compare unfactored source/destination RGB components under the renderer's documented teaching contract rather than claiming hardware-API equivalence.
+- Float framebuffer blend arithmetic is not silently clamped; the existing RGB8 export conversion remains the bounded display/output boundary.
+- The color write mask is applied only at final RGB storage, so preserved channels retain destination values while passing depth writes and stencil pass operations still occur normally.
+- Blend validation and state propagation cover direct triangles/meshes, selected ranges, model submission, prepared plans, instance batches, and heterogeneous prepared lists without duplicating blend math outside `Framebuffer::test_and_write`.
+- Regression coverage locks disabled byte/hash compatibility, analytic factor math, every blend operation, non-commutative draw ordering, channel masking, depth/stencil interaction, scissor-bounded blending, selected ranges, prepared-list equivalence, and fail-closed invalid state.
+
+## Next frontier — Milestone 28
+
+The next architectural promotion is **material opacity and source-alpha RGB blending**. The renderer now has deterministic RGB composition but no fragment opacity source, so conventional caller-ordered transparent material rendering cannot be expressed without inventing alpha outside the verified material/shading pipeline.
 
 Acceptance for that slice should require:
 
-- a bounded `BlendState` whose disabled/default behavior is byte/hash-identical to the current replacement path;
-- RGB source/destination blend factors sufficient for deterministic fixed-function composition, including `Zero`, `One`, source color, destination color, inverse source/destination color, and an explicit constant blend color where appropriate;
-- explicit blend operations including add, subtract, reverse-subtract, minimum, and maximum, with precisely documented factor behavior for min/max rather than hardware-equivalence claims;
-- an RGB write mask applied only at the final color-store step, so masked channels preserve their previous framebuffer values while depth/stencil side effects still obey the already-established pass ordering;
-- one centralized framebuffer color-ownership implementation after stencil/depth acceptance; rasterizer/model/prepared layers only propagate validated state and do not duplicate blend math;
-- fail-closed validation of unknown blend factors/operations and non-finite or out-of-contract blend constants before framebuffer mutation, including prepared/list submission;
-- deterministic regressions for disabled compatibility, source/destination factor composition, non-commutative draw order, each blend operation, channel write masking, interaction with depth-write-disabled and stencil pass operations, scissor-bounded blended output, and heterogeneous prepared-list propagation;
-- no alpha/transparency semantics are claimed unless a separate fragment-alpha source is implemented and regression-covered; the first slice is explicitly RGB blending;
+- `MaterialState` gains a finite `[0,1]` opacity with default `1.0`, preserving every existing opaque framebuffer/hash result;
+- the bounded MTL path accepts one optional `d <opacity>` dissolve value per material, rejects duplicates/non-finite/out-of-range values deterministically, and defaults missing `d` to fully opaque;
+- fragment shading carries material opacity as a separate scalar alongside RGB rather than multiplying RGB or pretending the RGB framebuffer stores destination alpha;
+- `BlendFactor` gains source-alpha and inverse-source-alpha factors that replicate the fragment opacity scalar across RGB factor components; destination-alpha factors remain out of scope because no destination alpha attachment exists;
+- the framebuffer ownership primitive receives validated fragment opacity and keeps stencil/depth/blend/write-mask ordering centralized, with default opacity `1.0` preserving all existing direct calls;
+- model/prepared submission preserves imported opacity through `MaterialDraw`, and a file-driven MTL opacity fixture renders equivalently to a programmatic material under caller-selected source-alpha blending;
+- deterministic regressions cover opacity `0`, `0.5`, and `1`, source-alpha/inverse-source-alpha analytic composition, caller draw order, depth writes disabled for transparent passes, stencil/scissor interaction, clipping continuity, prepared/list propagation, and fail-closed invalid material/MTL opacity;
+- this milestone enables bounded caller-ordered transparency but does not claim sorting, order-independent transparency, destination alpha, alpha textures, or physically based transmission;
 - no performance claim is made without a controlled benchmark.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing, alpha/transparency, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, anti-aliasing/MSAA, destination alpha, alpha textures, transparency sorting/OIT, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
