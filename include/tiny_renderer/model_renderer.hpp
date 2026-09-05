@@ -16,6 +16,7 @@ struct ModelRenderOptions {
     DirectionalLight directional_light{};
     CullMode cull_mode{CullMode::None};
     FrontFace front_face{FrontFace::CounterClockwise};
+    DepthState depth_state{};
 };
 
 class PreparedModelSubmission {
