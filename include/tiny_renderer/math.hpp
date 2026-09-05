@@ -66,6 +66,35 @@ inline Vec3 normalize(const Vec3& v) {
 
 inline float radians(float degrees) { return degrees * (kPi / 180.0F); }
 
+class Mat3 {
+public:
+    constexpr Mat3() = default;
+
+    explicit constexpr Mat3(const std::array<float, 9>& values) : values_(values) {}
+
+    static constexpr Mat3 identity() {
+        return Mat3({
+            1.0F, 0.0F, 0.0F,
+            0.0F, 1.0F, 0.0F,
+            0.0F, 0.0F, 1.0F,
+        });
+    }
+
+    constexpr float& operator()(std::size_t row, std::size_t column) { return values_[row * 3U + column]; }
+    constexpr float operator()(std::size_t row, std::size_t column) const { return values_[row * 3U + column]; }
+
+private:
+    std::array<float, 9> values_{};
+};
+
+constexpr Vec3 operator*(const Mat3& m, const Vec3& v) {
+    return {
+        m(0, 0) * v.x + m(0, 1) * v.y + m(0, 2) * v.z,
+        m(1, 0) * v.x + m(1, 1) * v.y + m(1, 2) * v.z,
+        m(2, 0) * v.x + m(2, 1) * v.y + m(2, 2) * v.z,
+    };
+}
+
 class Mat4 {
 public:
     constexpr Mat4() = default;
@@ -172,6 +201,48 @@ constexpr Mat4 operator*(const Mat4& a, const Mat4& b) {
                 value += a(row, k) * b(k, column);
             }
             result(row, column) = value;
+        }
+    }
+    return result;
+}
+
+inline Mat3 normal_matrix(const Mat4& model) {
+    const float a = model(0, 0);
+    const float b = model(0, 1);
+    const float c = model(0, 2);
+    const float d = model(1, 0);
+    const float e = model(1, 1);
+    const float f = model(1, 2);
+    const float g = model(2, 0);
+    const float h = model(2, 1);
+    const float i = model(2, 2);
+
+    const float c00 = e * i - f * h;
+    const float c01 = f * g - d * i;
+    const float c02 = d * h - e * g;
+    const float c10 = c * h - b * i;
+    const float c11 = a * i - c * g;
+    const float c12 = b * g - a * h;
+    const float c20 = b * f - c * e;
+    const float c21 = c * d - a * f;
+    const float c22 = a * e - b * d;
+    const float determinant = a * c00 + b * c01 + c * c02;
+
+    if (!std::isfinite(determinant) || std::fabs(determinant) <= kEpsilon) {
+        throw std::invalid_argument("model transform has no stable inverse-transpose normal matrix");
+    }
+
+    const float inverse_det = 1.0F / determinant;
+    Mat3 result({
+        c00 * inverse_det, c01 * inverse_det, c02 * inverse_det,
+        c10 * inverse_det, c11 * inverse_det, c12 * inverse_det,
+        c20 * inverse_det, c21 * inverse_det, c22 * inverse_det,
+    });
+    for (std::size_t row = 0U; row < 3U; ++row) {
+        for (std::size_t column = 0U; column < 3U; ++column) {
+            if (!std::isfinite(result(row, column))) {
+                throw std::invalid_argument("model normal matrix contains non-finite values");
+            }
         }
     }
     return result;
