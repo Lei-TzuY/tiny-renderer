@@ -32,4 +32,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_tests tests/test_main.cpp)
     target_link_libraries(tiny_renderer_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_tests COMMAND tiny_renderer_tests)
+
+    add_executable(tiny_renderer_fixed_point_tests tests/test_fixed_point.cpp)
+    target_link_libraries(tiny_renderer_fixed_point_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_fixed_point_tests COMMAND tiny_renderer_fixed_point_tests)
 endif()
