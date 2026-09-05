@@ -65,4 +65,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_lighting_tests tests/test_lighting.cpp)
     target_link_libraries(tiny_renderer_lighting_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_lighting_tests COMMAND tiny_renderer_lighting_tests)
+
+    add_executable(tiny_renderer_material_tests tests/test_material.cpp)
+    target_link_libraries(tiny_renderer_material_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_material_tests COMMAND tiny_renderer_material_tests)
 endif()
