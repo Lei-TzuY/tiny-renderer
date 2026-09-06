@@ -119,10 +119,7 @@ bool alpha_to_coverage_accepts(
 }
 
 bool alpha_test_accepts(const AlphaTestState& state, float opacity) {
-    if (!state.enabled) {
-        return true;
-    }
-    return opacity >= state.threshold;
+    return !state.enabled || opacity >= state.threshold;
 }
 
 bool finite_vec3(const Vec3& value) {
@@ -131,32 +128,6 @@ bool finite_vec3(const Vec3& value) {
 
 bool material_has_specular(const MaterialState& material) {
     return material.specular.x > 0.0F || material.specular.y > 0.0F || material.specular.z > 0.0F;
-}
-
-bool fixed_lighting_enabled(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light) {
-    return directional_light.enabled || point_light.enabled;
-}
-
-const NormalBinding* active_normal_binding(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light) {
-    if (directional_light.enabled) {
-        return &directional_light.normal;
-    }
-    if (point_light.enabled) {
-        return &point_light.normal;
-    }
-    return nullptr;
-}
-
-bool world_position_required(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light,
-    const MaterialState& material) {
-    return point_light.enabled
-        || (directional_light.enabled && material_has_specular(material));
 }
 
 Vec3 transform_world_position(const Mat4& model, const Vec3& position) {
@@ -177,9 +148,11 @@ void validate_lighting_world_positions(
     const Triangle& triangle,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material,
     const Mat4& model) {
-    if (!world_position_required(directional_light, point_light, material)) {
+    if (!detail::fixed_lighting_world_position_required(
+            directional_light, point_light, fixed_lights, material)) {
         return;
     }
     for (const Vertex& vertex : triangle) {
@@ -191,9 +164,11 @@ void validate_lighting_world_positions(
     const Mesh& mesh,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material,
     const Mat4& model) {
-    if (!world_position_required(directional_light, point_light, material)) {
+    if (!detail::fixed_lighting_world_position_required(
+            directional_light, point_light, fixed_lights, material)) {
         return;
     }
     for (const Vertex& vertex : mesh.vertices) {
@@ -219,7 +194,6 @@ ShadedFragment run_fragment_program(
     if (fragment_program == nullptr) {
         return fixed_fragment;
     }
-
     const FragmentProgramOutput output = fragment_program->shade(FragmentProgramInput{
         varyings,
         fixed_fragment.rgb,
@@ -305,7 +279,6 @@ void validate_output_binding(
             validate_color_binding(color_binding, varying_count);
             break;
         case BaseColorSource::Texture:
-            break;
         case BaseColorSource::ConstantWhite:
             break;
         case BaseColorSource::Auto:
@@ -358,6 +331,17 @@ DirectionalLight prepare_directional_light(const DirectionalLight& light) {
 
 PointLight prepare_point_light(const PointLight& light) {
     return light;
+}
+
+FixedLightCollection prepare_fixed_lights(const FixedLightCollection& lights) {
+    FixedLightCollection prepared = lights;
+    for (std::size_t i = 0U; i < prepared.count; ++i) {
+        if (prepared.lights[i].type == FixedLightType::Directional) {
+            prepared.lights[i].directional.direction_to_light =
+                normalize(prepared.lights[i].directional.direction_to_light);
+        }
+    }
+    return prepared;
 }
 
 MaterialState prepare_material_state(const MaterialState& material) {
@@ -552,15 +536,12 @@ std::vector<ClipVertex> clip_against_plane(const std::vector<ClipVertex>& input,
         return output;
     }
     output.reserve(input.size() + 1U);
-
     ClipVertex previous = input.back();
     float previous_distance = plane_distance(previous, plane);
     bool previous_inside = previous_distance >= 0.0F;
-
     for (const ClipVertex& current : input) {
         const float current_distance = plane_distance(current, plane);
         const bool current_inside = current_distance >= 0.0F;
-
         if (current_inside != previous_inside) {
             const float denominator = previous_distance - current_distance;
             if (std::fabs(denominator) > kEpsilon) {
@@ -571,7 +552,6 @@ std::vector<ClipVertex> clip_against_plane(const std::vector<ClipVertex>& input,
         if (current_inside) {
             output.push_back(current);
         }
-
         previous = current;
         previous_distance = current_distance;
         previous_inside = current_inside;
@@ -612,19 +592,16 @@ bool should_cull_projected_triangle(
     if (cull_mode == CullMode::None) {
         return false;
     }
-
     const auto ndc_a = to_ndc_xy(a);
     const auto ndc_b = to_ndc_xy(b);
     const auto ndc_c = to_ndc_xy(c);
     if (!ndc_a || !ndc_b || !ndc_c) {
         return true;
     }
-
     const float area = signed_area_twice(*ndc_a, *ndc_b, *ndc_c);
     if (!std::isfinite(area) || std::fabs(area) <= kEpsilon) {
         return true;
     }
-
     const bool front_facing = front_face == FrontFace::CounterClockwise
         ? area > 0.0F
         : area < 0.0F;
@@ -635,7 +612,6 @@ std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, const RasterRect
     if (!finite(vertex.position) || std::fabs(vertex.position.w) <= kEpsilon) {
         return std::nullopt;
     }
-
     const float inv_w = 1.0F / vertex.position.w;
     const float ndc_x = vertex.position.x * inv_w;
     const float ndc_y = vertex.position.y * inv_w;
@@ -643,7 +619,6 @@ std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, const RasterRect
     if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y) || !std::isfinite(ndc_z)) {
         return std::nullopt;
     }
-
     const float origin_x = static_cast<float>(viewport.x);
     const float origin_y = static_cast<float>(viewport.y);
     const float max_x = static_cast<float>(viewport.width - 1U);
@@ -816,7 +791,6 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
     if (!shadow.map) {
         throw std::logic_error("validated shadow state lost its depth texture");
     }
-
     const float inv_w = 1.0F / light_clip.w;
     const float ndc_x = light_clip.x * inv_w;
     const float ndc_y = light_clip.y * inv_w;
@@ -827,7 +801,6 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
         || ndc_z < -1.0F || ndc_z > 1.0F) {
         return 1.0F;
     }
-
     const float map_max_x = static_cast<float>(shadow.map->width() - 1U);
     const float map_max_y = static_cast<float>(shadow.map->height() - 1U);
     const float map_x = (ndc_x * 0.5F + 0.5F) * map_max_x;
@@ -850,73 +823,56 @@ float point_attenuation(const PointLight& light, float distance) {
     return static_cast<float>(1.0 / denominator);
 }
 
-ShadedFragment shade_fragment(
-    const VaryingPack& varyings,
-    const ColorBinding& color_binding,
-    const TextureBinding& texture_binding,
-    BaseColorSource source,
+float ambient_sum(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights) {
+    if (fixed_lights.count == 0U) {
+        return directional_light.enabled ? directional_light.ambient
+            : point_light.enabled ? point_light.ambient : 0.0F;
+    }
+    float sum = 0.0F;
+    for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
+        const FixedLight& light = fixed_lights.lights[i];
+        sum += light.type == FixedLightType::Directional
+            ? light.directional.ambient
+            : light.point.ambient;
+    }
+    return sum;
+}
+
+Vec3 light_contribution(
+    const Vec3& base,
+    const Vec3& normal,
     const MaterialState& material,
-    const ShadowState& shadow,
-    const Vec4& light_clip,
-    const Vec3& world_position,
-    const detail::TangentFrame* tangent_frame) {
-    const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
-    const Vec3 base{
-        source_color.x * material.albedo.x,
-        source_color.y * material.albedo.y,
-        source_color.z * material.albedo.z,
-    };
-    const float opacity = fragment_opacity(varyings, texture_binding, material);
-    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
-    if (normal_binding == nullptr) {
-        return {base, opacity, false};
-    }
-
-    const Vec3 interpolated_normal{
-        varyings.values[normal_binding->x],
-        varyings.values[normal_binding->y],
-        varyings.values[normal_binding->z],
-    };
-    const float ambient = directional_light.enabled
-        ? directional_light.ambient
-        : point_light.ambient;
-    if (!finite_vec3(interpolated_normal)) {
-        return {base * ambient, opacity, false};
-    }
-    const float normal_length = length(interpolated_normal);
-    if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {base * ambient, opacity, false};
-    }
-
-    const Vec3 geometric_normal = interpolated_normal / normal_length;
-    const Vec3 normal = detail::tangent_space_lighting_normal(
-        texture_binding,
-        varyings,
-        geometric_normal,
-        tangent_frame);
-
+    const DirectionalLight* directional_light,
+    const PointLight* point_light,
+    float visibility,
+    const Vec3& world_position) {
     Vec3 direction_to_light{};
     Vec3 viewer_position{};
+    float ambient = 0.0F;
     float diffuse = 0.0F;
-    float visibility = 1.0F;
     float attenuation = 1.0F;
-    if (directional_light.enabled) {
-        direction_to_light = directional_light.direction_to_light;
-        viewer_position = directional_light.viewer_position;
-        diffuse = directional_light.diffuse;
-        visibility = shadow_visibility(shadow, light_clip);
-    } else {
-        const Vec3 to_light = point_light.position - world_position;
+
+    if (directional_light != nullptr) {
+        direction_to_light = directional_light->direction_to_light;
+        viewer_position = directional_light->viewer_position;
+        ambient = directional_light->ambient;
+        diffuse = directional_light->diffuse;
+    } else if (point_light != nullptr) {
+        ambient = point_light->ambient;
+        diffuse = point_light->diffuse;
+        viewer_position = point_light->viewer_position;
+        const Vec3 to_light = point_light->position - world_position;
         const float distance = length(to_light);
         if (!finite_vec3(to_light) || !std::isfinite(distance) || distance <= kEpsilon) {
-            return {base * point_light.ambient, opacity, false};
+            return base * ambient;
         }
         direction_to_light = to_light / distance;
-        viewer_position = point_light.viewer_position;
-        diffuse = point_light.diffuse;
-        attenuation = point_attenuation(point_light, distance);
+        attenuation = point_attenuation(*point_light, distance);
+    } else {
+        throw std::logic_error("fixed-light contribution requires one selected light payload");
     }
 
     const float lambert = std::clamp(dot(normal, direction_to_light), 0.0F, 1.0F);
@@ -943,6 +899,97 @@ ShadedFragment shade_fragment(
             }
         }
     }
+    return shaded;
+}
+
+ShadedFragment shade_fragment(
+    const VaryingPack& varyings,
+    const ColorBinding& color_binding,
+    const TextureBinding& texture_binding,
+    BaseColorSource source,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
+    const MaterialState& material,
+    const ShadowState& shadow,
+    const Vec4& light_clip,
+    const Vec3& world_position,
+    const detail::TangentFrame* tangent_frame) {
+    const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
+    const Vec3 base{
+        source_color.x * material.albedo.x,
+        source_color.y * material.albedo.y,
+        source_color.z * material.albedo.z,
+    };
+    const float opacity = fragment_opacity(varyings, texture_binding, material);
+    const NormalBinding* normal_binding = detail::active_normal_binding(
+        directional_light, point_light, fixed_lights);
+    if (normal_binding == nullptr) {
+        return {base, opacity, false};
+    }
+
+    const Vec3 interpolated_normal{
+        varyings.values[normal_binding->x],
+        varyings.values[normal_binding->y],
+        varyings.values[normal_binding->z],
+    };
+    const float ambient = ambient_sum(directional_light, point_light, fixed_lights);
+    if (!finite_vec3(interpolated_normal)) {
+        return {base * ambient, opacity, false};
+    }
+    const float normal_length = length(interpolated_normal);
+    if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
+        return {base * ambient, opacity, false};
+    }
+
+    const Vec3 geometric_normal = interpolated_normal / normal_length;
+    const Vec3 normal = detail::tangent_space_lighting_normal(
+        texture_binding,
+        varyings,
+        geometric_normal,
+        tangent_frame);
+
+    if (fixed_lights.count == 0U) {
+        const float visibility = directional_light.enabled
+            ? shadow_visibility(shadow, light_clip)
+            : 1.0F;
+        const Vec3 shaded = directional_light.enabled
+            ? light_contribution(
+                base, normal, material, &directional_light, nullptr, visibility, world_position)
+            : light_contribution(
+                base, normal, material, nullptr, &point_light, 1.0F, world_position);
+        return {shaded, opacity, false};
+    }
+
+    Vec3 shaded{};
+    for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
+        const FixedLight& light = fixed_lights.lights[i];
+        if (light.type == FixedLightType::Directional) {
+            const bool is_shadowed = shadow.enabled
+                && fixed_lights.shadowed_directional_index
+                && *fixed_lights.shadowed_directional_index == i;
+            const float visibility = is_shadowed
+                ? shadow_visibility(shadow, light_clip)
+                : 1.0F;
+            shaded = shaded + light_contribution(
+                base,
+                normal,
+                material,
+                &light.directional,
+                nullptr,
+                visibility,
+                world_position);
+        } else {
+            shaded = shaded + light_contribution(
+                base,
+                normal,
+                material,
+                nullptr,
+                &light.point,
+                1.0F,
+                world_position);
+        }
+    }
     return {shaded, opacity, false};
 }
 
@@ -954,6 +1001,7 @@ void rasterize_screen_triangle(
     BaseColorSource source,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material,
     const DepthState& depth_state,
     const StencilState& stencil_state,
@@ -969,7 +1017,6 @@ void rasterize_screen_triangle(
         quantize_subpixel(v[1].position),
         quantize_subpixel(v[2].position),
     };
-
     const std::int64_t fixed_area = fixed_edge(fixed[0], fixed[1], fixed[2]);
     if (fixed_area == 0) {
         return;
@@ -978,7 +1025,6 @@ void rasterize_screen_triangle(
         std::swap(v[1], v[2]);
         std::swap(fixed[1], fixed[2]);
     }
-
     const float interpolation_area = edge(v[0].position, v[1].position, v[2].position);
     if (!std::isfinite(interpolation_area) || std::fabs(interpolation_area) <= kEpsilon) {
         return;
@@ -988,7 +1034,6 @@ void rasterize_screen_triangle(
     const float max_x_f = std::max({v[0].position.x, v[1].position.x, v[2].position.x});
     const float min_y_f = std::min({v[0].position.y, v[1].position.y, v[2].position.y});
     const float max_y_f = std::max({v[0].position.y, v[1].position.y, v[2].position.y});
-
     const int width = static_cast<int>(framebuffer.width());
     const int height = static_cast<int>(framebuffer.height());
     int min_x = std::max(0, static_cast<int>(std::floor(min_x_f)));
@@ -1009,7 +1054,6 @@ void rasterize_screen_triangle(
         min_y = std::max(min_y, scissor_min_y);
         max_y = std::min(max_y, scissor_max_y);
     }
-
     if (min_x > max_x || min_y > max_y) {
         return;
     }
@@ -1049,7 +1093,6 @@ void rasterize_screen_triangle(
                 if (depth < 0.0F || depth > 1.0F || !std::isfinite(depth)) {
                     continue;
                 }
-
                 const float reciprocal_w = bary.x * v[0].inv_w + bary.y * v[1].inv_w + bary.z * v[2].inv_w;
                 if (std::fabs(reciprocal_w) <= kEpsilon || !std::isfinite(reciprocal_w)) {
                     continue;
@@ -1058,9 +1101,10 @@ void rasterize_screen_triangle(
                 const Vec4 light_clip = shadow_state.enabled
                     ? interpolate_light_clip(v, bary, reciprocal_w)
                     : Vec4{};
-                const Vec3 world_position = world_position_required(
+                const Vec3 world_position = detail::fixed_lighting_world_position_required(
                         directional_light,
                         point_light,
+                        fixed_lights,
                         material)
                     ? interpolate_world_position(v, bary, reciprocal_w)
                     : Vec3{};
@@ -1071,6 +1115,7 @@ void rasterize_screen_triangle(
                     source,
                     directional_light,
                     point_light,
+                    fixed_lights,
                     material,
                     shadow_state,
                     light_clip,
@@ -1159,6 +1204,7 @@ void draw_triangle_impl(
     BaseColorSource source,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material,
     CullMode cull_mode,
     FrontFace front_face,
@@ -1171,9 +1217,10 @@ void draw_triangle_impl(
     const FragmentProgram* fragment_program,
     const detail::TangentFrame* tangent_frame,
     const detail::ResolvedViewportState& viewport_state) {
-    const bool needs_world_position = world_position_required(
+    const bool needs_world_position = detail::fixed_lighting_world_position_required(
         directional_light,
         point_light,
+        fixed_lights,
         material);
     if (needs_world_position && model == nullptr) {
         throw std::logic_error("fixed lighting requires a model transform");
@@ -1202,13 +1249,11 @@ void draw_triangle_impl(
     if (polygon.size() < 3U) {
         return;
     }
-
     for (std::size_t i = 1; i + 1U < polygon.size(); ++i) {
         if (should_cull_projected_triangle(
                 polygon[0], polygon[i], polygon[i + 1U], cull_mode, front_face)) {
             continue;
         }
-
         const auto a = to_screen(polygon[0], viewport_state.viewport);
         const auto b = to_screen(polygon[i], viewport_state.viewport);
         const auto c = to_screen(polygon[i + 1U], viewport_state.viewport);
@@ -1223,6 +1268,7 @@ void draw_triangle_impl(
             source,
             directional_light,
             point_light,
+            fixed_lights,
             material,
             depth_state,
             stencil_state,
@@ -1240,8 +1286,7 @@ void draw_triangle_impl(
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
     const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
-
-    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_, fixed_lights_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1249,20 +1294,17 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
-    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight directional_light = prepare_directional_light(directional_light_);
     const PointLight point_light = prepare_point_light(point_light_);
-    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
-    validate_triangle_varyings(
-        programmed,
-        color_binding_,
-        texture_binding_,
-        source,
-        normal_binding);
+    const FixedLightCollection fixed_lights = prepare_fixed_lights(fixed_lights_);
+    const NormalBinding* normal_binding = detail::active_normal_binding(
+        directional_light, point_light, fixed_lights);
+    validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, normal_binding);
     validate_fragment_program(fragment_program_, programmed[0].varyings.count);
     if (texture_binding_.normal_texture != nullptr && normal_binding == nullptr) {
         throw std::invalid_argument("normal mapping requires an enabled fixed light");
@@ -1271,6 +1313,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         programmed,
         directional_light,
         point_light,
+        fixed_lights,
         material,
         model);
 
@@ -1297,6 +1340,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         source,
         directional_light,
         point_light,
+        fixed_lights,
         material,
         cull_mode_,
         front_face_,
@@ -1315,12 +1359,12 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     if (texture_binding_.normal_texture != nullptr) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
-    if (directional_light_.enabled || point_light_.enabled || shadow_state_.enabled) {
+    if (directional_light_.enabled || point_light_.enabled
+        || fixed_lights_.count != 0U || shadow_state_.enabled) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
-
-    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_, fixed_lights_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1328,13 +1372,11 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
-    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
-    const DirectionalLight directional_light = prepare_directional_light(directional_light_);
-    const PointLight point_light = prepare_point_light(point_light_);
     validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, nullptr);
     validate_fragment_program(fragment_program_, programmed[0].varyings.count);
     draw_triangle_impl(
@@ -1346,8 +1388,9 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         color_binding_,
         texture_binding_,
         source,
-        directional_light,
-        point_light,
+        {},
+        {},
+        {},
         material,
         cull_mode_,
         front_face_,
@@ -1367,7 +1410,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
         detail::prepare_vertex_program_mesh(vertex_program_, mesh);
     const Mesh& vertex_mesh = programmed.get();
 
-    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_, fixed_lights_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1375,14 +1418,16 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
-    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight directional_light = prepare_directional_light(directional_light_);
     const PointLight point_light = prepare_point_light(point_light_);
-    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
+    const FixedLightCollection fixed_lights = prepare_fixed_lights(fixed_lights_);
+    const NormalBinding* normal_binding = detail::active_normal_binding(
+        directional_light, point_light, fixed_lights);
     validate_mesh(vertex_mesh, color_binding_, texture_binding_, source, normal_binding);
     validate_fragment_program(fragment_program_, mesh_varying_count(vertex_mesh));
     if (texture_binding_.normal_texture != nullptr && normal_binding == nullptr) {
@@ -1392,6 +1437,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
         vertex_mesh,
         directional_light,
         point_light,
+        fixed_lights,
         material,
         model);
 
@@ -1428,6 +1474,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             source,
             directional_light,
             point_light,
+            fixed_lights,
             material,
             cull_mode_,
             front_face_,
@@ -1447,14 +1494,15 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     if (texture_binding_.normal_texture != nullptr) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
-    if (directional_light_.enabled || point_light_.enabled || shadow_state_.enabled) {
+    if (directional_light_.enabled || point_light_.enabled
+        || fixed_lights_.count != 0U || shadow_state_.enabled) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const detail::PreparedVertexMesh programmed =
         detail::prepare_vertex_program_mesh(vertex_program_, mesh);
     const Mesh& prepared_mesh = programmed.get();
 
-    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_, fixed_lights_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1462,13 +1510,11 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
-    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
-    const DirectionalLight directional_light = prepare_directional_light(directional_light_);
-    const PointLight point_light = prepare_point_light(point_light_);
     validate_mesh(prepared_mesh, color_binding_, texture_binding_, source, nullptr);
     validate_fragment_program(fragment_program_, mesh_varying_count(prepared_mesh));
     for (const TriangleIndices& indices : prepared_mesh.triangles) {
@@ -1481,8 +1527,9 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             color_binding_,
             texture_binding_,
             source,
-            directional_light,
-            point_light,
+            {},
+            {},
+            {},
             material,
             cull_mode_,
             front_face_,
