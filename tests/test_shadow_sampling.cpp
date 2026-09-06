@@ -242,6 +242,35 @@ void test_fixed_kernel_pcf_for_all_typed_records() {
     }
 }
 
+void test_same_type_mixed_policies_are_per_record() {
+    const auto map = projected_center_occluded();
+
+    FixedLight hard = fixed_directional(directional());
+    hard.directional_shadow = {
+        true,
+        map,
+        Mat4::identity(),
+        0.0F,
+        ShadowSamplingMode::Hard,
+    };
+
+    FixedLight pcf = fixed_directional(directional());
+    pcf.directional_shadow = {
+        true,
+        map,
+        Mat4::identity(),
+        0.0F,
+        ShadowSamplingMode::Pcf3x3,
+    };
+
+    ModelRenderOptions options;
+    options.fixed_lights = collection({hard, pcf});
+    check_near(
+        render_center(options).x,
+        8.0F / 9.0F,
+        "same-type directional records retain independent Hard and PCF policies");
+}
+
 void test_projected_edge_taps_clamp_to_map() {
     const auto map = std::make_shared<const DepthTexture2D>(
         2U,
@@ -398,6 +427,7 @@ void test_list_preflight_prevents_earlier_pcf_writes() {
 int main() {
     test_hard_default_is_explicitly_equivalent();
     test_fixed_kernel_pcf_for_all_typed_records();
+    test_same_type_mixed_policies_are_per_record();
     test_projected_edge_taps_clamp_to_map();
     test_point_edge_taps_stay_on_selected_face();
     test_unknown_policy_fails_static_preparation();
