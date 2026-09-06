@@ -895,9 +895,22 @@ float directional_shadow_visibility_world(
     if (!shadow.enabled) {
         return 1.0F;
     }
+    if (shadow.cascades) {
+        const float view_depth =
+            shadow.cascades->view_depth_for_world_position(world_position);
+        const DirectionalShadowCascade* cascade =
+            shadow.cascades->cascade_for_view_depth(view_depth);
+        if (cascade == nullptr) {
+            return 1.0F;
+        }
+        const Vec4 clip = cascade->light_view_projection
+            * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
+        return projected_shadow_visibility(
+            *cascade->map, cascade->bias, cascade->sampling, clip);
+    }
     if (!shadow.map) {
         throw std::logic_error(
-            "validated per-record directional shadow lost its depth texture");
+            "validated per-record directional shadow lost its depth texture or cascade set");
     }
     const Vec4 clip = shadow.light_view_projection
         * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
