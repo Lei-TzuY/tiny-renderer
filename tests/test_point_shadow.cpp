@@ -130,6 +130,7 @@ std::shared_ptr<const DepthCubemap> fully_occluding_cubemap(const Vec3& light_po
         PointShadowCubemapOptions{1U, 0.1F, 10.0F});
     return std::make_shared<const DepthCubemap>(
         1U,
+        reference->light_position(),
         copy_face_transforms(*reference),
         std::vector<float>(kCubemapFaceCount, 0.0F));
 }
@@ -164,11 +165,27 @@ void test_resource_and_face_addressing() {
     transforms.fill(Mat4::identity());
     bool depth_threw = false;
     try {
-        (void)DepthCubemap(1U, transforms, std::vector<float>(kCubemapFaceCount, -0.1F));
+        (void)DepthCubemap(
+            1U,
+            {0.0F, 0.0F, 0.0F},
+            transforms,
+            std::vector<float>(kCubemapFaceCount, -0.1F));
     } catch (const std::invalid_argument&) {
         depth_threw = true;
     }
     check(depth_threw, "depth cubemap construction rejects depths outside [0,1]");
+
+    bool position_threw = false;
+    try {
+        (void)DepthCubemap(
+            1U,
+            {std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F},
+            transforms,
+            std::vector<float>(kCubemapFaceCount, 1.0F));
+    } catch (const std::invalid_argument&) {
+        position_threw = true;
+    }
+    check(position_threw, "depth cubemap construction rejects a non-finite capture origin");
 }
 
 void test_six_face_capture_uses_existing_depth_path() {
@@ -180,6 +197,10 @@ void test_six_face_capture_uses_existing_depth_path() {
         {0.0F, 0.0F, 0.0F},
         PointShadowCubemapOptions{65U, 0.1F, 10.0F});
 
+    check(cubemap->light_position().x == 0.0F
+              && cubemap->light_position().y == 0.0F
+              && cubemap->light_position().z == 0.0F,
+          "point shadow cubemap retains the exact capture light position");
     check(cubemap->depth_at(CubemapFace::NegativeZ, 32U, 32U) < 1.0F,
           "negative-Z face captures the visible occluder through the existing depth raster path");
     check(cubemap->depth_at(CubemapFace::PositiveZ, 32U, 32U) == 1.0F,
@@ -310,6 +331,37 @@ void test_invalid_associations_reject_before_rendering() {
             threw = true;
         }
         check(threw, "point shadow bias must be finite and non-negative");
+    }
+
+    {
+        ModelRenderOptions options;
+        options.fixed_lights = collection({fixed_point(point_light(0.0F, 1.0F, 3.0F))});
+        options.fixed_lights.shadowed_point_index = 0U;
+        options.point_shadow_state = {true, map, 0.0F};
+
+        Framebuffer framebuffer(65U, 65U);
+        framebuffer.clear({0.2F, 0.3F, 0.4F}, 0.9F, 13U);
+        const auto before = framebuffer.rgb8();
+        const float before_depth = framebuffer.depth_at(32U, 32U);
+        const std::uint8_t before_stencil = framebuffer.stencil_at(32U, 32U);
+        bool threw = false;
+        try {
+            draw_model_asset(
+                framebuffer,
+                asset,
+                Mat4::identity(), Mat4::identity(), Mat4::identity(),
+                options);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw,
+              "point shadow cubemap capture position must match the associated point light");
+        check(framebuffer.rgb8() == before,
+              "mismatched point-shadow capture origin rejects before color mutation");
+        check(framebuffer.depth_at(32U, 32U) == before_depth,
+              "mismatched point-shadow capture origin rejects before depth mutation");
+        check(framebuffer.stencil_at(32U, 32U) == before_stencil,
+              "mismatched point-shadow capture origin rejects before stencil mutation");
     }
 }
 
