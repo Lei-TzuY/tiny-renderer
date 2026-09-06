@@ -1,11 +1,15 @@
 #include "tiny_renderer/shadow_renderer.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
+#include "tiny_renderer/point_shadow_renderer.hpp"
 #include "rasterizer_validation.hpp"
 #include "vertex_program_internal.hpp"
 
@@ -21,6 +25,10 @@ bool finite_mat4(const Mat4& matrix) {
         }
     }
     return true;
+}
+
+bool finite_vec3(const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
 void validate_culling(CullMode cull_mode, FrontFace front_face) {
@@ -154,6 +162,77 @@ void draw_shadow_entries(
     }
 }
 
+std::size_t checked_cubemap_storage_size(std::size_t size) {
+    if (size == 0U) {
+        throw std::invalid_argument("point shadow cubemap face size must be non-zero");
+    }
+    if (size > std::numeric_limits<std::size_t>::max() / size) {
+        throw std::overflow_error("point shadow cubemap face storage size overflows size_t");
+    }
+    const std::size_t face_pixels = size * size;
+    if (face_pixels > std::numeric_limits<std::size_t>::max() / kCubemapFaceCount) {
+        throw std::overflow_error("point shadow cubemap storage size overflows size_t");
+    }
+    return face_pixels * kCubemapFaceCount;
+}
+
+std::array<Mat4, kCubemapFaceCount> point_shadow_face_view_projections(
+    const Vec3& light_position,
+    float near_plane,
+    float far_plane) {
+    if (!finite_vec3(light_position)) {
+        throw std::invalid_argument("point shadow light position must be finite");
+    }
+
+    const Mat4 projection = Mat4::perspective(
+        radians(90.0F),
+        1.0F,
+        near_plane,
+        far_plane);
+    const std::array<Vec3, kCubemapFaceCount> directions{{
+        {1.0F, 0.0F, 0.0F},
+        {-1.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+        {0.0F, 0.0F, -1.0F},
+    }};
+    const std::array<Vec3, kCubemapFaceCount> ups{{
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+        {0.0F, 0.0F, -1.0F},
+        {0.0F, -1.0F, 0.0F},
+        {0.0F, -1.0F, 0.0F},
+    }};
+
+    std::array<Mat4, kCubemapFaceCount> result{};
+    for (std::size_t face = 0U; face < kCubemapFaceCount; ++face) {
+        result[face] = projection * Mat4::look_at(
+            light_position,
+            light_position + directions[face],
+            ups[face]);
+        if (!finite_mat4(result[face])) {
+            throw std::invalid_argument("point shadow face view-projection transform must be finite");
+        }
+    }
+    return result;
+}
+
+void capture_depth_face(
+    const Framebuffer& framebuffer,
+    std::size_t face_index,
+    std::vector<float>& depths) {
+    const std::size_t size = framebuffer.width();
+    const std::size_t face_pixels = size * size;
+    const std::size_t offset = face_index * face_pixels;
+    for (std::size_t y = 0U; y < size; ++y) {
+        for (std::size_t x = 0U; x < size; ++x) {
+            depths[offset + y * size + x] = framebuffer.depth_at(x, y);
+        }
+    }
+}
+
 }  // namespace
 
 std::shared_ptr<const DepthTexture2D> render_directional_shadow_map(
@@ -188,6 +267,48 @@ std::shared_ptr<const DepthTexture2D> render_directional_shadow_map(
         options.front_face);
 
     return std::make_shared<const DepthTexture2D>(capture_depth_texture(framebuffer));
+}
+
+std::shared_ptr<const DepthCubemap> render_point_shadow_cubemap(
+    std::span<const PreparedModelListEntry> entries,
+    const Vec3& light_position,
+    PointShadowCubemapOptions options) {
+    const std::size_t storage_size = checked_cubemap_storage_size(options.size);
+    const std::array<Mat4, kCubemapFaceCount> face_view_projections =
+        point_shadow_face_view_projections(
+            light_position,
+            options.near_plane,
+            options.far_plane);
+    validate_culling(options.cull_mode, options.front_face);
+    validate_shadow_entries(entries);
+    const std::vector<detail::PreparedVertexMesh> meshes =
+        prepare_shadow_meshes(entries);
+
+    Framebuffer framebuffer{options.size, options.size, SampleCount::One};
+    preflight_shadow_entries(
+        framebuffer,
+        entries,
+        meshes,
+        options.cull_mode,
+        options.front_face);
+
+    std::vector<float> depths(storage_size, 1.0F);
+    for (std::size_t face = 0U; face < kCubemapFaceCount; ++face) {
+        framebuffer.clear({0.0F, 0.0F, 0.0F}, 1.0F, 0U);
+        draw_shadow_entries(
+            framebuffer,
+            entries,
+            meshes,
+            face_view_projections[face],
+            options.cull_mode,
+            options.front_face);
+        capture_depth_face(framebuffer, face, depths);
+    }
+
+    return std::make_shared<const DepthCubemap>(
+        options.size,
+        face_view_projections,
+        std::move(depths));
 }
 
 }  // namespace tiny_renderer
