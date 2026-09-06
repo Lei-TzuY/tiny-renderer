@@ -62,6 +62,10 @@ if(BUILD_TESTING)
     )
     add_test(NAME tiny_renderer_obj_tests COMMAND tiny_renderer_obj_tests)
 
+    add_executable(tiny_renderer_obj_relative_index_tests tests/test_obj_relative_indices.cpp)
+    target_link_libraries(tiny_renderer_obj_relative_index_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_obj_relative_index_tests COMMAND tiny_renderer_obj_relative_index_tests)
+
     add_executable(tiny_renderer_obj_model_source_tests tests/test_obj_model_source.cpp)
     target_link_libraries(tiny_renderer_obj_model_source_tests PRIVATE tiny_renderer)
     target_compile_definitions(tiny_renderer_obj_model_source_tests PRIVATE
