@@ -17,6 +17,7 @@ using MaterialLibrary = std::map<std::string, MaterialState>;
 struct MaterialAssetDefinition {
     MaterialState material{};
     std::optional<std::string> diffuse_map_filename;
+    std::optional<std::string> opacity_map_filename;
 };
 
 using MaterialAssetLibrary = std::map<std::string, MaterialAssetDefinition>;
