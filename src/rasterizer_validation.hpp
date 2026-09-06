@@ -16,6 +16,9 @@ void validate_viewport_state_definition(const ViewportState& state);
 void validate_alpha_to_coverage_target(
     const Framebuffer& framebuffer,
     const AlphaToCoverageState& state);
+void validate_shadow_state_definition(
+    const ShadowState& state,
+    bool directional_light_enabled);
 [[nodiscard]] ResolvedViewportState resolve_viewport_state(
     const Framebuffer& framebuffer,
     const ViewportState& state);
@@ -36,6 +39,7 @@ void preflight_mesh_range_submission(
     const StencilState& stencil_state,
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
+    const ShadowState& shadow_state,
     const Mat4* model,
     bool mvp_only);
 
