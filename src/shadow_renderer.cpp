@@ -313,6 +313,7 @@ std::shared_ptr<const DepthCubemap> render_point_shadow_cubemap(
 
     return std::make_shared<const DepthCubemap>(
         options.size,
+        light_position,
         face_view_projections,
         std::move(depths));
 }
