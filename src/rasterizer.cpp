@@ -133,26 +133,53 @@ bool material_has_specular(const MaterialState& material) {
     return material.specular.x > 0.0F || material.specular.y > 0.0F || material.specular.z > 0.0F;
 }
 
+bool fixed_lighting_enabled(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light) {
+    return directional_light.enabled || point_light.enabled;
+}
+
+const NormalBinding* active_normal_binding(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light) {
+    if (directional_light.enabled) {
+        return &directional_light.normal;
+    }
+    if (point_light.enabled) {
+        return &point_light.normal;
+    }
+    return nullptr;
+}
+
+bool world_position_required(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const MaterialState& material) {
+    return point_light.enabled
+        || (directional_light.enabled && material_has_specular(material));
+}
+
 Vec3 transform_world_position(const Mat4& model, const Vec3& position) {
     const Vec4 world = model * Vec4{position.x, position.y, position.z, 1.0F};
     if (!std::isfinite(world.x) || !std::isfinite(world.y) || !std::isfinite(world.z)
         || !std::isfinite(world.w) || std::fabs(world.w) <= kEpsilon) {
-        throw std::invalid_argument("specular world-space position transform is numerically unstable");
+        throw std::invalid_argument("lighting world-space position transform is numerically unstable");
     }
     const float inv_w = 1.0F / world.w;
     const Vec3 result{world.x * inv_w, world.y * inv_w, world.z * inv_w};
     if (!finite_vec3(result)) {
-        throw std::invalid_argument("specular world-space position must remain finite");
+        throw std::invalid_argument("lighting world-space position must remain finite");
     }
     return result;
 }
 
-void validate_specular_world_positions(
+void validate_lighting_world_positions(
     const Triangle& triangle,
-    const DirectionalLight& light,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material,
     const Mat4& model) {
-    if (!light.enabled || !material_has_specular(material)) {
+    if (!world_position_required(directional_light, point_light, material)) {
         return;
     }
     for (const Vertex& vertex : triangle) {
@@ -160,12 +187,13 @@ void validate_specular_world_positions(
     }
 }
 
-void validate_specular_world_positions(
+void validate_lighting_world_positions(
     const Mesh& mesh,
-    const DirectionalLight& light,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material,
     const Mat4& model) {
-    if (!light.enabled || !material_has_specular(material)) {
+    if (!world_position_required(directional_light, point_light, material)) {
         return;
     }
     for (const Vertex& vertex : mesh.vertices) {
@@ -323,21 +351,13 @@ DirectionalLight prepare_directional_light(const DirectionalLight& light) {
     if (!light.enabled) {
         return light;
     }
-    if (!finite_vec3(light.direction_to_light) || length(light.direction_to_light) <= kEpsilon) {
-        throw std::invalid_argument("directional light direction must be finite and non-zero");
-    }
-    if (!finite_vec3(light.viewer_position)) {
-        throw std::invalid_argument("directional light viewer position must be finite");
-    }
-    if (!std::isfinite(light.ambient) || !std::isfinite(light.diffuse)
-        || light.ambient < 0.0F || light.diffuse < 0.0F
-        || light.ambient > 1.0F || light.diffuse > 1.0F
-        || light.ambient + light.diffuse > 1.0F + kEpsilon) {
-        throw std::invalid_argument("directional light coefficients must be finite, non-negative, and sum to at most one");
-    }
     DirectionalLight prepared = light;
     prepared.direction_to_light = normalize(light.direction_to_light);
     return prepared;
+}
+
+PointLight prepare_point_light(const PointLight& light) {
+    return light;
 }
 
 MaterialState prepare_material_state(const MaterialState& material) {
@@ -380,18 +400,18 @@ void validate_triangle_varyings(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light) {
+    const NormalBinding* normal_binding) {
     validate_pack(triangle[0].varyings);
     validate_output_binding(color_binding, texture_binding, source, triangle[0].varyings.count);
     validate_layout_match(triangle[0].varyings, triangle[1].varyings);
     validate_layout_match(triangle[0].varyings, triangle[2].varyings);
-    if (light.enabled) {
-        validate_normal_binding(light.normal, triangle[0].varyings);
+    if (normal_binding != nullptr) {
+        validate_normal_binding(*normal_binding, triangle[0].varyings);
     }
     for (const Vertex& vertex : triangle) {
         validate_texture_coordinates(vertex.varyings, texture_binding, source);
-        if (light.enabled) {
-            validate_normal_value(vertex.varyings, light.normal);
+        if (normal_binding != nullptr) {
+            validate_normal_value(vertex.varyings, *normal_binding);
         }
     }
 }
@@ -728,14 +748,14 @@ Vec3 interpolate_world_position(
     const Vec3& bary,
     float reciprocal_w) {
     if (!v[0].has_world_position || !v[1].has_world_position || !v[2].has_world_position) {
-        throw std::logic_error("specular shading requires a generated world-space position");
+        throw std::logic_error("fixed lighting requires a generated world-space position");
     }
     const Vec3 numerator = v[0].world_position_times_inv_w * bary.x
         + v[1].world_position_times_inv_w * bary.y
         + v[2].world_position_times_inv_w * bary.z;
     const Vec3 result = numerator * (1.0F / reciprocal_w);
     if (!finite_vec3(result)) {
-        throw std::logic_error("interpolated specular world-space position became non-finite");
+        throw std::logic_error("interpolated lighting world-space position became non-finite");
     }
     return result;
 }
@@ -819,12 +839,24 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
     return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
 }
 
+float point_attenuation(const PointLight& light, float distance) {
+    const double d = static_cast<double>(distance);
+    const double denominator = 1.0
+        + static_cast<double>(light.linear_attenuation) * d
+        + static_cast<double>(light.quadratic_attenuation) * d * d;
+    if (!std::isfinite(denominator)) {
+        return 0.0F;
+    }
+    return static_cast<float>(1.0 / denominator);
+}
+
 ShadedFragment shade_fragment(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material,
     const ShadowState& shadow,
     const Vec4& light_clip,
@@ -837,21 +869,25 @@ ShadedFragment shade_fragment(
         source_color.z * material.albedo.z,
     };
     const float opacity = fragment_opacity(varyings, texture_binding, material);
-    if (!light.enabled) {
+    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
+    if (normal_binding == nullptr) {
         return {base, opacity, false};
     }
 
     const Vec3 interpolated_normal{
-        varyings.values[light.normal.x],
-        varyings.values[light.normal.y],
-        varyings.values[light.normal.z],
+        varyings.values[normal_binding->x],
+        varyings.values[normal_binding->y],
+        varyings.values[normal_binding->z],
     };
+    const float ambient = directional_light.enabled
+        ? directional_light.ambient
+        : point_light.ambient;
     if (!finite_vec3(interpolated_normal)) {
-        return {base * light.ambient, opacity, false};
+        return {base * ambient, opacity, false};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {base * light.ambient, opacity, false};
+        return {base * ambient, opacity, false};
     }
 
     const Vec3 geometric_normal = interpolated_normal / normal_length;
@@ -860,22 +896,44 @@ ShadedFragment shade_fragment(
         varyings,
         geometric_normal,
         tangent_frame);
-    const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
-    const float visibility = shadow_visibility(shadow, light_clip);
-    const float diffuse_intensity = light.diffuse * lambert * visibility;
-    Vec3 shaded = base * (light.ambient + diffuse_intensity);
+
+    Vec3 direction_to_light{};
+    Vec3 viewer_position{};
+    float diffuse = 0.0F;
+    float visibility = 1.0F;
+    float attenuation = 1.0F;
+    if (directional_light.enabled) {
+        direction_to_light = directional_light.direction_to_light;
+        viewer_position = directional_light.viewer_position;
+        diffuse = directional_light.diffuse;
+        visibility = shadow_visibility(shadow, light_clip);
+    } else {
+        const Vec3 to_light = point_light.position - world_position;
+        const float distance = length(to_light);
+        if (!finite_vec3(to_light) || !std::isfinite(distance) || distance <= kEpsilon) {
+            return {base * point_light.ambient, opacity, false};
+        }
+        direction_to_light = to_light / distance;
+        viewer_position = point_light.viewer_position;
+        diffuse = point_light.diffuse;
+        attenuation = point_attenuation(point_light, distance);
+    }
+
+    const float lambert = std::clamp(dot(normal, direction_to_light), 0.0F, 1.0F);
+    const float diffuse_intensity = diffuse * lambert * visibility * attenuation;
+    Vec3 shaded = base * (ambient + diffuse_intensity);
 
     if (material_has_specular(material)) {
-        const Vec3 to_viewer = light.viewer_position - world_position;
+        const Vec3 to_viewer = viewer_position - world_position;
         const float view_length = length(to_viewer);
         if (finite_vec3(to_viewer) && std::isfinite(view_length) && view_length > kEpsilon) {
             const Vec3 view_direction = to_viewer / view_length;
-            const Vec3 half_sum = light.direction_to_light + view_direction;
+            const Vec3 half_sum = direction_to_light + view_direction;
             const float half_length = length(half_sum);
             if (finite_vec3(half_sum) && std::isfinite(half_length) && half_length > kEpsilon) {
                 const Vec3 half_direction = half_sum / half_length;
                 const float nh = std::clamp(dot(normal, half_direction), 0.0F, 1.0F);
-                const float specular_strength = light.diffuse * visibility
+                const float specular_strength = diffuse * visibility * attenuation
                     * std::pow(nh, material.shininess);
                 shaded = {
                     shaded.x + material.specular.x * specular_strength,
@@ -894,7 +952,8 @@ void rasterize_screen_triangle(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material,
     const DepthState& depth_state,
     const StencilState& stencil_state,
@@ -999,7 +1058,10 @@ void rasterize_screen_triangle(
                 const Vec4 light_clip = shadow_state.enabled
                     ? interpolate_light_clip(v, bary, reciprocal_w)
                     : Vec4{};
-                const Vec3 world_position = light.enabled && material_has_specular(material)
+                const Vec3 world_position = world_position_required(
+                        directional_light,
+                        point_light,
+                        material)
                     ? interpolate_world_position(v, bary, reciprocal_w)
                     : Vec3{};
                 const ShadedFragment fixed_fragment = shade_fragment(
@@ -1007,7 +1069,8 @@ void rasterize_screen_triangle(
                     color_binding,
                     texture_binding,
                     source,
-                    light,
+                    directional_light,
+                    point_light,
                     material,
                     shadow_state,
                     light_clip,
@@ -1052,7 +1115,7 @@ void validate_mesh(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light) {
+    const NormalBinding* normal_binding) {
     for (const TriangleIndices& triangle : mesh.triangles) {
         for (const std::uint32_t index : triangle) {
             if (static_cast<std::size_t>(index) >= mesh.vertices.size()) {
@@ -1065,14 +1128,14 @@ void validate_mesh(
     }
     validate_pack(mesh.vertices.front().varyings);
     validate_output_binding(color_binding, texture_binding, source, mesh.vertices.front().varyings.count);
-    if (light.enabled) {
-        validate_normal_binding(light.normal, mesh.vertices.front().varyings);
+    if (normal_binding != nullptr) {
+        validate_normal_binding(*normal_binding, mesh.vertices.front().varyings);
     }
     for (const Vertex& vertex : mesh.vertices) {
         validate_layout_match(mesh.vertices.front().varyings, vertex.varyings);
         validate_texture_coordinates(vertex.varyings, texture_binding, source);
-        if (light.enabled) {
-            validate_normal_value(vertex.varyings, light.normal);
+        if (normal_binding != nullptr) {
+            validate_normal_value(vertex.varyings, *normal_binding);
         }
     }
 }
@@ -1094,7 +1157,8 @@ void draw_triangle_impl(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material,
     CullMode cull_mode,
     FrontFace front_face,
@@ -1107,9 +1171,12 @@ void draw_triangle_impl(
     const FragmentProgram* fragment_program,
     const detail::TangentFrame* tangent_frame,
     const detail::ResolvedViewportState& viewport_state) {
-    const bool needs_world_position = light.enabled && material_has_specular(material);
+    const bool needs_world_position = world_position_required(
+        directional_light,
+        point_light,
+        material);
     if (needs_world_position && model == nullptr) {
-        throw std::logic_error("specular shading requires a model transform");
+        throw std::logic_error("fixed lighting requires a model transform");
     }
 
     std::array<ClipVertex, 3> clip{};
@@ -1154,7 +1221,8 @@ void draw_triangle_impl(
             color_binding,
             texture_binding,
             source,
-            light,
+            directional_light,
+            point_light,
             material,
             depth_state,
             stencil_state,
@@ -1173,6 +1241,7 @@ void draw_triangle_impl(
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
     const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
 
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1185,13 +1254,25 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
-    const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, light);
+    const DirectionalLight directional_light = prepare_directional_light(directional_light_);
+    const PointLight point_light = prepare_point_light(point_light_);
+    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
+    validate_triangle_varyings(
+        programmed,
+        color_binding_,
+        texture_binding_,
+        source,
+        normal_binding);
     validate_fragment_program(fragment_program_, programmed[0].varyings.count);
-    if (texture_binding_.normal_texture != nullptr && !light.enabled) {
-        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    if (texture_binding_.normal_texture != nullptr && normal_binding == nullptr) {
+        throw std::invalid_argument("normal mapping requires an enabled fixed light");
     }
-    validate_specular_world_positions(programmed, light, material, model);
+    validate_lighting_world_positions(
+        programmed,
+        directional_light,
+        point_light,
+        material,
+        model);
 
     std::optional<detail::TangentFrame> tangent_frame;
     if (texture_binding_.normal_texture != nullptr) {
@@ -1199,8 +1280,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     }
 
     Triangle prepared = programmed;
-    if (light.enabled) {
-        prepared = transform_triangle_normals(programmed, light.normal, normal_matrix(model));
+    if (normal_binding != nullptr) {
+        prepared = transform_triangle_normals(programmed, *normal_binding, normal_matrix(model));
     }
     const Mat4 light_mvp = shadow_state_.enabled
         ? shadow_state_.light_view_projection * model
@@ -1214,7 +1295,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         color_binding_,
         texture_binding_,
         source,
-        light,
+        directional_light,
+        point_light,
         material,
         cull_mode_,
         front_face_,
@@ -1233,11 +1315,12 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     if (texture_binding_.normal_texture != nullptr) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
-    if (directional_light_.enabled || shadow_state_.enabled) {
-        throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
+    if (directional_light_.enabled || point_light_.enabled || shadow_state_.enabled) {
+        throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
 
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1250,8 +1333,9 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
-    const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, light);
+    const DirectionalLight directional_light = prepare_directional_light(directional_light_);
+    const PointLight point_light = prepare_point_light(point_light_);
+    validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, nullptr);
     validate_fragment_program(fragment_program_, programmed[0].varyings.count);
     draw_triangle_impl(
         framebuffer_,
@@ -1262,7 +1346,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         color_binding_,
         texture_binding_,
         source,
-        light,
+        directional_light,
+        point_light,
         material,
         cull_mode_,
         front_face_,
@@ -1282,6 +1367,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
         detail::prepare_vertex_program_mesh(vertex_program_, mesh);
     const Mesh& vertex_mesh = programmed.get();
 
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1294,13 +1380,20 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
-    const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_mesh(vertex_mesh, color_binding_, texture_binding_, source, light);
+    const DirectionalLight directional_light = prepare_directional_light(directional_light_);
+    const PointLight point_light = prepare_point_light(point_light_);
+    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
+    validate_mesh(vertex_mesh, color_binding_, texture_binding_, source, normal_binding);
     validate_fragment_program(fragment_program_, mesh_varying_count(vertex_mesh));
-    if (texture_binding_.normal_texture != nullptr && !light.enabled) {
-        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    if (texture_binding_.normal_texture != nullptr && normal_binding == nullptr) {
+        throw std::invalid_argument("normal mapping requires an enabled fixed light");
     }
-    validate_specular_world_positions(vertex_mesh, light, material, model);
+    validate_lighting_world_positions(
+        vertex_mesh,
+        directional_light,
+        point_light,
+        material,
+        model);
 
     std::vector<detail::TangentFrame> tangent_frames;
     if (texture_binding_.normal_texture != nullptr) {
@@ -1315,8 +1408,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     }
 
     Mesh prepared = vertex_mesh;
-    if (light.enabled && !vertex_mesh.vertices.empty()) {
-        prepared = transform_mesh_normals(vertex_mesh, light.normal, normal_matrix(model));
+    if (normal_binding != nullptr && !vertex_mesh.vertices.empty()) {
+        prepared = transform_mesh_normals(vertex_mesh, *normal_binding, normal_matrix(model));
     }
     const Mat4 mvp = projection * view * model;
     const Mat4 light_mvp = shadow_state_.enabled
@@ -1333,7 +1426,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             color_binding_,
             texture_binding_,
             source,
-            light,
+            directional_light,
+            point_light,
             material,
             cull_mode_,
             front_face_,
@@ -1353,13 +1447,14 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     if (texture_binding_.normal_texture != nullptr) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
-    if (directional_light_.enabled || shadow_state_.enabled) {
-        throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
+    if (directional_light_.enabled || point_light_.enabled || shadow_state_.enabled) {
+        throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const detail::PreparedVertexMesh programmed =
         detail::prepare_vertex_program_mesh(vertex_program_, mesh);
     const Mesh& prepared_mesh = programmed.get();
 
+    detail::validate_fixed_lighting_definition(directional_light_, point_light_);
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1372,8 +1467,9 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
-    const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_mesh(prepared_mesh, color_binding_, texture_binding_, source, light);
+    const DirectionalLight directional_light = prepare_directional_light(directional_light_);
+    const PointLight point_light = prepare_point_light(point_light_);
+    validate_mesh(prepared_mesh, color_binding_, texture_binding_, source, nullptr);
     validate_fragment_program(fragment_program_, mesh_varying_count(prepared_mesh));
     for (const TriangleIndices& indices : prepared_mesh.triangles) {
         draw_triangle_impl(
@@ -1385,7 +1481,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             color_binding_,
             texture_binding_,
             source,
-            light,
+            directional_light,
+            point_light,
             material,
             cull_mode_,
             front_face_,
