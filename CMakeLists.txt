@@ -21,6 +21,7 @@ add_library(tiny_renderer
     src/rasterizer_validation.cpp
     src/shadow.cpp
     src/shadow_renderer.cpp
+    src/spot_shadow.cpp
     src/texture.cpp
 )
 
@@ -258,4 +259,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_spotlight_tests tests/test_spotlight.cpp)
     target_link_libraries(tiny_renderer_spotlight_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_spotlight_tests COMMAND tiny_renderer_spotlight_tests)
+
+    add_executable(tiny_renderer_spot_shadow_tests tests/test_spot_shadow.cpp)
+    target_link_libraries(tiny_renderer_spot_shadow_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_spot_shadow_tests COMMAND tiny_renderer_spot_shadow_tests)
 endif()

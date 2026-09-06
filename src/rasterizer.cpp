@@ -783,10 +783,10 @@ float fragment_opacity(
     return material.opacity * map_opacity;
 }
 
-float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
-    if (!shadow.enabled) {
-        return 1.0F;
-    }
+float projected_shadow_visibility(
+    const DepthTexture2D& map,
+    float bias,
+    const Vec4& light_clip) {
     if (!finite(light_clip) || light_clip.w <= kEpsilon) {
         return 1.0F;
     }
@@ -794,9 +794,6 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
         || light_clip.y < -light_clip.w || light_clip.y > light_clip.w
         || light_clip.z < -light_clip.w || light_clip.z > light_clip.w) {
         return 1.0F;
-    }
-    if (!shadow.map) {
-        throw std::logic_error("validated shadow state lost its depth texture");
     }
     const float inv_w = 1.0F / light_clip.w;
     const float ndc_x = light_clip.x * inv_w;
@@ -808,15 +805,39 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
         || ndc_z < -1.0F || ndc_z > 1.0F) {
         return 1.0F;
     }
-    const float map_max_x = static_cast<float>(shadow.map->width() - 1U);
-    const float map_max_y = static_cast<float>(shadow.map->height() - 1U);
+    const float map_max_x = static_cast<float>(map.width() - 1U);
+    const float map_max_y = static_cast<float>(map.height() - 1U);
     const float map_x = (ndc_x * 0.5F + 0.5F) * map_max_x;
     const float map_y = (1.0F - (ndc_y * 0.5F + 0.5F)) * map_max_y;
     const std::size_t x = static_cast<std::size_t>(std::llround(map_x));
     const std::size_t y = static_cast<std::size_t>(std::llround(map_y));
     const float fragment_depth = ndc_z * 0.5F + 0.5F;
-    const float stored_depth = shadow.map->depth_at(x, y);
-    return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
+    const float stored_depth = map.depth_at(x, y);
+    return fragment_depth - bias <= stored_depth ? 1.0F : 0.0F;
+}
+
+float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
+    if (!shadow.enabled) {
+        return 1.0F;
+    }
+    if (!shadow.map) {
+        throw std::logic_error("validated shadow state lost its depth texture");
+    }
+    return projected_shadow_visibility(*shadow.map, shadow.bias, light_clip);
+}
+
+float spot_shadow_visibility(
+    const SpotShadowState& shadow,
+    const Vec3& world_position) {
+    if (!shadow.enabled) {
+        return 1.0F;
+    }
+    if (!shadow.map) {
+        throw std::logic_error("validated spot shadow state lost its depth map");
+    }
+    const Vec4 clip = shadow.map->light_view_projection()
+        * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
+    return projected_shadow_visibility(shadow.map->depth_texture(), shadow.bias, clip);
 }
 
 float point_shadow_visibility(
@@ -1099,7 +1120,13 @@ ShadedFragment shade_fragment(
                     world_position);
                 break;
             }
-            case FixedLightType::Spot:
+            case FixedLightType::Spot: {
+                const bool is_shadowed = fixed_lights.spot_shadow_state.enabled
+                    && fixed_lights.shadowed_spot_index
+                    && *fixed_lights.shadowed_spot_index == i;
+                const float visibility = is_shadowed
+                    ? spot_shadow_visibility(fixed_lights.spot_shadow_state, world_position)
+                    : 1.0F;
                 shaded = shaded + light_contribution(
                     base,
                     normal,
@@ -1107,9 +1134,10 @@ ShadedFragment shade_fragment(
                     nullptr,
                     nullptr,
                     &light.spot,
-                    1.0F,
+                    visibility,
                     world_position);
                 break;
+            }
         }
     }
     return {shaded, opacity, false};

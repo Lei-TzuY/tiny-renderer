@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "tiny_renderer/point_shadow_renderer.hpp"
+#include "tiny_renderer/spot_shadow_renderer.hpp"
 #include "rasterizer_validation.hpp"
 #include "vertex_program_internal.hpp"
 
@@ -225,6 +226,40 @@ std::array<Mat4, kCubemapFaceCount> point_shadow_face_view_projections(
     return result;
 }
 
+Mat4 spot_shadow_view_projection(
+    const SpotLight& light,
+    float near_plane,
+    float far_plane) {
+    FixedLightCollection validation_lights{};
+    validation_lights.count = 1U;
+    validation_lights.lights[0].type = FixedLightType::Spot;
+    validation_lights.lights[0].spot = light;
+    detail::validate_fixed_lighting_definition({}, {}, validation_lights);
+
+    if (!std::isfinite(near_plane) || !std::isfinite(far_plane)
+        || near_plane <= 0.0F || far_plane <= near_plane) {
+        throw std::invalid_argument(
+            "spot shadow near/far planes must be finite with 0 < near < far");
+    }
+    if (light.outer_cone_cos <= 0.0F || light.outer_cone_cos >= 1.0F) {
+        throw std::invalid_argument(
+            "spot shadow projection requires outer cone cosine strictly within (0, 1)");
+    }
+
+    const Vec3 direction = normalize(light.direction);
+    const Vec3 up = std::fabs(direction.y) < 0.999F
+        ? Vec3{0.0F, 1.0F, 0.0F}
+        : Vec3{0.0F, 0.0F, 1.0F};
+    const float half_angle = std::acos(light.outer_cone_cos);
+    const float full_fov = 2.0F * half_angle;
+    const Mat4 result = Mat4::perspective(full_fov, 1.0F, near_plane, far_plane)
+        * Mat4::look_at(light.position, light.position + direction, up);
+    if (!finite_mat4(result)) {
+        throw std::invalid_argument("spot shadow view-projection transform must be finite");
+    }
+    return result;
+}
+
 void capture_depth_face(
     const Framebuffer& framebuffer,
     std::size_t face_index,
@@ -316,6 +351,46 @@ std::shared_ptr<const DepthCubemap> render_point_shadow_cubemap(
         light_position,
         face_view_projections,
         std::move(depths));
+}
+
+std::shared_ptr<const SpotShadowMap> render_spot_shadow_map(
+    std::span<const PreparedModelListEntry> entries,
+    const SpotLight& light,
+    SpotShadowMapOptions options) {
+    if (options.size == 0U) {
+        throw std::invalid_argument("spot shadow map size must be non-zero");
+    }
+    const Mat4 light_view_projection = spot_shadow_view_projection(
+        light,
+        options.near_plane,
+        options.far_plane);
+    validate_culling(options.cull_mode, options.front_face);
+    validate_shadow_entries(entries);
+    const std::vector<detail::PreparedVertexMesh> meshes =
+        prepare_shadow_meshes(entries);
+
+    Framebuffer framebuffer{options.size, options.size, SampleCount::One};
+    preflight_shadow_entries(
+        framebuffer,
+        entries,
+        meshes,
+        options.cull_mode,
+        options.front_face);
+    framebuffer.clear({0.0F, 0.0F, 0.0F}, 1.0F, 0U);
+    draw_shadow_entries(
+        framebuffer,
+        entries,
+        meshes,
+        light_view_projection,
+        options.cull_mode,
+        options.front_face);
+
+    return std::make_shared<const SpotShadowMap>(
+        light.position,
+        light.direction,
+        light.outer_cone_cos,
+        light_view_projection,
+        capture_depth_texture(framebuffer));
 }
 
 }  // namespace tiny_renderer

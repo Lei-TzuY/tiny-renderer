@@ -427,6 +427,62 @@ void preflight_tangent_frames(
     }
 }
 
+void validate_spot_shadow_association(const FixedLightCollection& fixed_lights) {
+    const SpotShadowState& state = fixed_lights.spot_shadow_state;
+    if (fixed_lights.count == 0U) {
+        if (fixed_lights.shadowed_spot_index || state.enabled) {
+            throw std::invalid_argument(
+                "spot shadow mapping requires a fixed-light collection association");
+        }
+        return;
+    }
+
+    if (!state.enabled) {
+        if (fixed_lights.shadowed_spot_index) {
+            throw std::invalid_argument(
+                "spot-shadow association requires enabled spot shadow state");
+        }
+        return;
+    }
+    if (!fixed_lights.shadowed_spot_index) {
+        throw std::invalid_argument("spot shadow mapping requires a spotlight association");
+    }
+    const std::size_t index = *fixed_lights.shadowed_spot_index;
+    if (index >= fixed_lights.count) {
+        throw std::out_of_range("spot-shadow association exceeds the fixed-light collection");
+    }
+    if (fixed_lights.lights[index].type != FixedLightType::Spot) {
+        throw std::invalid_argument("spot-shadow association must target a spotlight");
+    }
+    if (!state.map) {
+        throw std::invalid_argument("spot shadow mapping requires an owned spotlight depth map");
+    }
+    if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+        throw std::invalid_argument("spot shadow bias must be finite and non-negative");
+    }
+
+    const SpotLight& light = fixed_lights.lights[index].spot;
+    const Vec3& capture_position = state.map->light_position();
+    if (capture_position.x != light.position.x
+        || capture_position.y != light.position.y
+        || capture_position.z != light.position.z) {
+        throw std::invalid_argument(
+            "spot shadow capture position must match the associated spotlight");
+    }
+    const Vec3 direction = normalize(light.direction);
+    const Vec3& capture_direction = state.map->light_direction();
+    if (capture_direction.x != direction.x
+        || capture_direction.y != direction.y
+        || capture_direction.z != direction.z) {
+        throw std::invalid_argument(
+            "spot shadow capture direction must match the associated spotlight");
+    }
+    if (state.map->outer_cone_cos() != light.outer_cone_cos) {
+        throw std::invalid_argument(
+            "spot shadow capture cone must match the associated spotlight");
+    }
+}
+
 }  // namespace
 
 bool fixed_lighting_enabled(
@@ -525,6 +581,7 @@ void validate_fixed_lighting_definition(
         if (point_light.enabled) {
             validate_point_light(point_light);
         }
+        validate_spot_shadow_association(fixed_lights);
         return;
     }
 
@@ -571,6 +628,7 @@ void validate_fixed_lighting_definition(
             throw std::invalid_argument("fixed-light collection must share one normal binding");
         }
     }
+    validate_spot_shadow_association(fixed_lights);
 }
 
 void validate_shadow_state_definition(

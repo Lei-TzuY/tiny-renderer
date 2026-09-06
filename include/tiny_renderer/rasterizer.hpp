@@ -11,6 +11,7 @@
 #include "tiny_renderer/mesh.hpp"
 #include "tiny_renderer/point_shadow.hpp"
 #include "tiny_renderer/shadow.hpp"
+#include "tiny_renderer/spot_shadow.hpp"
 #include "tiny_renderer/texture.hpp"
 #include "tiny_renderer/vertex_program.hpp"
 
@@ -134,6 +135,8 @@ struct FixedLightCollection {
     std::size_t count{0U};
     std::optional<std::size_t> shadowed_directional_index{};
     std::optional<std::size_t> shadowed_point_index{};
+    std::optional<std::size_t> shadowed_spot_index{};
+    SpotShadowState spot_shadow_state{};
 };
 
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);
@@ -181,7 +184,7 @@ public:
           fragment_program_(std::move(fragment_program)),
           vertex_program_(std::move(vertex_program)),
           point_light_(point_light),
-          fixed_lights_(fixed_lights),
+          fixed_lights_(std::move(fixed_lights)),
           point_shadow_state_(std::move(point_shadow_state)) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
