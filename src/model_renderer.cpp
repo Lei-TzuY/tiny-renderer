@@ -128,6 +128,9 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
         options.shadow_state,
         options.directional_light,
         options.fixed_lights);
+    detail::validate_point_shadow_state_definition(
+        options.point_shadow_state,
+        options.fixed_lights);
     detail::validate_alpha_test_state(options.alpha_test_state);
     validate_fragment_program_for_mesh(options.fragment_program, asset.mesh);
     detail::validate_vertex_program_static(
@@ -202,6 +205,7 @@ void preflight_prepared_model_transform(
             options.blend_state,
             options.alpha_to_coverage_state,
             options.shadow_state,
+            options.point_shadow_state,
             &model,
             false);
     }
@@ -234,6 +238,7 @@ void preflight_prepared_model_mvp(
             options.blend_state,
             options.alpha_to_coverage_state,
             options.shadow_state,
+            options.point_shadow_state,
             nullptr,
             true);
     }
@@ -262,7 +267,8 @@ Rasterizer model_rasterizer(
         options.fragment_program,
         {},
         options.point_light,
-        options.fixed_lights);
+        options.fixed_lights,
+        options.point_shadow_state);
 }
 
 void execute_prepared_model_transform(
@@ -491,6 +497,7 @@ void draw_model_asset(
                 options.blend_state,
                 options.alpha_to_coverage_state,
                 options.shadow_state,
+                options.point_shadow_state,
                 &model,
                 false);
         },
@@ -534,6 +541,7 @@ void draw_model_asset(
                 options.blend_state,
                 options.alpha_to_coverage_state,
                 options.shadow_state,
+                options.point_shadow_state,
                 nullptr,
                 true);
         },

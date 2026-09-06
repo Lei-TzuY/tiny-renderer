@@ -56,6 +56,7 @@ void Rasterizer::draw_mesh_range(
         blend_state_,
         alpha_to_coverage_state_,
         shadow_state_,
+        point_shadow_state_,
         &model,
         false);
     validate_fragment_program_for_mesh(fragment_program_, prepared_mesh);
@@ -79,7 +80,8 @@ void Rasterizer::draw_mesh_range(
         fragment_program_,
         {},
         point_light_,
-        fixed_lights_);
+        fixed_lights_,
+        point_shadow_state_);
 
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {
@@ -116,6 +118,7 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         blend_state_,
         alpha_to_coverage_state_,
         shadow_state_,
+        point_shadow_state_,
         nullptr,
         true);
     validate_fragment_program_for_mesh(fragment_program_, prepared_mesh);
@@ -139,7 +142,8 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         fragment_program_,
         {},
         point_light_,
-        fixed_lights_);
+        fixed_lights_,
+        point_shadow_state_);
 
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {
