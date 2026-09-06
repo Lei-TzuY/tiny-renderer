@@ -21,6 +21,7 @@ struct PendingMaterial {
     bool has_kd{false};
     bool has_map_kd{false};
     bool has_d{false};
+    bool has_map_d{false};
 };
 
 [[noreturn]] void fail(std::size_t line, const std::string& message) {
@@ -38,12 +39,15 @@ float parse_unit_float(const std::string& token, std::size_t line, const char* f
     return value;
 }
 
-void validate_sibling_texture_filename(const std::string& token, std::size_t line) {
+void validate_sibling_texture_filename(
+    const std::string& token,
+    std::size_t line,
+    const char* directive) {
     const std::filesystem::path path(token);
     if (token.empty() || path.is_absolute() || path.has_parent_path()
         || token.find('/') != std::string::npos || token.find('\\') != std::string::npos
         || token == "." || token == "..") {
-        fail(line, "map_Kd must name exactly one sibling texture file");
+        fail(line, std::string(directive) + " must name exactly one sibling texture file");
     }
 }
 
@@ -61,7 +65,7 @@ void finalize_pending(
     pending.reset();
 }
 
-MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_kd) {
+MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps) {
     MaterialAssetLibrary library;
     std::optional<PendingMaterial> pending;
 
@@ -90,7 +94,7 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_k
             if (library.find(name) != library.end()) {
                 fail(line_number, "duplicate material name '" + name + "'");
             }
-            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false, false};
+            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false, false, false};
             continue;
         }
 
@@ -134,7 +138,7 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_k
             continue;
         }
 
-        if (directive == "map_Kd" && allow_map_kd) {
+        if (directive == "map_Kd" && allow_maps) {
             if (!pending) {
                 fail(line_number, "map_Kd requires a preceding newmtl");
             }
@@ -146,9 +150,27 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_map_k
             if (!(line >> filename) || (line >> extra)) {
                 fail(line_number, "map_Kd must contain exactly one filename and no options");
             }
-            validate_sibling_texture_filename(filename, line_number);
+            validate_sibling_texture_filename(filename, line_number, "map_Kd");
             pending->asset.diffuse_map_filename = filename;
             pending->has_map_kd = true;
+            continue;
+        }
+
+        if (directive == "map_d" && allow_maps) {
+            if (!pending) {
+                fail(line_number, "map_d requires a preceding newmtl");
+            }
+            if (pending->has_map_d) {
+                fail(line_number, "material '" + pending->name + "' defines map_d more than once");
+            }
+            std::string filename;
+            std::string extra;
+            if (!(line >> filename) || (line >> extra)) {
+                fail(line_number, "map_d must contain exactly one filename and no options");
+            }
+            validate_sibling_texture_filename(filename, line_number, "map_d");
+            pending->asset.opacity_map_filename = filename;
+            pending->has_map_d = true;
             continue;
         }
 
