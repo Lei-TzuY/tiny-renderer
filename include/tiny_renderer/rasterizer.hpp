@@ -119,7 +119,7 @@ public:
           stencil_state_(stencil_state),
           blend_state_(blend_state),
           alpha_to_coverage_state_(alpha_to_coverage_state),
-          shadow_state_(std::move(shadow_state)) {}
+          shadow_state_(shadow_state) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
