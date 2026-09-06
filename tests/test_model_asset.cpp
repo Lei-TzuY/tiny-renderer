@@ -1,14 +1,17 @@
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tiny_renderer/framebuffer.hpp"
+#include "tiny_renderer/model_fingerprint.hpp"
 #include "tiny_renderer/obj_loader.hpp"
 #include "tiny_renderer/rasterizer.hpp"
 
@@ -41,6 +44,52 @@ std::size_t count_non_black(const Framebuffer& framebuffer) {
         }
     }
     return count;
+}
+
+std::shared_ptr<const Texture2D> deep_copy_texture(
+    const std::shared_ptr<const Texture2D>& texture) {
+    if (!texture) {
+        return {};
+    }
+    std::vector<Vec3> texels;
+    texels.reserve(texture->width() * texture->height());
+    for (std::size_t y = 0U; y < texture->height(); ++y) {
+        for (std::size_t x = 0U; x < texture->width(); ++x) {
+            texels.push_back(texture->texel(x, y));
+        }
+    }
+    return std::make_shared<const Texture2D>(
+        texture->width(),
+        texture->height(),
+        std::move(texels));
+}
+
+ModelAsset deep_copy_texture_content(ModelAsset asset) {
+    for (MaterialDraw& draw : asset.draws) {
+        draw.diffuse_texture = deep_copy_texture(draw.diffuse_texture);
+        draw.opacity_texture = deep_copy_texture(draw.opacity_texture);
+        draw.normal_texture = deep_copy_texture(draw.normal_texture);
+    }
+    return asset;
+}
+
+std::shared_ptr<const Texture2D> copy_texture_with_modified_first_texel(
+    const std::shared_ptr<const Texture2D>& texture) {
+    if (!texture || texture->width() == 0U || texture->height() == 0U) {
+        throw std::invalid_argument("test texture mutation requires a non-empty texture");
+    }
+    std::vector<Vec3> texels;
+    texels.reserve(texture->width() * texture->height());
+    for (std::size_t y = 0U; y < texture->height(); ++y) {
+        for (std::size_t x = 0U; x < texture->width(); ++x) {
+            texels.push_back(texture->texel(x, y));
+        }
+    }
+    texels.front().x = texels.front().x < 0.5F ? 0.75F : 0.25F;
+    return std::make_shared<const Texture2D>(
+        texture->width(),
+        texture->height(),
+        std::move(texels));
 }
 
 Mesh make_two_triangle_mesh() {
@@ -276,6 +325,65 @@ void test_kd_only_and_default_model_compatibility() {
     }
 }
 
+void test_model_asset_content_fingerprint() {
+    const ModelAsset asset = load_obj_model_asset_file(fixture_path("material_texture_sequence.obj"));
+    const std::uint64_t fingerprint = model_asset_fnv1a64(asset);
+    check(fingerprint == model_asset_fnv1a64(asset),
+          "ModelAsset fingerprint is repeatable for one immutable logical asset");
+
+    const ModelAsset reloaded = load_obj_model_asset_file(fixture_path("material_texture_sequence.obj"));
+    check(fingerprint == model_asset_fnv1a64(reloaded),
+          "independent file-driven loads of identical canonical content have the same fingerprint");
+
+    const ModelAsset deep_copied = deep_copy_texture_content(asset);
+    if (!asset.draws.empty() && asset.draws.front().diffuse_texture && deep_copied.draws.front().diffuse_texture) {
+        check(asset.draws.front().diffuse_texture != deep_copied.draws.front().diffuse_texture,
+              "fingerprint regression uses a distinct deep-copied texture allocation");
+    }
+    check(fingerprint == model_asset_fnv1a64(deep_copied),
+          "texture pointer identity and shared ownership topology do not affect content fingerprinting");
+
+    ModelAsset changed_geometry = asset;
+    check(!changed_geometry.mesh.vertices.empty(), "fingerprint fixture contains canonical vertices");
+    if (!changed_geometry.mesh.vertices.empty()) {
+        changed_geometry.mesh.vertices.front().position.x += 0.03125F;
+        check(fingerprint != model_asset_fnv1a64(changed_geometry),
+              "changing canonical vertex geometry changes the model fingerprint");
+    }
+
+    ModelAsset changed_material = asset;
+    check(!changed_material.draws.empty(), "fingerprint fixture contains material draws");
+    if (!changed_material.draws.empty()) {
+        changed_material.draws.front().material_name += "-variant";
+        check(fingerprint != model_asset_fnv1a64(changed_material),
+              "changing ordered material identity changes the model fingerprint");
+    }
+
+    ModelAsset changed_material_state = asset;
+    if (!changed_material_state.draws.empty()) {
+        changed_material_state.draws.front().material.opacity = 0.5F;
+        check(fingerprint != model_asset_fnv1a64(changed_material_state),
+              "changing material numeric state changes the model fingerprint");
+    }
+
+    ModelAsset changed_texture = asset;
+    if (!changed_texture.draws.empty() && changed_texture.draws.front().diffuse_texture) {
+        changed_texture.draws.front().diffuse_texture =
+            copy_texture_with_modified_first_texel(changed_texture.draws.front().diffuse_texture);
+        check(fingerprint != model_asset_fnv1a64(changed_texture),
+              "changing owned texture texel content changes the model fingerprint");
+    } else {
+        check(false, "fingerprint fixture exposes a mapped diffuse texture for content mutation evidence");
+    }
+
+    ModelAsset signed_zero_a;
+    ModelAsset signed_zero_b;
+    signed_zero_a.mesh.vertices.push_back(Vertex::with_varyings({0.0F, -0.0F, 0.0F}, {}));
+    signed_zero_b.mesh.vertices.push_back(Vertex::with_varyings({-0.0F, 0.0F, -0.0F}, {}));
+    check(model_asset_fnv1a64(signed_zero_a) == model_asset_fnv1a64(signed_zero_b),
+          "logical fingerprint canonicalizes IEEE-754 signed zero rather than exposing representation noise");
+}
+
 }  // namespace
 
 int main() {
@@ -284,6 +392,7 @@ int main() {
         test_draw_range_fail_closed_and_selected_only();
         test_model_asset_order_ownership_and_render_equivalence();
         test_kd_only_and_default_model_compatibility();
+        test_model_asset_content_fingerprint();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
