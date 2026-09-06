@@ -286,21 +286,33 @@ After M42, bounded interop slices added multiple sibling OBJ material libraries 
 - Regression coverage locks implicit-versus-explicit `Hard`, 8/9 center visibility for all three shadow types, 2D and cubemap-face edge clamping, same-type mixed Hard/PCF policies, invalid-policy rejection, prepared lifetime/list equivalence, and later-entry no-write failure semantics.
 - This milestone makes no physically based penumbra, stochastic sampling, cross-face cubemap filtering, variable kernel, cascaded-shadow, receiver-plane bias, GPU, or performance-parity claim.
 
-## Next frontier — Milestone 46
+### Milestone 46 — bounded cascaded directional shadow mapping
 
-The next architectural promotion is **bounded cascaded directional shadow mapping** on top of the now-explicit per-record sampling policy.
+- One per-record directional shadow binding can own either the established single map or a fixed-capacity ordered `CascadedDirectionalShadowMap`; simultaneous single-map and cascade binding rejects before rendering.
+- Cascades carry explicit positive strictly increasing camera-view depth splits plus independent immutable depth textures, light view-projection matrices, non-negative biases, and the existing `ShadowSamplingMode`.
+- Selection is deterministic and half-open: each cascade owns `[previous_split, split)`, exact split equality advances to the following cascade, and depth at or beyond the final split is unshadowed rather than silently clamped to the last cascade.
+- Camera shading reuses the established perspective-correct world-space fragment position, transforms it through the cascade set's validated affine camera-view matrix, selects exactly one cascade, and feeds that record through the existing Hard/PCF projected-depth sampler.
+- `render_directional_shadow_cascades` prepares vertex-program geometry once, preflights the complete prepared list once, and reuses the established alpha-tested caster, clipping, culling, depth ownership, and depth capture path for every cascade rather than introducing a second rasterizer.
+- Existing single-map per-record directional shadows remain byte/hash compatible; mixed single-map and cascaded directional records retain independent caller-order lighting semantics.
+- Prepared plans retain cascade resource lifetime, and heterogeneous prepared lists preserve whole-list fail-closed validation so malformed later transforms cannot partially commit earlier color/depth/stencil state.
+- Regression coverage locks resource validation, half-open split boundaries, single-map compatibility, distinct near/far cascade visibility, mixed record forms, capture equivalence with independent directional shadow passes, prepared ownership/list equivalence, and no-write failure semantics.
+- This milestone does not add cascade blending, automatic split fitting, texel snapping/stabilization, variance/moment shadows, cross-cascade filtering, GPU APIs, or visual-quality/performance claims.
+
+## Next frontier — Milestone 47
+
+The next architectural promotion leaves the now-bounded shadow subsystem and advances **texture minification with deterministic mipmapped sampling and raster-derived LOD**. The renderer currently exposes nearest/bilinear filtering only within one texture level, so minified imported/material textures cannot express the next part of the sampling pipeline.
 
 Acceptance for that slice should require:
 
-- one directional shadow binding may own a fixed-capacity ordered cascade set with explicit finite split distances, while the existing single-map binding remains the exact default-compatible path;
-- cascade selection is deterministic from camera/view-space depth using documented half-open split semantics, with boundary cases regression-locked and no blend zone hidden between cascades;
-- each cascade owns its own finite light view-projection matrix, immutable `DepthTexture2D`, bias, and existing `ShadowSamplingMode`, with complete structural/resource validation before framebuffer writes;
-- capture helpers reuse the established prepared geometry, vertex-program deformation, alpha-tested cutout caster path, homogeneous clipping, culling, and depth ownership rather than introducing a second rasterizer;
-- camera shading reuses the established perspective-correct world position and selects exactly one cascade before applying Hard/PCF visibility only to the associated directional record's direct term;
-- direct/range/model/prepared/instance/list execution retains cascade resources and rejects malformed later cascade state before earlier framebuffer mutation;
-- deterministic integration tests prove single-map compatibility, split-boundary selection, distinct near/far occluder visibility, mixed per-record single/cascade directional lights, prepared lifetime, and list-wide fail-closed behavior;
-- the slice does not add cascade blending, automatic split fitting, texel snapping/stabilization, variance/moment shadows, cross-cascade filtering, GPU APIs, or visual-quality/performance claims.
+- `Texture2D` (or one tightly integrated owned texture resource) can expose a deterministic complete mip chain while level-zero-only/default sampling remains byte/hash compatible with every existing texture/material path;
+- mip generation has one documented odd-dimension rule, overflow-safe storage validation, finite texel validation, and deterministic arithmetic averaging without claiming sRGB/colorimetric correctness;
+- sampler state gains explicit bounded mip behavior with a source-compatible disabled/default mode plus nearest-level and trilinear selection, with unknown modes rejected during direct/shared/prepared validation;
+- the rasterizer derives perspective-correct screen-space UV gradients from the same barycentric/interpolation terms used for shading and computes one documented isotropic LOD rule from texel-space footprint, avoiding finite-difference re-shading or a parallel texture-coordinate path;
+- diffuse, opacity, and normal texture roles that share the material UV binding consume the same validated gradients/LOD policy, while non-textured and mip-disabled draws preserve existing results exactly;
+- clipping, viewport/scissor, 1x/4x sample locations, alpha test/A2C, lighting/shadows, fragment-program ordering, model/prepared/list submission, and imported PPM/TGA assets remain on the established raster path;
+- deterministic regressions cover mip-chain contents including odd extents, minification level selection away from threshold ambiguity, trilinear interpolation, perspective-correct gradients, imported-vs-programmatic equivalence, prepared ownership, and malformed state failing before framebuffer mutation;
+- the slice does not add anisotropic filtering, LOD bias controls, explicit shader derivatives, sRGB-aware mip generation, compressed/general image formats, GPU APIs, or performance/image-quality claims.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cubemap seam filtering, cascade blending/stabilization, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.

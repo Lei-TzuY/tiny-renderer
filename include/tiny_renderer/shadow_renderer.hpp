@@ -16,9 +16,23 @@ struct DirectionalShadowMapOptions {
     FrontFace front_face{FrontFace::CounterClockwise};
 };
 
+struct DirectionalShadowCascadeCapture {
+    float split_view_depth{0.0F};
+    Mat4 light_view_projection{Mat4::identity()};
+    float bias{0.0F};
+    ShadowSamplingMode sampling{ShadowSamplingMode::Hard};
+};
+
 [[nodiscard]] std::shared_ptr<const DepthTexture2D> render_directional_shadow_map(
     std::span<const PreparedModelListEntry> entries,
     const Mat4& light_view_projection,
+    DirectionalShadowMapOptions options);
+
+[[nodiscard]] std::shared_ptr<const CascadedDirectionalShadowMap>
+render_directional_shadow_cascades(
+    std::span<const PreparedModelListEntry> entries,
+    const Mat4& camera_view,
+    std::span<const DirectionalShadowCascadeCapture> cascades,
     DirectionalShadowMapOptions options);
 
 }  // namespace tiny_renderer
