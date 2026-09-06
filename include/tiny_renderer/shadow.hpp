@@ -6,6 +6,7 @@
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
+#include "tiny_renderer/shadow_sampling.hpp"
 
 namespace tiny_renderer {
 
@@ -30,6 +31,7 @@ struct ShadowState {
     std::shared_ptr<const DepthTexture2D> map;
     Mat4 light_view_projection{Mat4::identity()};
     float bias{0.0F};
+    ShadowSamplingMode sampling{ShadowSamplingMode::Hard};
 };
 
 }  // namespace tiny_renderer

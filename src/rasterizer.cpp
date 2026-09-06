@@ -787,9 +787,58 @@ float fragment_opacity(
     return material.opacity * map_opacity;
 }
 
+std::size_t clamped_shadow_texel(
+    std::size_t center,
+    int offset,
+    std::size_t extent) {
+    if (offset < 0) {
+        return center == 0U ? 0U : center - 1U;
+    }
+    if (offset > 0) {
+        return center + 1U < extent ? center + 1U : extent - 1U;
+    }
+    return center;
+}
+
+template <typename ReadDepth>
+float sampled_shadow_visibility(
+    std::size_t width,
+    std::size_t height,
+    std::size_t center_x,
+    std::size_t center_y,
+    float fragment_depth,
+    float bias,
+    ShadowSamplingMode sampling,
+    ReadDepth&& read_depth) {
+    const auto compare = [&](std::size_t x, std::size_t y) {
+        const float stored_depth = read_depth(x, y);
+        return fragment_depth - bias <= stored_depth ? 1.0F : 0.0F;
+    };
+
+    switch (sampling) {
+        case ShadowSamplingMode::Hard:
+            return compare(center_x, center_y);
+        case ShadowSamplingMode::Pcf3x3: {
+            float visible_taps = 0.0F;
+            for (int offset_y = -1; offset_y <= 1; ++offset_y) {
+                const std::size_t y = clamped_shadow_texel(
+                    center_y, offset_y, height);
+                for (int offset_x = -1; offset_x <= 1; ++offset_x) {
+                    const std::size_t x = clamped_shadow_texel(
+                        center_x, offset_x, width);
+                    visible_taps += compare(x, y);
+                }
+            }
+            return visible_taps / 9.0F;
+        }
+    }
+    throw std::logic_error("validated shadow sampling mode became invalid");
+}
+
 float projected_shadow_visibility(
     const DepthTexture2D& map,
     float bias,
+    ShadowSamplingMode sampling,
     const Vec4& light_clip) {
     if (!finite(light_clip) || light_clip.w <= kEpsilon) {
         return 1.0F;
@@ -816,8 +865,17 @@ float projected_shadow_visibility(
     const std::size_t x = static_cast<std::size_t>(std::llround(map_x));
     const std::size_t y = static_cast<std::size_t>(std::llround(map_y));
     const float fragment_depth = ndc_z * 0.5F + 0.5F;
-    const float stored_depth = map.depth_at(x, y);
-    return fragment_depth - bias <= stored_depth ? 1.0F : 0.0F;
+    return sampled_shadow_visibility(
+        map.width(),
+        map.height(),
+        x,
+        y,
+        fragment_depth,
+        bias,
+        sampling,
+        [&](std::size_t sample_x, std::size_t sample_y) {
+            return map.depth_at(sample_x, sample_y);
+        });
 }
 
 float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
@@ -827,7 +885,8 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
     if (!shadow.map) {
         throw std::logic_error("validated shadow state lost its depth texture");
     }
-    return projected_shadow_visibility(*shadow.map, shadow.bias, light_clip);
+    return projected_shadow_visibility(
+        *shadow.map, shadow.bias, shadow.sampling, light_clip);
 }
 
 float directional_shadow_visibility_world(
@@ -842,7 +901,8 @@ float directional_shadow_visibility_world(
     }
     const Vec4 clip = shadow.light_view_projection
         * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
-    return projected_shadow_visibility(*shadow.map, shadow.bias, clip);
+    return projected_shadow_visibility(
+        *shadow.map, shadow.bias, shadow.sampling, clip);
 }
 
 float spot_shadow_visibility(
@@ -856,7 +916,8 @@ float spot_shadow_visibility(
     }
     const Vec4 clip = shadow.map->light_view_projection()
         * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
-    return projected_shadow_visibility(shadow.map->depth_texture(), shadow.bias, clip);
+    return projected_shadow_visibility(
+        shadow.map->depth_texture(), shadow.bias, shadow.sampling, clip);
 }
 
 float point_shadow_visibility(
@@ -901,8 +962,17 @@ float point_shadow_visibility(
     const std::size_t x = static_cast<std::size_t>(std::llround(map_x));
     const std::size_t y = static_cast<std::size_t>(std::llround(map_y));
     const float fragment_depth = ndc_z * 0.5F + 0.5F;
-    const float stored_depth = shadow.map->depth_at(face, x, y);
-    return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
+    return sampled_shadow_visibility(
+        shadow.map->size(),
+        shadow.map->size(),
+        x,
+        y,
+        fragment_depth,
+        shadow.bias,
+        shadow.sampling,
+        [&](std::size_t sample_x, std::size_t sample_y) {
+            return shadow.map->depth_at(face, sample_x, sample_y);
+        });
 }
 
 float attenuation(float linear, float quadratic, float distance) {

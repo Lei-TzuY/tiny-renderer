@@ -40,6 +40,7 @@ struct SpotShadowState {
     bool enabled{false};
     std::shared_ptr<const SpotShadowMap> map;
     float bias{0.0F};
+    ShadowSamplingMode sampling{ShadowSamplingMode::Hard};
 };
 
 }  // namespace tiny_renderer

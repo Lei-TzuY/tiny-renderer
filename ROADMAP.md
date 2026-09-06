@@ -275,20 +275,32 @@ After M42, bounded interop slices added multiple sibling OBJ material libraries 
 - Regression coverage locks two independently shadowed records for each light type, legacy migration equivalence, capture/type/double-binding rejection, no-write failure semantics, and prepared-list ownership/equivalence.
 - The milestone makes no PCF/soft-shadow, cascade, cookie/IES, automatic allocation, unbounded-scene, GPU, or performance claim.
 
-## Next frontier — Milestone 45
+### Milestone 45 — deterministic shadow sampling policy
 
-The next architectural promotion is an **explicit bounded shadow sampling policy** on the now-per-record typed shadow resources.
+- `ShadowSamplingMode::{Hard, Pcf3x3}` is shared by directional, point, and spotlight shadow bindings; `Hard` remains the source-compatible default and preserves the historical nearest-texel comparison path.
+- `Pcf3x3` performs exactly nine equal-weight biased depth comparisons around the established nearest texel and returns visible taps divided by nine.
+- Projected directional/spot maps clamp each tap to the current 2D map edge. Point shadows select one cubemap face first using the established dominant-axis rule, then clamp all taps within that face; no cross-face seam filtering is claimed.
+- Sampling policy is owned independently by every per-record typed binding and by the legacy singleton shadow states, with unknown values rejected during static/shared preflight before framebuffer ownership.
+- Ambient and unrelated light contributions remain untouched; only the associated record's direct diffuse/specular visibility scalar changes, and no second lighting or shadow raster path is introduced.
+- Prepared plans retain PCF shadow resources and heterogeneous lists remain byte/hash-equivalent to sequential prepared submission while preserving whole-list fail-closed transform validation.
+- Regression coverage locks implicit-versus-explicit `Hard`, 8/9 center visibility for all three shadow types, 2D and cubemap-face edge clamping, same-type mixed Hard/PCF policies, invalid-policy rejection, prepared lifetime/list equivalence, and later-entry no-write failure semantics.
+- This milestone makes no physically based penumbra, stochastic sampling, cross-face cubemap filtering, variable kernel, cascaded-shadow, receiver-plane bias, GPU, or performance-parity claim.
+
+## Next frontier — Milestone 46
+
+The next architectural promotion is **bounded cascaded directional shadow mapping** on top of the now-explicit per-record sampling policy.
 
 Acceptance for that slice should require:
 
-- `Hard` remains the exact byte/hash-compatible default for all existing directional, point, and spotlight shadow paths;
-- one deterministic fixed-kernel PCF policy averages a bounded set of comparison results without introducing random sampling or temporal state;
-- projected directional/spot maps define exact texel-center and edge-clamp behavior, while cubemap filtering defines deterministic within-face addressing and explicitly makes no cross-face seam-filtering claim;
-- the sampling policy is owned by each typed binding, validated before writes, retained by prepared plans, and propagated through direct/range/model/instance/list execution;
-- ambient and unrelated light records remain unaffected; only the selected record's direct visibility scalar changes;
-- focused analytic tests prove hard-mode compatibility, expected fractional visibility, same-type mixed policies, prepared ownership, and malformed-policy fail-closed behavior;
-- no physically based penumbra, cascade, stochastic filter, receiver-plane bias, automatic kernel sizing, GPU API, or performance claim is added.
+- one directional shadow binding may own a fixed-capacity ordered cascade set with explicit finite split distances, while the existing single-map binding remains the exact default-compatible path;
+- cascade selection is deterministic from camera/view-space depth using documented half-open split semantics, with boundary cases regression-locked and no blend zone hidden between cascades;
+- each cascade owns its own finite light view-projection matrix, immutable `DepthTexture2D`, bias, and existing `ShadowSamplingMode`, with complete structural/resource validation before framebuffer writes;
+- capture helpers reuse the established prepared geometry, vertex-program deformation, alpha-tested cutout caster path, homogeneous clipping, culling, and depth ownership rather than introducing a second rasterizer;
+- camera shading reuses the established perspective-correct world position and selects exactly one cascade before applying Hard/PCF visibility only to the associated directional record's direct term;
+- direct/range/model/prepared/instance/list execution retains cascade resources and rejects malformed later cascade state before earlier framebuffer mutation;
+- deterministic integration tests prove single-map compatibility, split-boundary selection, distinct near/far occluder visibility, mixed per-record single/cascade directional lights, prepared lifetime, and list-wide fail-closed behavior;
+- the slice does not add cascade blending, automatic split fitting, texel snapping/stabilization, variance/moment shadows, cross-cascade filtering, GPU APIs, or visual-quality/performance claims.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cascaded shadows, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.

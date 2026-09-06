@@ -180,6 +180,15 @@ bool finite_mat4(const Mat4& matrix) {
     return true;
 }
 
+void validate_shadow_sampling_mode(ShadowSamplingMode mode) {
+    switch (mode) {
+        case ShadowSamplingMode::Hard:
+        case ShadowSamplingMode::Pcf3x3:
+            return;
+    }
+    throw std::invalid_argument("unknown shadow sampling mode");
+}
+
 void validate_directional_record_shadow(const ShadowState& state) {
     if (!state.enabled) {
         return;
@@ -257,6 +266,9 @@ void validate_spot_record_shadow(
 }
 
 void validate_per_record_shadow_binding(const FixedLight& light) {
+    validate_shadow_sampling_mode(light.directional_shadow.sampling);
+    validate_shadow_sampling_mode(light.point_shadow.sampling);
+    validate_shadow_sampling_mode(light.spot_shadow.sampling);
     switch (light.type) {
         case FixedLightType::Directional:
             if (light.point_shadow.enabled || light.spot_shadow.enabled) {
@@ -559,6 +571,7 @@ void preflight_tangent_frames(
 
 void validate_spot_shadow_association(const FixedLightCollection& fixed_lights) {
     const SpotShadowState& state = fixed_lights.spot_shadow_state;
+    validate_shadow_sampling_mode(state.sampling);
     if (fixed_lights.count == 0U) {
         if (fixed_lights.shadowed_spot_index || state.enabled) {
             throw std::invalid_argument(
@@ -771,6 +784,7 @@ void validate_shadow_state_definition(
     const ShadowState& state,
     const DirectionalLight& directional_light,
     const FixedLightCollection& fixed_lights) {
+    validate_shadow_sampling_mode(state.sampling);
     if (fixed_lights.count == 0U) {
         if (fixed_lights.shadowed_directional_index) {
             throw std::invalid_argument("legacy fixed lighting cannot name a collection shadow index");
@@ -818,6 +832,7 @@ void validate_shadow_state_definition(
 void validate_point_shadow_state_definition(
     const PointShadowState& state,
     const FixedLightCollection& fixed_lights) {
+    validate_shadow_sampling_mode(state.sampling);
     if (fixed_lights.count == 0U) {
         if (fixed_lights.shadowed_point_index) {
             throw std::invalid_argument("legacy fixed lighting cannot name a point-shadow collection index");
