@@ -23,6 +23,12 @@ bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+bool material_has_specular(const MaterialState& material) {
+    return material.specular.x > 0.0F
+        || material.specular.y > 0.0F
+        || material.specular.z > 0.0F;
+}
+
 bool finite_mat4(const Mat4& matrix) {
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
@@ -101,6 +107,16 @@ void validate_material_state(const MaterialState& material) {
     if (!std::isfinite(material.opacity) || material.opacity < 0.0F || material.opacity > 1.0F) {
         throw std::invalid_argument("material opacity must be finite and within [0, 1]");
     }
+    if (!finite_vec3(material.specular)
+        || material.specular.x < 0.0F || material.specular.x > 1.0F
+        || material.specular.y < 0.0F || material.specular.y > 1.0F
+        || material.specular.z < 0.0F || material.specular.z > 1.0F) {
+        throw std::invalid_argument("material specular components must be finite and within [0, 1]");
+    }
+    if (!std::isfinite(material.shininess)
+        || material.shininess < 1.0F || material.shininess > 1000.0F) {
+        throw std::invalid_argument("material shininess must be finite and within [1, 1000]");
+    }
 }
 
 DirectionalLight prepare_directional_light(const DirectionalLight& light) {
@@ -109,6 +125,9 @@ DirectionalLight prepare_directional_light(const DirectionalLight& light) {
     }
     if (!finite_vec3(light.direction_to_light) || length(light.direction_to_light) <= kEpsilon) {
         throw std::invalid_argument("directional light direction must be finite and non-zero");
+    }
+    if (!finite_vec3(light.viewer_position)) {
+        throw std::invalid_argument("directional light viewer position must be finite");
     }
     if (!std::isfinite(light.ambient) || !std::isfinite(light.diffuse)
         || light.ambient < 0.0F || light.diffuse < 0.0F
@@ -254,6 +273,31 @@ void preflight_transformed_normals(const Mesh& mesh, const DirectionalLight& lig
         };
         if (!finite_vec3(transformed) || length(transformed) <= kEpsilon) {
             throw std::invalid_argument("transformed vertex normal is numerically unstable");
+        }
+    }
+}
+
+void preflight_specular_world_positions(
+    const Mesh& mesh,
+    const DirectionalLight& light,
+    const MaterialState& material,
+    const Mat4& model) {
+    if (!light.enabled || !material_has_specular(material)) {
+        return;
+    }
+    for (const Vertex& vertex : mesh.vertices) {
+        const Vec4 world = model * Vec4{
+            vertex.position.x, vertex.position.y, vertex.position.z, 1.0F};
+        if (!std::isfinite(world.x) || !std::isfinite(world.y)
+            || !std::isfinite(world.z) || !std::isfinite(world.w)
+            || std::fabs(world.w) <= kEpsilon) {
+            throw std::invalid_argument(
+                "specular world-space position transform is numerically unstable");
+        }
+        const float inv_w = 1.0F / world.w;
+        const Vec3 position{world.x * inv_w, world.y * inv_w, world.z * inv_w};
+        if (!finite_vec3(position)) {
+            throw std::invalid_argument("specular world-space position must remain finite");
         }
     }
 }
@@ -413,6 +457,9 @@ void preflight_mesh_range_submission(
             throw std::logic_error("model transform required for lit range preflight");
         }
         preflight_transformed_normals(mesh, light, normal_matrix(*model));
+    }
+    if (model != nullptr) {
+        preflight_specular_world_positions(mesh, light, material_state, *model);
     }
     if (texture_binding.normal_texture != nullptr && model != nullptr) {
         preflight_tangent_frames(mesh, range, texture_binding, *model);
