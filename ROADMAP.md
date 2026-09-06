@@ -264,20 +264,31 @@ After M42, bounded interop slices added multiple sibling OBJ material libraries 
 - Regression coverage locks white compatibility, colored diffuse/specular, mixed-light accumulation, shadow/program ordering, invalid color before writes, and prepared-list equivalence.
 - This milestone does not make spectral, color-temperature, sRGB, HDR photometry, PBR, GPU, or performance claims.
 
-## Next frontier — Milestone 44
+### Milestone 44 — bounded per-record typed shadow bindings
 
-The next architectural promotion is **bounded per-record typed shadow bindings for fixed-light collections**. The current topology permits one associated shadow resource per light type, which prevents two same-type lights from being independently shadowed even though multi-light accumulation is already caller ordered and fixed-capacity.
+- Each bounded `FixedLight` record can own one enabled shadow binding matching its active directional, point, or spotlight type; cross-type enabled state rejects during shared/static validation.
+- Multiple same-type records retain independent shared shadow resources and non-negative biases while exact caller-order RGB light accumulation remains unchanged.
+- Per-record directional shadows project the existing perspective-correct world-space fragment position through their own light view-projection matrix, avoiding a new array of raster varyings; point cubemap and spotlight resources reuse the established world-position sampling paths.
+- Legacy singleton directional/point/spot associations remain source-compatible and render byte/hash-equivalently to the corresponding per-record binding. A record cannot be simultaneously bound by both forms.
+- Resource presence, type, capture identity, finite transform/bias, and direct/model/prepared/list propagation remain fail-closed before framebuffer ownership; prepared plans retain every per-record shared resource lifetime.
+- Visibility continues to modulate only the associated record's direct colored diffuse/specular contribution. Ambient and unrelated records remain independent, and no second shading loop is introduced.
+- Regression coverage locks two independently shadowed records for each light type, legacy migration equivalence, capture/type/double-binding rejection, no-write failure semantics, and prepared-list ownership/equivalence.
+- The milestone makes no PCF/soft-shadow, cascade, cookie/IES, automatic allocation, unbounded-scene, GPU, or performance claim.
+
+## Next frontier — Milestone 45
+
+The next architectural promotion is an **explicit bounded shadow sampling policy** on the now-per-record typed shadow resources.
 
 Acceptance for that slice should require:
 
-- each active fixed-light record may carry at most one matching typed shadow binding while preserving the collection's fixed capacity and caller order;
-- multiple directional, point, or spotlight records of the same type can retain independent validated shadow resources and biases without adding a second shading loop;
-- resource type/capture identity mismatches, missing resources, invalid bias, and malformed later prepared-list entries reject before any framebuffer write;
-- prepared plans own all bound shadow lifetimes, and direct/range/model/instance/list execution remains equivalent to sequential submission;
-- visibility modulates only the bound record's direct colored contribution while ambient and unrelated lights remain unchanged;
-- existing singleton shadow state remains source-compatible or receives one explicit deterministic migration path with regression evidence;
-- no PCF/soft shadows, cascades, cookies/IES, automatic shadow allocation, unbounded lights, scene graph, GPU API, or performance claim is added.
+- `Hard` remains the exact byte/hash-compatible default for all existing directional, point, and spotlight shadow paths;
+- one deterministic fixed-kernel PCF policy averages a bounded set of comparison results without introducing random sampling or temporal state;
+- projected directional/spot maps define exact texel-center and edge-clamp behavior, while cubemap filtering defines deterministic within-face addressing and explicitly makes no cross-face seam-filtering claim;
+- the sampling policy is owned by each typed binding, validated before writes, retained by prepared plans, and propagated through direct/range/model/instance/list execution;
+- ambient and unrelated light records remain unaffected; only the selected record's direct visibility scalar changes;
+- focused analytic tests prove hard-mode compatibility, expected fractional visibility, same-type mixed policies, prepared ownership, and malformed-policy fail-closed behavior;
+- no physically based penumbra, cascade, stochastic filter, receiver-plane bias, automatic kernel sizing, GPU API, or performance claim is added.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, PCF/cascaded/soft shadows, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cascaded shadows, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
