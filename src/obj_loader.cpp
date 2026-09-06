@@ -44,6 +44,7 @@ struct FaceReference {
 };
 
 constexpr std::size_t kMissingNormalIndex = std::numeric_limits<std::size_t>::max();
+constexpr std::size_t kMaxFaceCorners = 64U;
 
 [[noreturn]] void fail(std::size_t line, const std::string& message) {
     throw ObjParseError(line, message);
@@ -77,7 +78,7 @@ std::int64_t parse_index(std::string_view token, std::size_t line, const char* f
 FaceReference parse_face_reference(const std::string& token, std::size_t line) {
     const std::size_t first_slash = token.find('/');
     if (first_slash == std::string::npos || first_slash == 0U || first_slash + 1U >= token.size()) {
-        fail(line, "triangle faces must use v/vt or v/vt/vn references");
+        fail(line, "polygon faces must use v/vt or v/vt/vn references");
     }
 
     const std::size_t second_slash = token.find('/', first_slash + 1U);
@@ -93,7 +94,7 @@ FaceReference parse_face_reference(const std::string& token, std::size_t line) {
     if (token.find('/', second_slash + 1U) != std::string::npos
         || second_slash == first_slash + 1U
         || second_slash + 1U >= token.size()) {
-        fail(line, "normal-bearing triangle faces must use complete v/vt/vn references");
+        fail(line, "normal-bearing polygon faces must use complete v/vt/vn references");
     }
 
     return {
@@ -261,17 +262,25 @@ ObjModelSource parse_obj(std::istream& input, MaterialMetadataMode material_mode
         }
 
         if (directive == "f") {
-            std::array<std::string, 3> corner_tokens;
-            std::string extra;
-            if (!(line >> corner_tokens[0] >> corner_tokens[1] >> corner_tokens[2]) || (line >> extra)) {
-                fail(line_number, "only triangle faces with exactly three corners are supported");
+            std::vector<std::string> corner_tokens;
+            corner_tokens.reserve(kMaxFaceCorners);
+            std::string corner_token;
+            while (line >> corner_token) {
+                if (corner_tokens.size() == kMaxFaceCorners) {
+                    fail(line_number, "OBJ polygon faces support at most 64 corners");
+                }
+                corner_tokens.push_back(std::move(corner_token));
+            }
+            if (corner_tokens.size() < 3U) {
+                fail(line_number, "OBJ polygon faces require at least three corners");
             }
 
-            std::array<FaceReference, 3> references{};
-            for (std::size_t corner = 0U; corner < corner_tokens.size(); ++corner) {
-                references[corner] = parse_face_reference(corner_tokens[corner], line_number);
+            std::vector<FaceReference> references;
+            references.reserve(corner_tokens.size());
+            for (const std::string& token : corner_tokens) {
+                references.push_back(parse_face_reference(token, line_number));
             }
-            const FaceLayout face_layout = references[0].layout;
+            const FaceLayout face_layout = references.front().layout;
             for (const FaceReference& reference : references) {
                 if (reference.layout != face_layout) {
                     fail(line_number, "all corners of an OBJ face must use the same index layout");
@@ -283,9 +292,18 @@ ObjModelSource parse_obj(std::istream& input, MaterialMetadataMode material_mode
                 fail(line_number, "mixing v/vt and v/vt/vn face layouts in one OBJ mesh is not supported");
             }
 
-            TriangleIndices triangle{};
-            for (std::size_t corner = 0U; corner < references.size(); ++corner) {
-                const FaceReference& reference = references[corner];
+            std::string material_name;
+            if (material_mode == MaterialMetadataMode::CaptureStrict) {
+                saw_face = true;
+                if (result.material_library_filename && !active_material) {
+                    fail(line_number, "material-aware OBJ faces require an active usemtl material");
+                }
+                material_name = active_material.value_or(std::string{});
+            }
+
+            std::vector<std::uint32_t> face_indices;
+            face_indices.reserve(references.size());
+            for (const FaceReference& reference : references) {
                 const std::size_t position_index =
                     resolve_index(reference.position, positions.size(), line_number, "position");
                 const std::size_t texcoord_index =
@@ -296,38 +314,44 @@ ObjModelSource parse_obj(std::istream& input, MaterialMetadataMode material_mode
                 }
                 const std::array<std::size_t, 3> key{position_index, texcoord_index, normal_index};
 
+                std::uint32_t unified_index{};
                 const auto existing = unified_indices.find(key);
                 if (existing != unified_indices.end()) {
-                    triangle[corner] = existing->second;
-                    continue;
-                }
-
-                if (result.mesh.vertices.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
-                    fail(line_number, "unified vertex count exceeds uint32 index capacity");
-                }
-                const std::uint32_t unified_index = static_cast<std::uint32_t>(result.mesh.vertices.size());
-                const Vec2& uv = texcoords[texcoord_index];
-                if (face_layout == FaceLayout::PositionTexcoordNormal) {
-                    const Vec3& normal = normals[normal_index];
-                    result.mesh.vertices.push_back(Vertex::with_varyings(
-                        positions[position_index],
-                        VaryingPack{uv.x, uv.y, normal.x, normal.y, normal.z}));
+                    unified_index = existing->second;
                 } else {
-                    result.mesh.vertices.push_back(Vertex::with_varyings(
-                        positions[position_index],
-                        VaryingPack{uv.x, uv.y}));
+                    if (result.mesh.vertices.size()
+                        > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+                        fail(line_number, "unified vertex count exceeds uint32 index capacity");
+                    }
+                    unified_index = static_cast<std::uint32_t>(result.mesh.vertices.size());
+                    const Vec2& uv = texcoords[texcoord_index];
+                    if (face_layout == FaceLayout::PositionTexcoordNormal) {
+                        const Vec3& normal = normals[normal_index];
+                        result.mesh.vertices.push_back(Vertex::with_varyings(
+                            positions[position_index],
+                            VaryingPack{uv.x, uv.y, normal.x, normal.y, normal.z}));
+                    } else {
+                        result.mesh.vertices.push_back(Vertex::with_varyings(
+                            positions[position_index],
+                            VaryingPack{uv.x, uv.y}));
+                    }
+                    unified_indices.emplace(key, unified_index);
                 }
-                unified_indices.emplace(key, unified_index);
-                triangle[corner] = unified_index;
-            }
-            result.mesh.triangles.push_back(triangle);
 
-            if (material_mode == MaterialMetadataMode::CaptureStrict) {
-                saw_face = true;
-                if (result.material_library_filename && !active_material) {
-                    fail(line_number, "material-aware OBJ faces require an active usemtl material");
+                for (const std::uint32_t prior : face_indices) {
+                    if (prior == unified_index) {
+                        fail(line_number, "OBJ polygon face must not repeat a corner");
+                    }
                 }
-                result.face_materials.push_back(active_material.value_or(std::string{}));
+                face_indices.push_back(unified_index);
+            }
+
+            for (std::size_t corner = 1U; corner + 1U < face_indices.size(); ++corner) {
+                result.mesh.triangles.push_back(
+                    TriangleIndices{face_indices[0], face_indices[corner], face_indices[corner + 1U]});
+                if (material_mode == MaterialMetadataMode::CaptureStrict) {
+                    result.face_materials.push_back(material_name);
+                }
             }
             continue;
         }

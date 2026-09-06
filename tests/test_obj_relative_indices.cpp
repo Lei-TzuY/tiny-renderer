@@ -77,6 +77,20 @@ std::string common_geometry() {
         "vt 0 1\n";
 }
 
+std::string pentagon_geometry() {
+    return
+        "v -0.8 -0.6 0\n"
+        "v 0.8 -0.6 0\n"
+        "v 0.9 0.2 0\n"
+        "v 0 0.9 0\n"
+        "v -0.9 0.2 0\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "vt 1 0.5\n"
+        "vt 0.5 1\n"
+        "vt 0 0.5\n";
+}
+
 void test_relative_position_texcoord_matches_absolute() {
     const std::string prefix = common_geometry();
     const Mesh absolute = parse_mesh(
@@ -157,6 +171,52 @@ void test_rich_material_source_preserves_metadata() {
     }
 }
 
+void test_polygon_fan_triangulation_matches_explicit_triangles() {
+    const std::string prefix = pentagon_geometry();
+    const Mesh explicit_pair = parse_mesh(
+        prefix +
+        "f 1/1 2/2 3/3\n"
+        "f 1/1 3/3 4/4\n"
+        "f 1/1 4/4 5/5\n");
+    const Mesh polygon_pair = parse_mesh(prefix + "f 1/1 2/2 3/3 4/4 5/5\n");
+    check_mesh_equal(polygon_pair, explicit_pair, "v/vt polygon deterministic fan triangulation");
+
+    const std::string normal_prefix = prefix + "vn 0 0 1\n";
+    const Mesh explicit_triple = parse_mesh(
+        normal_prefix +
+        "f 1/1/1 2/2/1 3/3/1\n"
+        "f 1/1/1 3/3/1 4/4/1\n"
+        "f 1/1/1 4/4/1 5/5/1\n");
+    const Mesh polygon_triple = parse_mesh(
+        normal_prefix + "f 1/1/1 2/2/1 3/3/1 4/4/1 5/5/1\n");
+    check_mesh_equal(polygon_triple, explicit_triple, "v/vt/vn polygon deterministic fan triangulation");
+}
+
+void test_relative_polygon_matches_absolute() {
+    const std::string prefix = pentagon_geometry();
+    const Mesh absolute = parse_mesh(prefix + "f 1/1 2/2 3/3 4/4 5/5\n");
+    const Mesh relative = parse_mesh(prefix + "f -5/-5 -4/-4 -3/-3 -2/-2 -1/-1\n");
+    check_mesh_equal(relative, absolute, "relative polygon canonicalization");
+}
+
+void test_rich_polygon_material_expands_per_generated_triangle() {
+    const ObjModelSource source = parse_model_source(
+        "mtllib material.mtl\n" + common_geometry() +
+        "usemtl first\n"
+        "f 1/1 2/2 3/3 4/4\n"
+        "usemtl second\n"
+        "f 1/1 3/3 4/4\n");
+
+    check(source.mesh.triangles.size() == 3U, "quad plus triangle emits three canonical triangles");
+    check(source.face_materials.size() == source.mesh.triangles.size(),
+          "rich polygon material metadata expands to one entry per generated triangle");
+    if (source.face_materials.size() == 3U) {
+        check(source.face_materials[0] == "first", "first fan triangle retains active material");
+        check(source.face_materials[1] == "first", "second fan triangle retains active material");
+        check(source.face_materials[2] == "second", "following triangle retains subsequent material");
+    }
+}
+
 void expect_error(
     std::string_view text,
     std::size_t expected_line,
@@ -198,6 +258,32 @@ void test_zero_and_out_of_range_indices_fail_closed() {
                  "positive absolute out-of-range behavior remains fail-closed");
 }
 
+void test_polygon_corner_bounds_fail_closed() {
+    expect_error(
+        "v 0 0 0\n"
+        "v 1 0 0\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "f 1/1 2/2\n",
+        5U,
+        "at least three corners",
+        "polygon with fewer than three corners");
+
+    std::string oversized;
+    for (std::size_t i = 0U; i < 65U; ++i) {
+        oversized += "v " + std::to_string(i) + " 0 0\n";
+    }
+    for (std::size_t i = 0U; i < 65U; ++i) {
+        oversized += "vt 0 0\n";
+    }
+    oversized += "f";
+    for (std::size_t i = 1U; i <= 65U; ++i) {
+        oversized += " " + std::to_string(i) + "/" + std::to_string(i);
+    }
+    oversized += "\n";
+    expect_error(oversized, 131U, "at most 64 corners", "polygon corner cap");
+}
+
 void test_relative_mesh_renders_identically_to_absolute() {
     const std::string prefix = common_geometry();
     const Mesh absolute = parse_mesh(
@@ -236,6 +322,41 @@ void test_relative_mesh_renders_identically_to_absolute() {
           "relative OBJ indices preserve deterministic framebuffer hash");
 }
 
+void test_polygon_renders_identically_to_explicit_fan() {
+    const std::string prefix = common_geometry();
+    const Mesh explicit_mesh = parse_mesh(
+        prefix +
+        "f 1/1 2/2 3/3\n"
+        "f 1/1 3/3 4/4\n");
+    const Mesh polygon_mesh = parse_mesh(prefix + "f 1/1 2/2 3/3 4/4\n");
+
+    const Texture2D texture(2U, 2U, {
+        {1.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+        {1.0F, 1.0F, 1.0F},
+    });
+    const TextureBinding binding{
+        &texture,
+        0U,
+        1U,
+        SamplerState{AddressMode::Clamp, AddressMode::Clamp, FilterMode::Bilinear},
+    };
+
+    Framebuffer explicit_fb(65U, 65U);
+    Rasterizer explicit_rasterizer(explicit_fb, {}, binding);
+    explicit_rasterizer.draw_mesh(explicit_mesh, Mat4::identity());
+
+    Framebuffer polygon_fb(65U, 65U);
+    Rasterizer polygon_rasterizer(polygon_fb, {}, binding);
+    polygon_rasterizer.draw_mesh(polygon_mesh, Mat4::identity());
+
+    check(polygon_fb.rgb8() == explicit_fb.rgb8(),
+          "polygon fan renders byte-identically to the same explicit triangle sequence");
+    check(polygon_fb.fnv1a64() == explicit_fb.fnv1a64(),
+          "polygon fan preserves deterministic framebuffer hash");
+}
+
 }  // namespace
 
 int main() {
@@ -244,17 +365,22 @@ int main() {
         test_relative_normal_indices_match_absolute();
         test_relative_indices_use_face_definition_extent();
         test_rich_material_source_preserves_metadata();
+        test_polygon_fan_triangulation_matches_explicit_triangles();
+        test_relative_polygon_matches_absolute();
+        test_rich_polygon_material_expands_per_generated_triangle();
         test_zero_and_out_of_range_indices_fail_closed();
+        test_polygon_corner_bounds_fail_closed();
         test_relative_mesh_renders_identically_to_absolute();
+        test_polygon_renders_identically_to_explicit_fan();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
     }
 
     if (failures != 0) {
-        std::cerr << failures << " relative OBJ index test(s) failed\n";
+        std::cerr << failures << " relative OBJ index/polygon test(s) failed\n";
         return 1;
     }
-    std::cout << "all relative OBJ index tests passed\n";
+    std::cout << "all relative OBJ index/polygon tests passed\n";
     return 0;
 }
