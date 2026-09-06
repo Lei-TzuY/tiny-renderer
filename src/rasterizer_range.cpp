@@ -19,6 +19,7 @@ void Rasterizer::draw_mesh_range(
     const Mat4& model,
     const Mat4& view,
     const Mat4& projection) {
+    detail::validate_alpha_test_state(alpha_test_state_);
     detail::preflight_mesh_range_submission(
         framebuffer_,
         mesh,
@@ -50,6 +51,7 @@ void Rasterizer::draw_mesh_range(
 }
 
 void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& mvp) {
+    detail::validate_alpha_test_state(alpha_test_state_);
     detail::preflight_mesh_range_submission(
         framebuffer_,
         mesh,
