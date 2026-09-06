@@ -158,7 +158,7 @@ void test_single_pass_source_preserves_geometry_and_material_order() {
 
 void test_legacy_metadata_ignore_remains_source_compatible() {
     const std::string obj =
-        "mtllib diffuse.mtl unexpected-extra\n"
+        "mtllib\n"
         "usemtl\n"
         "v 0 0 0\n"
         "v 1 0 0\n"

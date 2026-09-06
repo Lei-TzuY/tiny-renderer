@@ -79,6 +79,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME tiny_renderer_obj_model_source_tests COMMAND tiny_renderer_obj_model_source_tests)
 
+    add_executable(tiny_renderer_multi_material_library_tests
+        tests/test_multiple_material_libraries.cpp)
+    target_link_libraries(tiny_renderer_multi_material_library_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_multi_material_library_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(
+        NAME tiny_renderer_multi_material_library_tests
+        COMMAND tiny_renderer_multi_material_library_tests)
+
     add_executable(tiny_renderer_ppm_tests tests/test_ppm_loader.cpp)
     target_link_libraries(tiny_renderer_ppm_tests PRIVATE tiny_renderer)
     target_compile_definitions(tiny_renderer_ppm_tests PRIVATE

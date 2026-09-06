@@ -19,6 +19,8 @@
 
 #include "tiny_renderer/mtl_loader.hpp"
 
+#include "material_library_resolver.hpp"
+
 namespace tiny_renderer {
 
 ObjParseError::ObjParseError(std::size_t line, const std::string& message)
@@ -77,6 +79,7 @@ using GeneratedNormalKey = std::tuple<std::size_t, bool, std::uint64_t>;
 
 constexpr std::size_t kMissingNormalIndex = std::numeric_limits<std::size_t>::max();
 constexpr std::size_t kMaxFaceCorners = 64U;
+constexpr std::size_t kMaxMaterialLibraries = 8U;
 
 [[noreturn]] void fail(std::size_t line, const std::string& message) {
     throw ObjParseError(line, message);
@@ -203,7 +206,7 @@ void validate_sibling_library_filename(const std::string& token, std::size_t lin
     if (token.empty() || path.is_absolute() || path.has_parent_path()
         || token.find('/') != std::string::npos || token.find('\\') != std::string::npos
         || token == "." || token == "..") {
-        fail(line, "mtllib must name exactly one sibling material file");
+        fail(line, "mtllib entries must name sibling material files");
     }
 }
 
@@ -340,19 +343,36 @@ ObjModelSource parse_obj(
             if (material_mode == MaterialMetadataMode::Ignore) {
                 continue;
             }
-            std::string filename;
-            std::string extra;
-            if (!(line >> filename) || (line >> extra)) {
-                fail(line_number, "mtllib must contain exactly one filename");
-            }
             if (saw_face) {
                 fail(line_number, "mtllib must appear before material-bound faces");
             }
-            if (result.material_library_filename) {
-                fail(line_number, "only one mtllib directive is supported");
+
+            std::vector<std::string> filenames;
+            std::string filename;
+            while (line >> filename) {
+                filenames.push_back(filename);
             }
-            validate_sibling_library_filename(filename, line_number);
-            result.material_library_filename = filename;
+            if (filenames.empty()) {
+                fail(line_number, "mtllib must contain at least one filename");
+            }
+            if (filenames.size() > kMaxMaterialLibraries - result.material_libraries.size()) {
+                fail(line_number, "OBJ material library count exceeds fixed limit of 8");
+            }
+
+            for (const std::string& item : filenames) {
+                validate_sibling_library_filename(item, line_number);
+                for (const ObjMaterialLibraryRef& existing : result.material_libraries) {
+                    if (existing.filename == item) {
+                        fail(line_number, "duplicate mtllib filename '" + item + "'");
+                    }
+                }
+                result.material_libraries.push_back({item, line_number});
+            }
+            if (result.material_libraries.size() == 1U) {
+                result.material_library_filename = result.material_libraries.front().filename;
+            } else {
+                result.material_library_filename.reset();
+            }
             continue;
         }
 
@@ -365,7 +385,7 @@ ObjModelSource parse_obj(
             if (!(line >> name) || (line >> extra)) {
                 fail(line_number, "usemtl must contain exactly one material name");
             }
-            if (!result.material_library_filename) {
+            if (result.material_libraries.empty()) {
                 fail(line_number, "usemtl requires a preceding mtllib directive");
             }
             active_material = name;
@@ -463,7 +483,7 @@ ObjModelSource parse_obj(
             std::string material_name;
             if (material_mode == MaterialMetadataMode::CaptureStrict) {
                 saw_face = true;
-                if (result.material_library_filename && !active_material) {
+                if (!result.material_libraries.empty() && !active_material) {
                     fail(line_number, "material-aware OBJ faces require an active usemtl material");
                 }
                 material_name = active_material.value_or(std::string{});
@@ -637,15 +657,22 @@ std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem:
     const ObjModelSource source = load_obj_model_source_file(path);
     const Mesh& geometry = source.mesh;
 
-    if (!source.material_library_filename) {
+    if (source.material_libraries.empty()) {
         if (geometry.triangles.empty()) {
             return {};
         }
         return {MaterialBatch{geometry, std::string{}, MaterialState{}}};
     }
 
-    const std::filesystem::path library_path = path.parent_path() / *source.material_library_filename;
-    const MaterialLibrary library = load_mtl_file(library_path);
+    const MaterialLibrary library = detail::load_obj_material_library_set<MaterialState>(
+        path,
+        source.material_libraries,
+        [](const std::filesystem::path& library_path) {
+            return load_mtl_file(library_path);
+        },
+        [](MaterialState material, const std::filesystem::path&) {
+            return material;
+        });
     for (const ObjMaterialUse& used : source.used_materials) {
         if (library.find(used.name) == library.end()) {
             fail(used.line, "usemtl references unknown material '" + used.name + "'");
