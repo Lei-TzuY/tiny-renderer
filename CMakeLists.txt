@@ -291,4 +291,8 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_shadow_sampling_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_shadow_sampling_tests COMMAND tiny_renderer_shadow_sampling_tests)
 
+    add_executable(tiny_renderer_cascaded_shadow_tests tests/test_cascaded_shadow.cpp)
+    target_link_libraries(tiny_renderer_cascaded_shadow_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_cascaded_shadow_tests COMMAND tiny_renderer_cascaded_shadow_tests)
+
 endif()
