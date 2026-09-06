@@ -17,6 +17,8 @@ add_library(tiny_renderer
     src/rasterizer.cpp
     src/rasterizer_range.cpp
     src/rasterizer_validation.cpp
+    src/shadow.cpp
+    src/shadow_renderer.cpp
     src/texture.cpp
 )
 
@@ -181,4 +183,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_alpha_to_coverage_tests tests/test_alpha_to_coverage.cpp)
     target_link_libraries(tiny_renderer_alpha_to_coverage_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_alpha_to_coverage_tests COMMAND tiny_renderer_alpha_to_coverage_tests)
+
+    add_executable(tiny_renderer_shadow_tests tests/test_shadow.cpp)
+    target_link_libraries(tiny_renderer_shadow_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_shadow_tests COMMAND tiny_renderer_shadow_tests)
 endif()

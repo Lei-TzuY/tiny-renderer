@@ -21,6 +21,7 @@ struct ModelRenderOptions {
     StencilState stencil_state{};
     BlendState blend_state{};
     AlphaToCoverageState alpha_to_coverage_state{};
+    ShadowState shadow_state{};
 };
 
 class PreparedModelSubmission {

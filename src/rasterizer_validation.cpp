@@ -21,6 +21,17 @@ bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+bool finite_mat4(const Mat4& matrix) {
+    for (std::size_t row = 0U; row < 4U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            if (!std::isfinite(matrix(row, column))) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void validate_draw_range(const Mesh& mesh, DrawRange range) {
     if (range.first_triangle > mesh.triangles.size()
         || range.triangle_count > mesh.triangles.size() - range.first_triangle) {
@@ -284,6 +295,26 @@ void validate_alpha_to_coverage_target(
     }
 }
 
+void validate_shadow_state_definition(
+    const ShadowState& state,
+    bool directional_light_enabled) {
+    if (!state.enabled) {
+        return;
+    }
+    if (!directional_light_enabled) {
+        throw std::invalid_argument("directional shadow mapping requires an enabled directional light");
+    }
+    if (!state.map) {
+        throw std::invalid_argument("directional shadow mapping requires a depth texture");
+    }
+    if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+        throw std::invalid_argument("directional shadow bias must be finite and non-negative");
+    }
+    if (!finite_mat4(state.light_view_projection)) {
+        throw std::invalid_argument("directional shadow light view-projection transform must be finite");
+    }
+}
+
 ResolvedViewportState resolve_viewport_state(
     const Framebuffer& framebuffer,
     const ViewportState& state) {
@@ -324,11 +355,12 @@ void preflight_mesh_range_submission(
     const StencilState& stencil_state,
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
+    const ShadowState& shadow_state,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
-    if (mvp_only && directional_light.enabled) {
-        throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
+    if (mvp_only && (directional_light.enabled || shadow_state.enabled)) {
+        throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
 
     validate_face_culling(cull_mode, front_face);
@@ -337,6 +369,7 @@ void preflight_mesh_range_submission(
     validate_blend_state(blend_state);
     validate_raster_target(framebuffer);
     validate_alpha_to_coverage_target(framebuffer, alpha_to_coverage_state);
+    validate_shadow_state_definition(shadow_state, directional_light.enabled);
     (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
