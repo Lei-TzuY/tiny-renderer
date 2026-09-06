@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "normal_mapping_internal.hpp"
 #include "rasterizer_validation.hpp"
 #include "vertex_program_internal.hpp"
 
@@ -173,7 +174,9 @@ void validate_color_binding(const ColorBinding& binding, std::size_t varying_cou
 }
 
 void validate_texture_binding(const TextureBinding& binding, std::size_t varying_count) {
-    if (binding.texture == nullptr && binding.opacity_texture == nullptr) {
+    if (binding.texture == nullptr
+        && binding.opacity_texture == nullptr
+        && binding.normal_texture == nullptr) {
         return;
     }
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
@@ -232,7 +235,9 @@ void validate_output_binding(
         case BaseColorSource::Auto:
             throw std::logic_error("automatic base-color source must be resolved before validation");
     }
-    if (source == BaseColorSource::Texture || texture_binding.opacity_texture != nullptr) {
+    if (source == BaseColorSource::Texture
+        || texture_binding.opacity_texture != nullptr
+        || texture_binding.normal_texture != nullptr) {
         validate_texture_binding(texture_binding, varying_count);
     }
 }
@@ -241,7 +246,9 @@ void validate_texture_coordinates(
     const VaryingPack& pack,
     const TextureBinding& binding,
     BaseColorSource source) {
-    if (source != BaseColorSource::Texture && binding.opacity_texture == nullptr) {
+    if (source != BaseColorSource::Texture
+        && binding.opacity_texture == nullptr
+        && binding.normal_texture == nullptr) {
         return;
     }
     const float u = pack.values[binding.u_channel];
@@ -679,9 +686,6 @@ float fragment_opacity(
     const Vec3 sampled = texture_binding.opacity_texture->sample(
         {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
         texture_binding.sampler);
-    // Texture2D stores RGB only. For bounded teaching-space opacity maps we use
-    // the arithmetic mean of sampled linear RGB, clamped to [0,1]. This is a
-    // deterministic scalar rule, not a luminance or colorimetric claim.
     const float map_opacity = std::clamp(
         (sampled.x + sampled.y + sampled.z) / 3.0F,
         0.0F,
@@ -735,7 +739,8 @@ ShadedFragment shade_fragment(
     const DirectionalLight& light,
     const MaterialState& material,
     const ShadowState& shadow,
-    const Vec4& light_clip) {
+    const Vec4& light_clip,
+    const detail::TangentFrame* tangent_frame) {
     const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
     const Vec3 base{
         source_color.x * material.albedo.x,
@@ -760,7 +765,12 @@ ShadedFragment shade_fragment(
         return {base * light.ambient, opacity, false};
     }
 
-    const Vec3 normal = interpolated_normal / normal_length;
+    const Vec3 geometric_normal = interpolated_normal / normal_length;
+    const Vec3 normal = detail::tangent_space_lighting_normal(
+        texture_binding,
+        varyings,
+        geometric_normal,
+        tangent_frame);
     const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
     const float visibility = shadow_visibility(shadow, light_clip);
     const float intensity = light.ambient + light.diffuse * lambert * visibility;
@@ -782,6 +792,7 @@ void rasterize_screen_triangle(
     const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
     const FragmentProgram* fragment_program,
+    const detail::TangentFrame* tangent_frame,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
@@ -885,7 +896,8 @@ void rasterize_screen_triangle(
                     light,
                     material,
                     shadow_state,
-                    light_clip);
+                    light_clip,
+                    tangent_frame);
                 const ShadedFragment fragment = run_fragment_program(
                     fragment_program,
                     varyings,
@@ -977,6 +989,7 @@ void draw_triangle_impl(
     const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
     const FragmentProgram* fragment_program,
+    const detail::TangentFrame* tangent_frame,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
@@ -1027,6 +1040,7 @@ void draw_triangle_impl(
             alpha_test_state,
             shadow_state,
             fragment_program,
+            tangent_frame,
             viewport_state.scissor);
     }
 }
@@ -1051,6 +1065,14 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, light);
     validate_fragment_program(fragment_program_, programmed[0].varyings.count);
+    if (texture_binding_.normal_texture != nullptr && !light.enabled) {
+        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    }
+
+    std::optional<detail::TangentFrame> tangent_frame;
+    if (texture_binding_.normal_texture != nullptr) {
+        tangent_frame = detail::prepare_tangent_frame(programmed, texture_binding_, model);
+    }
 
     Triangle prepared = programmed;
     if (light.enabled) {
@@ -1078,10 +1100,14 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         alpha_test_state_,
         shadow_state_,
         fragment_program_.get(),
+        tangent_frame ? &*tangent_frame : nullptr,
         viewport_state);
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
+    if (texture_binding_.normal_texture != nullptr) {
+        throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
+    }
     if (directional_light_.enabled || shadow_state_.enabled) {
         throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
@@ -1121,6 +1147,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         alpha_test_state_,
         shadow_state_,
         fragment_program_.get(),
+        nullptr,
         viewport_state);
 }
 
@@ -1144,6 +1171,21 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_mesh(vertex_mesh, color_binding_, texture_binding_, source, light);
     validate_fragment_program(fragment_program_, mesh_varying_count(vertex_mesh));
+    if (texture_binding_.normal_texture != nullptr && !light.enabled) {
+        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    }
+
+    std::vector<detail::TangentFrame> tangent_frames;
+    if (texture_binding_.normal_texture != nullptr) {
+        detail::validate_normal_texture(*texture_binding_.normal_texture);
+        tangent_frames.reserve(vertex_mesh.triangles.size());
+        for (const TriangleIndices& indices : vertex_mesh.triangles) {
+            tangent_frames.push_back(detail::prepare_tangent_frame(
+                assemble_triangle(vertex_mesh, indices),
+                texture_binding_,
+                model));
+        }
+    }
 
     Mesh prepared = vertex_mesh;
     if (light.enabled && !vertex_mesh.vertices.empty()) {
@@ -1153,7 +1195,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     const Mat4 light_mvp = shadow_state_.enabled
         ? shadow_state_.light_view_projection * model
         : Mat4::identity();
-    for (const TriangleIndices& indices : prepared.triangles) {
+    for (std::size_t triangle_index = 0U; triangle_index < prepared.triangles.size(); ++triangle_index) {
+        const TriangleIndices& indices = prepared.triangles[triangle_index];
         draw_triangle_impl(
             framebuffer_,
             assemble_triangle(prepared, indices),
@@ -1173,11 +1216,15 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             alpha_test_state_,
             shadow_state_,
             fragment_program_.get(),
+            tangent_frames.empty() ? nullptr : &tangent_frames[triangle_index],
             viewport_state);
     }
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
+    if (texture_binding_.normal_texture != nullptr) {
+        throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
+    }
     if (directional_light_.enabled || shadow_state_.enabled) {
         throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
@@ -1220,6 +1267,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             alpha_test_state_,
             shadow_state_,
             fragment_program_.get(),
+            nullptr,
             viewport_state);
     }
 }
