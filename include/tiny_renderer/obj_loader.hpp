@@ -49,6 +49,7 @@ struct MaterialAssetBatch {
     std::string material_name;
     MaterialState material{};
     std::shared_ptr<const Texture2D> diffuse_texture;
+    std::shared_ptr<const Texture2D> opacity_texture;
 };
 
 [[nodiscard]] Mesh load_obj(std::istream& input);
