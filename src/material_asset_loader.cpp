@@ -9,8 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "tiny_renderer/image_loader.hpp"
 #include "tiny_renderer/mtl_loader.hpp"
-#include "tiny_renderer/ppm_loader.hpp"
 
 #include "material_library_resolver.hpp"
 
@@ -37,7 +37,7 @@ std::shared_ptr<const Texture2D> load_owned_texture(
         return existing->second;
     }
 
-    auto texture = std::make_shared<const Texture2D>(load_ppm_file(texture_path));
+    auto texture = std::make_shared<const Texture2D>(load_texture_image_file(texture_path));
     texture_cache.emplace(cache_key, texture);
     return texture;
 }
