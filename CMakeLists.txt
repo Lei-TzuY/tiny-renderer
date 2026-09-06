@@ -170,4 +170,11 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_msaa_tests tests/test_msaa.cpp)
     target_link_libraries(tiny_renderer_msaa_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_msaa_tests COMMAND tiny_renderer_msaa_tests)
+
+    add_executable(tiny_renderer_opacity_texture_tests tests/test_opacity_texture.cpp)
+    target_link_libraries(tiny_renderer_opacity_texture_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_opacity_texture_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_opacity_texture_tests COMMAND tiny_renderer_opacity_texture_tests)
 endif()
