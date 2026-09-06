@@ -66,6 +66,12 @@ inline TangentFrame derive_object_tangent_frame(
     };
     const Vec3 edge1 = triangle[1].position - triangle[0].position;
     const Vec3 edge2 = triangle[2].position - triangle[0].position;
+    const Vec3 geometric_cross = cross(edge1, edge2);
+    if (!normal_mapping_finite_vec3(geometric_cross)
+        || length(geometric_cross) <= kEpsilon) {
+        throw std::invalid_argument(
+            "normal mapping requires a non-degenerate triangle geometry basis");
+    }
     const Vec2 delta_uv1 = uv1 - uv0;
     const Vec2 delta_uv2 = uv2 - uv0;
     const float determinant = delta_uv1.x * delta_uv2.y - delta_uv1.y * delta_uv2.x;
@@ -78,10 +84,13 @@ inline TangentFrame derive_object_tangent_frame(
         (edge1 * delta_uv2.y - edge2 * delta_uv1.y) * inverse;
     const Vec3 bitangent =
         (edge2 * delta_uv1.x - edge1 * delta_uv2.x) * inverse;
+    const Vec3 frame_cross = cross(tangent, bitangent);
     if (!normal_mapping_finite_vec3(tangent)
         || !normal_mapping_finite_vec3(bitangent)
+        || !normal_mapping_finite_vec3(frame_cross)
         || length(tangent) <= kEpsilon
-        || length(bitangent) <= kEpsilon) {
+        || length(bitangent) <= kEpsilon
+        || length(frame_cross) <= kEpsilon) {
         throw std::invalid_argument(
             "normal mapping requires a stable object-space tangent frame");
     }
@@ -94,10 +103,13 @@ inline TangentFrame transform_tangent_frame(
     const Mat3 linear = model_linear_matrix(model);
     const Vec3 tangent = linear * object_frame.tangent;
     const Vec3 bitangent = linear * object_frame.bitangent;
+    const Vec3 frame_cross = cross(tangent, bitangent);
     if (!normal_mapping_finite_vec3(tangent)
         || !normal_mapping_finite_vec3(bitangent)
+        || !normal_mapping_finite_vec3(frame_cross)
         || length(tangent) <= kEpsilon
-        || length(bitangent) <= kEpsilon) {
+        || length(bitangent) <= kEpsilon
+        || length(frame_cross) <= kEpsilon) {
         throw std::invalid_argument(
             "normal mapping model transform collapses the tangent frame");
     }
