@@ -82,6 +82,30 @@ jobs:
           indent_literal_continuations(
               '"""        validate_per_record_shadow_binding(light);', 1)
 
+          directional_token = (
+              '"""        if (fixed_lights.lights[index].type '
+              '!= FixedLightType::Directional) {')
+          directional_starts = [
+              i for i, line in enumerate(script_lines) if directional_token in line
+          ]
+          if len(directional_starts) != 2:
+              raise SystemExit(
+                  f'expected two directional association literals, found {len(directional_starts)}')
+          for start_index in directional_starts:
+              cursor = start_index + 1
+              while cursor < len(script_lines):
+                  if script_lines[cursor].strip() == '}':
+                      lookahead = cursor + 1
+                      while lookahead < len(script_lines) and not script_lines[lookahead].strip():
+                          lookahead += 1
+                      if (lookahead < len(script_lines)
+                              and 'if (!state.map)' in script_lines[lookahead]):
+                          break
+                  script_lines[cursor] = '    ' + script_lines[cursor]
+                  cursor += 1
+              else:
+                  raise SystemExit('could not find directional association outer close')
+
           Path('/tmp/m44-apply.sh').write_text('\n'.join(script_lines) + '\n')
           PY
           bash /tmp/m44-apply.sh
