@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -17,16 +18,16 @@ namespace {
     throw ObjParseError(line, message);
 }
 
-std::shared_ptr<const Texture2D> load_owned_diffuse_texture(
+std::shared_ptr<const Texture2D> load_owned_texture(
     const std::filesystem::path& library_directory,
-    const MaterialAssetDefinition& definition,
+    const std::optional<std::string>& filename,
     std::map<std::string, std::shared_ptr<const Texture2D>>& texture_cache) {
-    if (!definition.diffuse_map_filename) {
+    if (!filename) {
         return {};
     }
 
     const std::filesystem::path texture_path =
-        (library_directory / *definition.diffuse_map_filename).lexically_normal();
+        (library_directory / *filename).lexically_normal();
     const std::string cache_key = texture_path.string();
     const auto existing = texture_cache.find(cache_key);
     if (existing != texture_cache.end()) {
@@ -70,11 +71,21 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
     }
 
     std::map<std::string, std::shared_ptr<const Texture2D>> texture_cache;
-    std::map<std::string, std::shared_ptr<const Texture2D>> material_textures;
+    std::map<std::string, std::shared_ptr<const Texture2D>> material_diffuse_textures;
+    std::map<std::string, std::shared_ptr<const Texture2D>> material_opacity_textures;
     for (const auto& [name, definition] : library) {
-        material_textures.emplace(
+        material_diffuse_textures.emplace(
             name,
-            load_owned_diffuse_texture(library_path.parent_path(), definition, texture_cache));
+            load_owned_texture(
+                library_path.parent_path(),
+                definition.diffuse_map_filename,
+                texture_cache));
+        material_opacity_textures.emplace(
+            name,
+            load_owned_texture(
+                library_path.parent_path(),
+                definition.opacity_map_filename,
+                texture_cache));
     }
 
     for (std::size_t face = 0U; face < asset.mesh.triangles.size(); ++face) {
@@ -85,7 +96,8 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
             draw.range.first_triangle = face;
             draw.material_name = material_name;
             draw.material = definition.material;
-            draw.diffuse_texture = material_textures.at(material_name);
+            draw.diffuse_texture = material_diffuse_textures.at(material_name);
+            draw.opacity_texture = material_opacity_textures.at(material_name);
             asset.draws.push_back(std::move(draw));
         }
         ++asset.draws.back().range.triangle_count;
@@ -110,6 +122,7 @@ std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::
         batch.material_name = draw.material_name;
         batch.material = draw.material;
         batch.diffuse_texture = draw.diffuse_texture;
+        batch.opacity_texture = draw.opacity_texture;
         batches.push_back(std::move(batch));
     }
     return batches;
