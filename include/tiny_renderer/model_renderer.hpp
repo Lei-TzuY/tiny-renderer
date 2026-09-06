@@ -23,6 +23,7 @@ struct ModelRenderOptions {
     AlphaToCoverageState alpha_to_coverage_state{};
     ShadowState shadow_state{};
     AlphaTestState alpha_test_state{};
+    FragmentProgramPtr fragment_program{};
 };
 
 class PreparedModelSubmission {
