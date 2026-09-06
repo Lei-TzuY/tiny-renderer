@@ -58,8 +58,10 @@ inline void model_fingerprint_float(std::uint64_t& hash, float value) noexcept {
 
 inline void model_fingerprint_string(std::uint64_t& hash, std::string_view value) noexcept {
     model_fingerprint_size(hash, value.size());
-    for (const unsigned char byte : value) {
-        model_fingerprint_byte(hash, static_cast<std::uint8_t>(byte));
+    for (const char character : value) {
+        model_fingerprint_byte(
+            hash,
+            static_cast<std::uint8_t>(static_cast<unsigned char>(character)));
     }
 }
 
@@ -72,7 +74,7 @@ inline void model_fingerprint_vec3(std::uint64_t& hash, const Vec3& value) noexc
 inline void model_fingerprint_texture(
     std::uint64_t& hash,
     const std::shared_ptr<const Texture2D>& texture) {
-    model_fingerprint_byte(hash, texture ? 1U : 0U);
+    model_fingerprint_byte(hash, static_cast<std::uint8_t>(texture ? 1U : 0U));
     if (!texture) {
         return;
     }
