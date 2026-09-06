@@ -106,6 +106,12 @@ jobs:
               else:
                   raise SystemExit('could not find directional association outer close')
 
+          for label in ('directional', 'point', 'spot'):
+              indent_literal_continuations(
+                  f'old_{label} = """            case FixedLightType::', 1)
+              indent_literal_continuations(
+                  f'new_{label} = """            case FixedLightType::', 1)
+
           Path('/tmp/m44-apply.sh').write_text('\n'.join(script_lines) + '\n')
           PY
           bash /tmp/m44-apply.sh
