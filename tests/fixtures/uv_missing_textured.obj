@@ -1,0 +1,6 @@
+mtllib diffuse_textured.mtl
+v -0.7 -0.7 0
+v 0.7 -0.7 0
+v 0 0.7 0
+usemtl warm
+f 1 2 3

@@ -155,7 +155,7 @@ void expect_parse_error(std::string_view text, const std::string& message) {
     check(threw, message);
 }
 
-void test_invalid_and_unsupported_input_is_rejected() {
+void test_uv_optional_layouts_and_invalid_input() {
     const std::string prefix =
         "v 0 0 0\n"
         "v 1 0 0\n"
@@ -165,15 +165,37 @@ void test_invalid_and_unsupported_input_is_rejected() {
         "vt 0 1\n";
     const std::string normal_prefix = prefix + "vn 0 0 1\n";
 
-    expect_parse_error(prefix + "f 1/1 2/2 3/3 1/1\n", "quad/ngon face is rejected rather than triangulated implicitly");
-    expect_parse_error(prefix + "f 1 2 3\n", "face without texture-coordinate indices is rejected");
+    const Mesh position_only = parse_text(prefix + "f 1 2 3\n");
+    check(position_only.triangles.size() == 1U,
+          "position-only face is accepted without inventing texture-coordinate channels");
+    check(position_only.vertices.size() == 3U,
+          "position-only face preserves deterministic vertex unification");
+    for (const Vertex& vertex : position_only.vertices) {
+        check(vertex.varyings.count == 0U,
+              "position-only legacy face exposes no synthetic varyings");
+    }
+
+    const Mesh normal_only = parse_text(normal_prefix + "f 1//1 2//1 3//1\n");
+    check(normal_only.triangles.size() == 1U,
+          "v//vn face is accepted without texture-coordinate indices");
+    for (const Vertex& vertex : normal_only.vertices) {
+        check(vertex.varyings.count == 3U,
+              "v//vn legacy face exposes exactly xyz normal channels");
+        if (vertex.varyings.count == 3U) {
+            check_near(vertex.varyings[0], 0.0F, "v//vn normal x");
+            check_near(vertex.varyings[1], 0.0F, "v//vn normal y");
+            check_near(vertex.varyings[2], 1.0F, "v//vn normal z");
+        }
+    }
+
+    expect_parse_error(prefix + "f 1/1 2/2 3/3 1/1\n", "polygon face with a repeated corner is rejected");
     expect_parse_error(prefix + "f 0/1 2/2 3/3\n", "OBJ index zero is rejected");
     expect_parse_error(prefix + "f 4/1 2/2 3/3\n", "out-of-range position index is rejected");
     expect_parse_error(prefix + "f 1/4 2/2 3/3\n", "out-of-range texture index is rejected");
     expect_parse_error("v nope 0 0\n", "malformed floating-point vertex coordinate is rejected");
     expect_parse_error("vn 0 nope 1\n", "malformed normal coordinate is rejected");
     expect_parse_error("vn 0 0 0\n", "zero-length OBJ normal is rejected at import time");
-    expect_parse_error(normal_prefix + "f 1//1 2/2/1 3/3/1\n", "v//vn face syntax is rejected because UVs remain mandatory");
+    expect_parse_error(normal_prefix + "f 1//1 2/2/1 3//1\n", "mixed v//vn and v/vt/vn corners are rejected");
     expect_parse_error(normal_prefix + "f 1/1/2 2/2/1 3/3/1\n", "out-of-range normal index is rejected");
     expect_parse_error(normal_prefix + "f 1/1/1 2/2 3/3/1\n", "mixed corner layouts inside one face are rejected");
     expect_parse_error(
@@ -306,7 +328,7 @@ int main() {
     try {
         test_pair_normalization_and_first_seen_order();
         test_triple_normalization_and_normal_channels();
-        test_invalid_and_unsupported_input_is_rejected();
+        test_uv_optional_layouts_and_invalid_input();
         test_file_fixture_renders_identically_to_manual_mesh();
         test_normal_fixture_drives_file_textured_lambert_path();
         test_parse_error_reports_source_line();
