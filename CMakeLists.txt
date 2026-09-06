@@ -9,6 +9,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 
 add_library(tiny_renderer
     src/framebuffer.cpp
+    src/image_loader.cpp
     src/material_asset_loader.cpp
     src/model_inspection.cpp
     src/model_renderer.cpp
@@ -23,6 +24,7 @@ add_library(tiny_renderer
     src/shadow_renderer.cpp
     src/spot_shadow.cpp
     src/texture.cpp
+    src/tga_loader.cpp
 )
 
 target_include_directories(tiny_renderer PUBLIC include)
@@ -95,6 +97,10 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_ppm_tests COMMAND tiny_renderer_ppm_tests)
+
+    add_executable(tiny_renderer_tga_tests tests/test_tga_loader.cpp)
+    target_link_libraries(tiny_renderer_tga_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_tga_tests COMMAND tiny_renderer_tga_tests)
 
     add_executable(tiny_renderer_lighting_tests tests/test_lighting.cpp)
     target_link_libraries(tiny_renderer_lighting_tests PRIVATE tiny_renderer)
