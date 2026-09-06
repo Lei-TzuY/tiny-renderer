@@ -13,6 +13,7 @@ add_library(tiny_renderer
     src/model_renderer.cpp
     src/mtl_loader.cpp
     src/obj_loader.cpp
+    src/point_shadow.cpp
     src/ppm_loader.cpp
     src/rasterizer.cpp
     src/rasterizer_range.cpp
@@ -228,4 +229,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_multi_light_tests tests/test_multi_light.cpp)
     target_link_libraries(tiny_renderer_multi_light_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_multi_light_tests COMMAND tiny_renderer_multi_light_tests)
+
+    add_executable(tiny_renderer_point_shadow_tests tests/test_point_shadow.cpp)
+    target_link_libraries(tiny_renderer_point_shadow_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_point_shadow_tests COMMAND tiny_renderer_point_shadow_tests)
 endif()
