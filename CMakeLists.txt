@@ -209,4 +209,11 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_normal_mapping_tests COMMAND tiny_renderer_normal_mapping_tests)
+
+    add_executable(tiny_renderer_specular_lighting_tests tests/test_specular_lighting.cpp)
+    target_link_libraries(tiny_renderer_specular_lighting_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_specular_lighting_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_specular_lighting_tests COMMAND tiny_renderer_specular_lighting_tests)
 endif()
