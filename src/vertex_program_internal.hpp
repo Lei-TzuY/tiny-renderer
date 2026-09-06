@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <stdexcept>
 
 #include "tiny_renderer/vertex_program.hpp"
@@ -12,6 +13,10 @@ constexpr float kMaxProgramVertexMagnitude = 1.0e20F;
 
 inline bool finite_program_scalar(float value) {
     return std::isfinite(value) && std::fabs(value) <= kMaxProgramVertexMagnitude;
+}
+
+inline std::size_t vertex_program_varying_count(const Mesh& mesh) {
+    return mesh.vertices.empty() ? 0U : mesh.vertices.front().varyings.count;
 }
 
 inline void validate_vertex_program_static(
@@ -79,15 +84,37 @@ inline Mesh apply_vertex_program(
     if (!program) {
         return mesh;
     }
-    const std::size_t varying_count = mesh.vertices.empty()
-        ? 0U
-        : mesh.vertices.front().varyings.count;
-    validate_vertex_program_static(program, varying_count);
+    validate_vertex_program_static(program, vertex_program_varying_count(mesh));
     Mesh result = mesh;
     for (std::size_t i = 0U; i < mesh.vertices.size(); ++i) {
         result.vertices[i] = apply_vertex_program(program, mesh.vertices[i]);
     }
     return result;
+}
+
+struct PreparedVertexMesh {
+    const Mesh* source{nullptr};
+    std::optional<Mesh> transformed{};
+
+    [[nodiscard]] const Mesh& get() const {
+        if (transformed) {
+            return *transformed;
+        }
+        if (source == nullptr) {
+            throw std::logic_error("prepared vertex mesh has no source");
+        }
+        return *source;
+    }
+};
+
+inline PreparedVertexMesh prepare_vertex_program_mesh(
+    const VertexProgramPtr& program,
+    const Mesh& mesh) {
+    validate_vertex_program_static(program, vertex_program_varying_count(mesh));
+    if (!program) {
+        return PreparedVertexMesh{&mesh, std::nullopt};
+    }
+    return PreparedVertexMesh{&mesh, apply_vertex_program(program, mesh)};
 }
 
 }  // namespace tiny_renderer::detail
