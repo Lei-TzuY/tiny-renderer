@@ -30,6 +30,8 @@ namespace {
 
 enum class FaceLayout {
     Unknown,
+    Position,
+    PositionNormal,
     PositionTexcoord,
     PositionTexcoordNormal,
 };
@@ -77,6 +79,7 @@ using UnifiedVertexKey =
     std::tuple<std::size_t, std::size_t, std::size_t, bool, std::uint64_t>;
 using GeneratedNormalKey = std::tuple<std::size_t, bool, std::uint64_t>;
 
+constexpr std::size_t kMissingTexcoordIndex = std::numeric_limits<std::size_t>::max();
 constexpr std::size_t kMissingNormalIndex = std::numeric_limits<std::size_t>::max();
 constexpr std::size_t kMaxFaceCorners = 64U;
 constexpr std::size_t kMaxMaterialLibraries = 8U;
@@ -110,14 +113,35 @@ std::int64_t parse_index(std::string_view token, std::size_t line, const char* f
     return value;
 }
 
+bool layout_has_texcoord(FaceLayout layout) {
+    return layout == FaceLayout::PositionTexcoord
+        || layout == FaceLayout::PositionTexcoordNormal;
+}
+
+bool layout_has_normal(FaceLayout layout) {
+    return layout == FaceLayout::PositionNormal
+        || layout == FaceLayout::PositionTexcoordNormal;
+}
+
 FaceReference parse_face_reference(const std::string& token, std::size_t line) {
     const std::size_t first_slash = token.find('/');
-    if (first_slash == std::string::npos || first_slash == 0U || first_slash + 1U >= token.size()) {
-        fail(line, "polygon faces must use v/vt or v/vt/vn references");
+    if (first_slash == std::string::npos) {
+        return {
+            parse_index(token, line, "position"),
+            0,
+            0,
+            FaceLayout::Position,
+        };
+    }
+    if (first_slash == 0U) {
+        fail(line, "OBJ face reference requires a position index");
     }
 
     const std::size_t second_slash = token.find('/', first_slash + 1U);
     if (second_slash == std::string::npos) {
+        if (first_slash + 1U >= token.size()) {
+            fail(line, "v/vt face reference requires a texture-coordinate index");
+        }
         return {
             parse_index(std::string_view(token).substr(0U, first_slash), line, "position"),
             parse_index(std::string_view(token).substr(first_slash + 1U), line, "texture-coordinate"),
@@ -127,18 +151,24 @@ FaceReference parse_face_reference(const std::string& token, std::size_t line) {
     }
 
     if (token.find('/', second_slash + 1U) != std::string::npos
-        || second_slash == first_slash + 1U
         || second_slash + 1U >= token.size()) {
-        fail(line, "normal-bearing polygon faces must use complete v/vt/vn references");
+        fail(line, "normal-bearing OBJ face reference must use v//vn or v/vt/vn syntax");
     }
 
+    const std::int64_t position =
+        parse_index(std::string_view(token).substr(0U, first_slash), line, "position");
+    const std::int64_t normal =
+        parse_index(std::string_view(token).substr(second_slash + 1U), line, "normal");
+    if (second_slash == first_slash + 1U) {
+        return {position, 0, normal, FaceLayout::PositionNormal};
+    }
     return {
-        parse_index(std::string_view(token).substr(0U, first_slash), line, "position"),
+        position,
         parse_index(
             std::string_view(token).substr(first_slash + 1U, second_slash - first_slash - 1U),
             line,
             "texture-coordinate"),
-        parse_index(std::string_view(token).substr(second_slash + 1U), line, "normal"),
+        normal,
         FaceLayout::PositionTexcoordNormal,
     };
 }
@@ -298,12 +328,17 @@ void finalize_generated_normals(
         }
         const Vec3 normal = normalized_generated_normal(accumulation->second);
         VaryingPack& varyings = mesh.vertices[vertex_index].varyings;
-        if (varyings.count != 5U) {
-            throw std::logic_error("generated OBJ normal vertex must own UV plus normal varyings");
+        std::size_t normal_offset{};
+        if (varyings.count == 3U) {
+            normal_offset = 0U;
+        } else if (varyings.count == 5U) {
+            normal_offset = 2U;
+        } else {
+            throw std::logic_error("generated OBJ normal vertex must own normal or UV-plus-normal varyings");
         }
-        varyings.values[2] = normal.x;
-        varyings.values[3] = normal.y;
-        varyings.values[4] = normal.z;
+        varyings.values[normal_offset] = normal.x;
+        varyings.values[normal_offset + 1U] = normal.y;
+        varyings.values[normal_offset + 2U] = normal.z;
     }
 }
 
@@ -476,8 +511,9 @@ ObjModelSource parse_obj(
             }
             if (mesh_layout == FaceLayout::Unknown) {
                 mesh_layout = face_layout;
+                result.face_has_texture_coordinates = layout_has_texcoord(face_layout);
             } else if (mesh_layout != face_layout) {
-                fail(line_number, "mixing v/vt and v/vt/vn face layouts in one OBJ mesh is not supported");
+                fail(line_number, "mixing OBJ face index layouts in one canonical mesh is not supported");
             }
 
             std::string material_name;
@@ -494,13 +530,16 @@ ObjModelSource parse_obj(
             for (const FaceReference& reference : references) {
                 ResolvedFaceReference item;
                 item.position = resolve_index(reference.position, positions.size(), line_number, "position");
-                item.texcoord = resolve_index(
-                    reference.texcoord,
-                    texcoords.size(),
-                    line_number,
-                    "texture-coordinate");
+                item.texcoord = kMissingTexcoordIndex;
                 item.normal = kMissingNormalIndex;
-                if (face_layout == FaceLayout::PositionTexcoordNormal) {
+                if (layout_has_texcoord(face_layout)) {
+                    item.texcoord = resolve_index(
+                        reference.texcoord,
+                        texcoords.size(),
+                        line_number,
+                        "texture-coordinate");
+                }
+                if (layout_has_normal(face_layout)) {
                     item.normal = resolve_index(reference.normal, normals.size(), line_number, "normal");
                 }
                 resolved.push_back(item);
@@ -508,7 +547,7 @@ ObjModelSource parse_obj(
 
             std::optional<GeneratedNormalDomain> generated_domain;
             if (missing_normal_mode == MissingNormalMode::Generate
-                && face_layout == FaceLayout::PositionTexcoord) {
+                && !layout_has_normal(face_layout)) {
                 if (generated_flat_face_serial == std::numeric_limits<std::uint64_t>::max()) {
                     fail(line_number, "generated flat-normal face id exceeds uint64 capacity");
                 }
@@ -565,26 +604,49 @@ ObjModelSource parse_obj(
                         fail(line_number, "unified vertex count exceeds uint32 index capacity");
                     }
                     unified_index = static_cast<std::uint32_t>(result.mesh.vertices.size());
-                    const Vec2& uv = texcoords[reference.texcoord];
-                    if (face_layout == FaceLayout::PositionTexcoordNormal) {
+                    const Vec3& position = positions[reference.position];
+                    const bool has_uv = layout_has_texcoord(face_layout);
+                    const bool has_explicit_normal = layout_has_normal(face_layout);
+                    if (has_uv && has_explicit_normal) {
+                        const Vec2& uv = texcoords[reference.texcoord];
                         const Vec3& normal = normals[reference.normal];
                         result.mesh.vertices.push_back(Vertex::with_varyings(
-                            positions[reference.position],
+                            position,
                             VaryingPack{uv.x, uv.y, normal.x, normal.y, normal.z}));
                         vertex_generated_normal_keys.push_back(std::nullopt);
-                    } else if (generated) {
+                    } else if (has_uv && generated) {
+                        const Vec2& uv = texcoords[reference.texcoord];
                         result.mesh.vertices.push_back(Vertex::with_varyings(
-                            positions[reference.position],
+                            position,
                             VaryingPack{uv.x, uv.y, 0.0F, 0.0F, 0.0F}));
                         vertex_generated_normal_keys.push_back(GeneratedNormalKey{
                             reference.position,
                             generated_domain->flat,
                             generated_domain->id,
                         });
-                    } else {
+                    } else if (has_uv) {
+                        const Vec2& uv = texcoords[reference.texcoord];
                         result.mesh.vertices.push_back(Vertex::with_varyings(
-                            positions[reference.position],
+                            position,
                             VaryingPack{uv.x, uv.y}));
+                        vertex_generated_normal_keys.push_back(std::nullopt);
+                    } else if (has_explicit_normal) {
+                        const Vec3& normal = normals[reference.normal];
+                        result.mesh.vertices.push_back(Vertex::with_varyings(
+                            position,
+                            VaryingPack{normal.x, normal.y, normal.z}));
+                        vertex_generated_normal_keys.push_back(std::nullopt);
+                    } else if (generated) {
+                        result.mesh.vertices.push_back(Vertex::with_varyings(
+                            position,
+                            VaryingPack{0.0F, 0.0F, 0.0F}));
+                        vertex_generated_normal_keys.push_back(GeneratedNormalKey{
+                            reference.position,
+                            generated_domain->flat,
+                            generated_domain->id,
+                        });
+                    } else {
+                        result.mesh.vertices.push_back(Vertex::with_varyings(position, VaryingPack{}));
                         vertex_generated_normal_keys.push_back(std::nullopt);
                     }
                     unified_indices.emplace(key, unified_index);
