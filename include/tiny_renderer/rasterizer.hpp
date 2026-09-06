@@ -96,17 +96,37 @@ struct PointLight {
     float quadratic_attenuation{0.0F};
 };
 
+struct SpotLight {
+    bool enabled{false};
+    NormalBinding normal{};
+    Vec3 position{0.0F, 0.0F, 1.0F};
+    // Direction points outward from the light toward the center of the cone.
+    Vec3 direction{0.0F, 0.0F, -1.0F};
+    float ambient{0.0F};
+    float diffuse{1.0F};
+    Vec3 viewer_position{0.0F, 0.0F, 0.0F};
+    float linear_attenuation{0.0F};
+    float quadratic_attenuation{0.0F};
+    // Cone falloff is linear in cosine space. A fragment is fully lit at or
+    // above inner_cone_cos, fully outside at or below outer_cone_cos, and
+    // interpolated between them. Validation requires inner > outer.
+    float inner_cone_cos{0.9F};
+    float outer_cone_cos{0.8F};
+};
+
 constexpr std::size_t kMaxFixedLights = 4U;
 
 enum class FixedLightType {
     Directional,
     Point,
+    Spot,
 };
 
 struct FixedLight {
     FixedLightType type{FixedLightType::Directional};
     DirectionalLight directional{};
     PointLight point{};
+    SpotLight spot{};
 };
 
 struct FixedLightCollection {
