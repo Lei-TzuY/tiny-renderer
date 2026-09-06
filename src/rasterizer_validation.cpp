@@ -156,6 +156,19 @@ bool collection_has_spot(const FixedLightCollection& fixed_lights) {
     return false;
 }
 
+bool collection_has_per_record_directional_shadow(
+    const FixedLightCollection& fixed_lights) {
+    const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+    for (std::size_t i = 0U; i < count; ++i) {
+        const FixedLight& light = fixed_lights.lights[i];
+        if (light.type == FixedLightType::Directional
+            && light.directional_shadow.enabled) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool finite_mat4(const Mat4& matrix) {
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
@@ -165,6 +178,110 @@ bool finite_mat4(const Mat4& matrix) {
         }
     }
     return true;
+}
+
+void validate_directional_record_shadow(const ShadowState& state) {
+    if (!state.enabled) {
+        return;
+    }
+    if (!state.map) {
+        throw std::invalid_argument(
+            "per-record directional shadow requires a depth texture");
+    }
+    if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+        throw std::invalid_argument(
+            "per-record directional shadow bias must be finite and non-negative");
+    }
+    if (!finite_mat4(state.light_view_projection)) {
+        throw std::invalid_argument(
+            "per-record directional shadow view-projection must be finite");
+    }
+}
+
+void validate_point_record_shadow(
+    const PointShadowState& state,
+    const PointLight& light) {
+    if (!state.enabled) {
+        return;
+    }
+    if (!state.map) {
+        throw std::invalid_argument(
+            "per-record point shadow requires a depth cubemap");
+    }
+    if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+        throw std::invalid_argument(
+            "per-record point shadow bias must be finite and non-negative");
+    }
+    const Vec3& capture = state.map->light_position();
+    if (capture.x != light.position.x
+        || capture.y != light.position.y
+        || capture.z != light.position.z) {
+        throw std::invalid_argument(
+            "per-record point shadow capture position must match its point light");
+    }
+}
+
+void validate_spot_record_shadow(
+    const SpotShadowState& state,
+    const SpotLight& light) {
+    if (!state.enabled) {
+        return;
+    }
+    if (!state.map) {
+        throw std::invalid_argument(
+            "per-record spot shadow requires a spotlight depth map");
+    }
+    if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+        throw std::invalid_argument(
+            "per-record spot shadow bias must be finite and non-negative");
+    }
+    const Vec3& capture_position = state.map->light_position();
+    if (capture_position.x != light.position.x
+        || capture_position.y != light.position.y
+        || capture_position.z != light.position.z) {
+        throw std::invalid_argument(
+            "per-record spot shadow capture position must match its spotlight");
+    }
+    const Vec3 direction = normalize(light.direction);
+    const Vec3& capture_direction = state.map->light_direction();
+    if (capture_direction.x != direction.x
+        || capture_direction.y != direction.y
+        || capture_direction.z != direction.z) {
+        throw std::invalid_argument(
+            "per-record spot shadow capture direction must match its spotlight");
+    }
+    if (state.map->outer_cone_cos() != light.outer_cone_cos) {
+        throw std::invalid_argument(
+            "per-record spot shadow capture cone must match its spotlight");
+    }
+}
+
+void validate_per_record_shadow_binding(const FixedLight& light) {
+    switch (light.type) {
+        case FixedLightType::Directional:
+            if (light.point_shadow.enabled || light.spot_shadow.enabled) {
+                throw std::invalid_argument(
+                    "directional fixed-light record cannot enable point or spot shadow state");
+            }
+            validate_directional_record_shadow(light.directional_shadow);
+            return;
+        case FixedLightType::Point:
+            if (light.directional_shadow.enabled || light.spot_shadow.enabled) {
+                throw std::invalid_argument(
+                    "point fixed-light record cannot enable directional or spot shadow state");
+            }
+            validate_point_record_shadow(light.point_shadow, light.point);
+            return;
+        case FixedLightType::Spot:
+            if (light.directional_shadow.enabled || light.point_shadow.enabled) {
+                throw std::invalid_argument(
+                    "spot fixed-light record cannot enable directional or point shadow state");
+            }
+            validate_spot_record_shadow(light.spot_shadow, light.spot);
+            return;
+    }
+    throw std::invalid_argument(
+        "fixed-light collection contains an unknown light type");
 }
 
 void validate_draw_range(const Mesh& mesh, DrawRange range) {
@@ -467,6 +584,10 @@ void validate_spot_shadow_association(const FixedLightCollection& fixed_lights) 
     if (fixed_lights.lights[index].type != FixedLightType::Spot) {
         throw std::invalid_argument("spot-shadow association must target a spotlight");
     }
+    if (fixed_lights.lights[index].spot_shadow.enabled) {
+        throw std::invalid_argument(
+            "spotlight cannot use legacy and per-record shadow bindings simultaneously");
+    }
     if (!state.map) {
         throw std::invalid_argument("spot shadow mapping requires an owned spotlight depth map");
     }
@@ -532,6 +653,7 @@ bool fixed_lighting_world_position_required(
     if (fixed_lights.count != 0U) {
         return collection_has_point(fixed_lights)
             || collection_has_spot(fixed_lights)
+            || collection_has_per_record_directional_shadow(fixed_lights)
             || (material_has_specular(material) && collection_has_directional(fixed_lights));
     }
     return point_light.enabled
@@ -635,6 +757,7 @@ void validate_fixed_lighting_definition(
             default:
                 throw std::invalid_argument("fixed-light collection contains an unknown light type");
         }
+        validate_per_record_shadow_binding(light);
         if (shared_normal == nullptr) {
             shared_normal = normal;
         } else if (!same_normal_binding(*shared_normal, *normal)) {
@@ -674,6 +797,10 @@ void validate_shadow_state_definition(
         }
         if (fixed_lights.lights[index].type != FixedLightType::Directional) {
             throw std::invalid_argument("multi-light shadow association must target a directional light");
+        }
+        if (fixed_lights.lights[index].directional_shadow.enabled) {
+            throw std::invalid_argument(
+                "directional light cannot use legacy and per-record shadow bindings simultaneously");
         }
     }
 
@@ -716,6 +843,10 @@ void validate_point_shadow_state_definition(
     }
     if (fixed_lights.lights[index].type != FixedLightType::Point) {
         throw std::invalid_argument("point-shadow association must target a point light");
+    }
+    if (fixed_lights.lights[index].point_shadow.enabled) {
+        throw std::invalid_argument(
+            "point light cannot use legacy and per-record shadow bindings simultaneously");
     }
     if (!state.map) {
         throw std::invalid_argument("point shadow mapping requires a depth cubemap");

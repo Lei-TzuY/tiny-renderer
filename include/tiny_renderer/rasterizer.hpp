@@ -133,6 +133,12 @@ struct FixedLight {
     DirectionalLight directional{};
     PointLight point{};
     SpotLight spot{};
+    // Per-record typed shadow bindings. Only the state matching this
+    // record's FixedLightType may be enabled. Trailing placement keeps
+    // existing aggregate initialization source-compatible.
+    ShadowState directional_shadow{};
+    PointShadowState point_shadow{};
+    SpotShadowState spot_shadow{};
 };
 
 struct FixedLightCollection {

@@ -830,6 +830,21 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
     return projected_shadow_visibility(*shadow.map, shadow.bias, light_clip);
 }
 
+float directional_shadow_visibility_world(
+    const ShadowState& shadow,
+    const Vec3& world_position) {
+    if (!shadow.enabled) {
+        return 1.0F;
+    }
+    if (!shadow.map) {
+        throw std::logic_error(
+            "validated per-record directional shadow lost its depth texture");
+    }
+    const Vec4 clip = shadow.light_view_projection
+        * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
+    return projected_shadow_visibility(*shadow.map, shadow.bias, clip);
+}
+
 float spot_shadow_visibility(
     const SpotShadowState& shadow,
     const Vec3& world_position) {
@@ -1096,12 +1111,19 @@ ShadedFragment shade_fragment(
         const FixedLight& light = fixed_lights.lights[i];
         switch (light.type) {
             case FixedLightType::Directional: {
-                const bool is_shadowed = shadow.enabled
-                    && fixed_lights.shadowed_directional_index
-                    && *fixed_lights.shadowed_directional_index == i;
-                const float visibility = is_shadowed
-                    ? shadow_visibility(shadow, light_clip)
-                    : 1.0F;
+                float visibility = 1.0F;
+                if (light.directional_shadow.enabled) {
+                    visibility = directional_shadow_visibility_world(
+                        light.directional_shadow,
+                        world_position);
+                } else {
+                    const bool legacy_shadowed = shadow.enabled
+                        && fixed_lights.shadowed_directional_index
+                        && *fixed_lights.shadowed_directional_index == i;
+                    if (legacy_shadowed) {
+                        visibility = shadow_visibility(shadow, light_clip);
+                    }
+                }
                 shaded = shaded + light_contribution(
                     base,
                     normal,
@@ -1114,12 +1136,23 @@ ShadedFragment shade_fragment(
                 break;
             }
             case FixedLightType::Point: {
-                const bool is_shadowed = point_shadow.enabled
-                    && fixed_lights.shadowed_point_index
-                    && *fixed_lights.shadowed_point_index == i;
-                const float visibility = is_shadowed
-                    ? point_shadow_visibility(point_shadow, light.point, world_position)
-                    : 1.0F;
+                float visibility = 1.0F;
+                if (light.point_shadow.enabled) {
+                    visibility = point_shadow_visibility(
+                        light.point_shadow,
+                        light.point,
+                        world_position);
+                } else {
+                    const bool legacy_shadowed = point_shadow.enabled
+                        && fixed_lights.shadowed_point_index
+                        && *fixed_lights.shadowed_point_index == i;
+                    if (legacy_shadowed) {
+                        visibility = point_shadow_visibility(
+                            point_shadow,
+                            light.point,
+                            world_position);
+                    }
+                }
                 shaded = shaded + light_contribution(
                     base,
                     normal,
@@ -1132,12 +1165,21 @@ ShadedFragment shade_fragment(
                 break;
             }
             case FixedLightType::Spot: {
-                const bool is_shadowed = fixed_lights.spot_shadow_state.enabled
-                    && fixed_lights.shadowed_spot_index
-                    && *fixed_lights.shadowed_spot_index == i;
-                const float visibility = is_shadowed
-                    ? spot_shadow_visibility(fixed_lights.spot_shadow_state, world_position)
-                    : 1.0F;
+                float visibility = 1.0F;
+                if (light.spot_shadow.enabled) {
+                    visibility = spot_shadow_visibility(
+                        light.spot_shadow,
+                        world_position);
+                } else {
+                    const bool legacy_shadowed = fixed_lights.spot_shadow_state.enabled
+                        && fixed_lights.shadowed_spot_index
+                        && *fixed_lights.shadowed_spot_index == i;
+                    if (legacy_shadowed) {
+                        visibility = spot_shadow_visibility(
+                            fixed_lights.spot_shadow_state,
+                            world_position);
+                    }
+                }
                 shaded = shaded + light_contribution(
                     base,
                     normal,
