@@ -25,6 +25,7 @@ struct ModelRenderOptions {
     AlphaTestState alpha_test_state{};
     FragmentProgramPtr fragment_program{};
     VertexProgramPtr vertex_program{};
+    PointLight point_light{};
 };
 
 class PreparedModelSubmission {
