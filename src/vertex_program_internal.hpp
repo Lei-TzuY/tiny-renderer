@@ -61,7 +61,10 @@ inline Vertex apply_vertex_program(
     const VertexProgramOutput output = program->process(
         VertexProgramInput{source.position, source.varyings});
     validate_vertex_program_output(source, output);
-    return Vertex{output.position, output.varyings};
+    Vertex result;
+    result.position = output.position;
+    result.varyings = output.varyings;
+    return result;
 }
 
 inline Triangle apply_vertex_program(
