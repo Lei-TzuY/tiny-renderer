@@ -202,4 +202,11 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_vertex_program_tests tests/test_vertex_program.cpp)
     target_link_libraries(tiny_renderer_vertex_program_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_vertex_program_tests COMMAND tiny_renderer_vertex_program_tests)
+
+    add_executable(tiny_renderer_normal_mapping_tests tests/test_normal_mapping.cpp)
+    target_link_libraries(tiny_renderer_normal_mapping_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_normal_mapping_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_normal_mapping_tests COMMAND tiny_renderer_normal_mapping_tests)
 endif()

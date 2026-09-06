@@ -16,6 +16,7 @@ struct MaterialDraw {
     MaterialState material{};
     std::shared_ptr<const Texture2D> diffuse_texture;
     std::shared_ptr<const Texture2D> opacity_texture;
+    std::shared_ptr<const Texture2D> normal_texture;
 };
 
 struct ModelAsset {

@@ -29,6 +29,7 @@ public:
 
     [[nodiscard]] std::size_t width() const noexcept { return width_; }
     [[nodiscard]] std::size_t height() const noexcept { return height_; }
+    [[nodiscard]] bool texels_within_unit_range() const noexcept { return texels_within_unit_range_; }
     [[nodiscard]] const Vec3& texel(std::size_t x, std::size_t y) const;
     [[nodiscard]] Vec3 sample(const Vec2& uv, const SamplerState& sampler = {}) const;
 
@@ -36,6 +37,7 @@ private:
     std::size_t width_{};
     std::size_t height_{};
     std::vector<Vec3> texels_;
+    bool texels_within_unit_range_{true};
 };
 
 }  // namespace tiny_renderer

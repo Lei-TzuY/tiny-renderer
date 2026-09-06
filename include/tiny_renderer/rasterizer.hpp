@@ -29,6 +29,9 @@ struct TextureBinding {
     // This keeps texture-coordinate ownership singular while allowing an
     // opacity texture even when RGB base color is not texture sourced.
     const Texture2D* opacity_texture{nullptr};
+    // Optional tangent-space normal map. It shares the same UV channels and
+    // sampler and is consumed only by the existing directional-light stage.
+    const Texture2D* normal_texture{nullptr};
 };
 
 enum class BaseColorSource {

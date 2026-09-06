@@ -15,6 +15,12 @@ bool finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+bool within_unit_range(const Vec3& value) {
+    return value.x >= 0.0F && value.x <= 1.0F
+        && value.y >= 0.0F && value.y <= 1.0F
+        && value.z >= 0.0F && value.z <= 1.0F;
+}
+
 float address_coordinate(float value, AddressMode mode) {
     if (!std::isfinite(value)) {
         throw std::invalid_argument("texture coordinate must be finite");
@@ -77,6 +83,7 @@ Texture2D::Texture2D(std::size_t width, std::size_t height, std::vector<Vec3> te
         if (!finite(value)) {
             throw std::invalid_argument("texture texels must be finite");
         }
+        texels_within_unit_range_ = texels_within_unit_range_ && within_unit_range(value);
     }
 }
 

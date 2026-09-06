@@ -73,6 +73,7 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
     std::map<std::string, std::shared_ptr<const Texture2D>> texture_cache;
     std::map<std::string, std::shared_ptr<const Texture2D>> material_diffuse_textures;
     std::map<std::string, std::shared_ptr<const Texture2D>> material_opacity_textures;
+    std::map<std::string, std::shared_ptr<const Texture2D>> material_normal_textures;
     for (const auto& [name, definition] : library) {
         material_diffuse_textures.emplace(
             name,
@@ -86,6 +87,12 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
                 library_path.parent_path(),
                 definition.opacity_map_filename,
                 texture_cache));
+        material_normal_textures.emplace(
+            name,
+            load_owned_texture(
+                library_path.parent_path(),
+                definition.normal_map_filename,
+                texture_cache));
     }
 
     for (std::size_t face = 0U; face < asset.mesh.triangles.size(); ++face) {
@@ -98,6 +105,7 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
             draw.material = definition.material;
             draw.diffuse_texture = material_diffuse_textures.at(material_name);
             draw.opacity_texture = material_opacity_textures.at(material_name);
+            draw.normal_texture = material_normal_textures.at(material_name);
             asset.draws.push_back(std::move(draw));
         }
         ++asset.draws.back().range.triangle_count;
@@ -123,6 +131,7 @@ std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::
         batch.material = draw.material;
         batch.diffuse_texture = draw.diffuse_texture;
         batch.opacity_texture = draw.opacity_texture;
+        batch.normal_texture = draw.normal_texture;
         batches.push_back(std::move(batch));
     }
     return batches;

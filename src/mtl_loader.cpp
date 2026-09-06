@@ -22,6 +22,7 @@ struct PendingMaterial {
     bool has_map_kd{false};
     bool has_d{false};
     bool has_map_d{false};
+    bool has_map_bump{false};
 };
 
 [[noreturn]] void fail(std::size_t line, const std::string& message) {
@@ -94,7 +95,7 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
             if (library.find(name) != library.end()) {
                 fail(line_number, "duplicate material name '" + name + "'");
             }
-            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false, false, false};
+            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false, false, false, false};
             continue;
         }
 
@@ -171,6 +172,24 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
             validate_sibling_texture_filename(filename, line_number, "map_d");
             pending->asset.opacity_map_filename = filename;
             pending->has_map_d = true;
+            continue;
+        }
+
+        if (directive == "map_Bump" && allow_maps) {
+            if (!pending) {
+                fail(line_number, "map_Bump requires a preceding newmtl");
+            }
+            if (pending->has_map_bump) {
+                fail(line_number, "material '" + pending->name + "' defines map_Bump more than once");
+            }
+            std::string filename;
+            std::string extra;
+            if (!(line >> filename) || (line >> extra)) {
+                fail(line_number, "map_Bump must contain exactly one filename and no options");
+            }
+            validate_sibling_texture_filename(filename, line_number, "map_Bump");
+            pending->asset.normal_map_filename = filename;
+            pending->has_map_bump = true;
             continue;
         }
 
