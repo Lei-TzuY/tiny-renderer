@@ -1,5 +1,7 @@
 #include <cstddef>
+#include <exception>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -47,8 +49,8 @@ void test_file_driven_summary_is_deterministic_and_ordered() {
     check(first_summary.starts_with(
               "format=tiny-renderer-model-asset-inspect-v1\n" + fingerprint_line(first)),
           "inspection output begins with versioned format and canonical fingerprint");
-    check(first_summary.find("vertices=9\n") != std::string::npos,
-          "inspection exposes canonical vertex count");
+    check(first_summary.find("vertices=4\n") != std::string::npos,
+          "inspection exposes four canonical unified vertices from the fixture");
     check(first_summary.find("triangles=3\n") != std::string::npos,
           "inspection exposes canonical triangle count");
     check(first_summary.find("draws=3\n") != std::string::npos,
