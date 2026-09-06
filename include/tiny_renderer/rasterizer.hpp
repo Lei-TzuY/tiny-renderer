@@ -30,7 +30,7 @@ struct TextureBinding {
     // opacity texture even when RGB base color is not texture sourced.
     const Texture2D* opacity_texture{nullptr};
     // Optional tangent-space normal map. It shares the same UV channels and
-    // sampler and is consumed only by the existing directional-light stage.
+    // sampler and is consumed only by the existing fixed-light stage.
     const Texture2D* normal_texture{nullptr};
 };
 
@@ -103,6 +103,20 @@ struct DirectionalLight {
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
 };
 
+struct PointLight {
+    bool enabled{false};
+    NormalBinding normal{};
+    Vec3 position{0.0F, 0.0F, 1.0F};
+    float ambient{0.0F};
+    float diffuse{1.0F};
+    Vec3 viewer_position{0.0F, 0.0F, 0.0F};
+    // Diffuse/specular attenuation is exactly
+    // 1 / (1 + linear * distance + quadratic * distance^2). Ambient is not
+    // attenuated. Coefficients must be finite and non-negative.
+    float linear_attenuation{0.0F};
+    float quadratic_attenuation{0.0F};
+};
+
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);
 [[nodiscard]] std::optional<Vec3> barycentric_coordinates(const Vec2& a, const Vec2& b, const Vec2& c, const Vec2& p);
 [[nodiscard]] bool barycentric_inside(const Vec3& barycentric, float epsilon = 1.0e-6F);
@@ -126,7 +140,8 @@ public:
         ShadowState shadow_state = {},
         AlphaTestState alpha_test_state = {},
         FragmentProgramPtr fragment_program = {},
-        VertexProgramPtr vertex_program = {})
+        VertexProgramPtr vertex_program = {},
+        PointLight point_light = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -143,7 +158,8 @@ public:
           shadow_state_(shadow_state),
           alpha_test_state_(alpha_test_state),
           fragment_program_(std::move(fragment_program)),
-          vertex_program_(std::move(vertex_program)) {}
+          vertex_program_(std::move(vertex_program)),
+          point_light_(point_light) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -175,6 +191,7 @@ private:
     AlphaTestState alpha_test_state_;
     FragmentProgramPtr fragment_program_;
     VertexProgramPtr vertex_program_;
+    PointLight point_light_;
 };
 
 }  // namespace tiny_renderer
