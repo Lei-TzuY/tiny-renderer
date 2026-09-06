@@ -26,6 +26,9 @@ void validate_shadow_state_definition(
     const ShadowState& state,
     const DirectionalLight& directional_light,
     const FixedLightCollection& fixed_lights);
+void validate_point_shadow_state_definition(
+    const PointShadowState& state,
+    const FixedLightCollection& fixed_lights);
 [[nodiscard]] bool fixed_lighting_enabled(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
@@ -71,6 +74,7 @@ void preflight_mesh_range_submission(
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
     const ShadowState& shadow_state,
+    const PointShadowState& point_shadow_state,
     const Mat4* model,
     bool mvp_only);
 
