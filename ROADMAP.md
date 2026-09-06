@@ -129,22 +129,35 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Regression coverage locks 1× deterministic compatibility, quarter-edge coverage, exact shared-edge sample ownership, per-sample depth/stencil isolation, source-alpha-before-resolve behavior, clipped/scissored multisample side effects, prepared-list equivalence, and storage validation.
 - This first multisample slice does not claim configurable sample locations, alpha-to-coverage, sample masks, centroid interpolation, temporal antialiasing, coverage-shading optimization, or performance improvement.
 
-## Next frontier — Milestone 30
+### Milestone 30 — owned MTL `map_d` opacity textures
 
-The next architectural promotion is **owned MTL `map_d` opacity maps integrated through material submission and fragment opacity**. Material opacity is currently uniform per draw, so textured cutout/transparency information cannot travel from an imported asset through the same verified opacity/blend/MSAA pipeline.
+- The bounded rich MTL path accepts one optional `map_d <filename>` per material with the same sibling-only path safety and deterministic malformed/duplicate diagnostics used for mapped diffuse assets; the legacy strict material-only loader still rejects map directives.
+- `MaterialAssetDefinition`, `MaterialDraw`, and compatibility material batches retain optional opacity-texture ownership, while diffuse and opacity roles share one decoded texture cache so identical referenced files reuse the same `shared_ptr`.
+- `TextureBinding` keeps one UV channel pair and one sampler for both texture roles; opacity-only materials therefore reuse the established texture-coordinate path rather than introducing independent opacity UV state.
+- Direct and shared range/model preflight require valid finite-safe UV varyings whenever either RGB texture sampling or opacity sampling needs them, so malformed opacity bindings reject before framebuffer mutation.
+- A sampled opacity map contributes `clamp((r + g + b) / 3, 0, 1)` in the current linear teaching space, and final fragment opacity is uniform material `d` multiplied by that scalar. This is a deterministic arithmetic rule, not a luminance or colorimetric claim.
+- Lighting remains RGB-only; sampled opacity travels independently through the existing `ShadedFragment` and source-alpha framebuffer ownership path.
+- Direct model submission, prepared plans, instance batches, and heterogeneous prepared lists retain opacity-texture lifetime and reuse the same raster/shading path on single-sample and 4× targets.
+- Regression coverage locks rich/legacy MTL strictness, path rejection, cross-role/material texture deduplication, retained lifetime, the documented scalar rule, fail-closed invalid UV state, imported-versus-programmatic 1×/4× equivalence, and exact prepared-list sample storage on 4× targets.
+- The milestone does not add destination alpha, alpha test/discard, alpha-to-coverage, automatic transparency sorting, order-independent transparency, independent opacity UV transforms/samplers, new image formats, or physically based transmission.
+
+## Next frontier — Milestone 31
+
+The next architectural promotion is **deterministic alpha-to-coverage for the existing 4× multisample target**. M29 provides per-sample ownership and M30 provides spatially varying verified opacity; the next useful cross-layer step is to let that opacity suppress sample ownership before stencil/depth/blend mutation rather than only attenuating RGB through source-alpha blending.
 
 Acceptance for that slice should require:
 
-- the bounded rich MTL path accepts at most one `map_d <filename>` per material with the same sibling-path safety and deterministic duplicate/malformed diagnostics used for existing mapped assets;
-- `MaterialDraw` owns an optional opacity texture with shared lifetime semantics matching diffuse `map_Kd`, including deterministic deduplication when repeated materials reference the same file;
-- opacity maps reuse the material draw's existing UV channels and sampler state rather than introducing a parallel coordinate path or texture-transform syntax;
-- the RGB `Texture2D` sample is converted to one bounded opacity scalar by a single documented rule in the renderer's current linear teaching color space, and fragment opacity becomes material `d` multiplied by that sampled scalar;
-- missing `map_d` preserves every existing uniform-opacity result byte/hash-identically, while a present opacity map requires valid UV varyings and fails closed before framebuffer mutation when the binding is invalid;
-- direct model submission, prepared plans, instance batches, and heterogeneous prepared lists preserve owned opacity-texture lifetime and execute through the existing shading/raster path;
-- deterministic file-driven regressions compare imported `map_d` assets with equivalent programmatic opacity-texture submission under source-alpha blending on both 1× and 4× targets, including clipping/scissor and prepared/list propagation;
-- the slice does not add destination alpha, image formats beyond the existing bounded PPM path, alpha test/discard, alpha-to-coverage, automatic transparency sorting, order-independent transparency, or physically based transmission;
-- no performance or colorimetric claim is made without controlled evidence.
+- an explicit alpha-to-coverage raster state that is disabled by default and propagates through direct triangles/meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists without a second raster path;
+- enabling alpha-to-coverage requires the existing deterministic 4× framebuffer target and rejects incompatible single-sample execution before framebuffer mutation rather than inventing an undocumented 1× threshold behavior;
+- after geometric top-left coverage, interpolation, and fragment shading produce a bounded opacity scalar, that opacity deterministically quantizes to an integer coverage count from zero through four using one documented rule and intersects the existing fixed sample order rather than changing sample locations;
+- samples rejected by the alpha-derived coverage mask must not run stencil compare/update, depth test/write, blending, or RGB write-mask ownership;
+- opacity zero rejects all samples and opacity one preserves every geometrically covered sample; threshold-boundary regressions lock the exact quantization rule and fixed sample ordering;
+- `map_d` opacity is evaluated at the existing per-sample shading positions, so textured alpha-to-coverage remains compatible with perspective interpolation, clipping, viewport/scissor, lighting, and the fixed 4× sample pattern;
+- alpha-to-coverage only gates sample ownership and does not silently rewrite caller blend state or fragment opacity, making its composition with source-alpha blending explicit and regression-covered rather than hidden;
+- deterministic regressions cover uniform opacity levels, opacity-texture variation, rejected-sample depth/stencil immutability, clipping/scissor interaction, prepared/list propagation, disabled-state byte/hash compatibility, and fail-closed 1× execution;
+- the slice does not add programmable sample masks/locations, alpha test/discard, temporal dithering, centroid interpolation, destination alpha, transparency sorting/OIT, or performance-quality claims;
+- no antialiasing-quality or performance claim is made without controlled evidence.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, alpha-to-coverage, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, alpha test/discard, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
