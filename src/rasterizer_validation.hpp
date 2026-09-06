@@ -18,12 +18,27 @@ void validate_viewport_state_definition(const ViewportState& state);
 void validate_alpha_to_coverage_target(
     const Framebuffer& framebuffer,
     const AlphaToCoverageState& state);
-void validate_shadow_state_definition(
-    const ShadowState& state,
-    bool directional_light_enabled);
 void validate_fixed_lighting_definition(
     const DirectionalLight& directional_light,
-    const PointLight& point_light);
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights);
+void validate_shadow_state_definition(
+    const ShadowState& state,
+    const DirectionalLight& directional_light,
+    const FixedLightCollection& fixed_lights);
+[[nodiscard]] bool fixed_lighting_enabled(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights);
+[[nodiscard]] const NormalBinding* active_normal_binding(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights);
+[[nodiscard]] bool fixed_lighting_world_position_required(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
+    const MaterialState& material);
 
 inline void validate_alpha_test_state(const AlphaTestState& state) {
     if (!std::isfinite(state.threshold)
@@ -45,6 +60,7 @@ void preflight_mesh_range_submission(
     const TextureBinding& texture_binding,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material_state,
     BaseColorSource base_color_source,
     CullMode cull_mode,

@@ -29,30 +29,77 @@ bool material_has_specular(const MaterialState& material) {
         || material.specular.z > 0.0F;
 }
 
-bool fixed_lighting_enabled(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light) {
-    return directional_light.enabled || point_light.enabled;
+bool same_normal_binding(const NormalBinding& a, const NormalBinding& b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
-const NormalBinding* active_normal_binding(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light) {
-    if (directional_light.enabled) {
-        return &directional_light.normal;
+void validate_light_coefficients(float ambient, float diffuse, const char* label) {
+    if (!std::isfinite(ambient) || !std::isfinite(diffuse)
+        || ambient < 0.0F || diffuse < 0.0F
+        || ambient > 1.0F || diffuse > 1.0F
+        || ambient + diffuse > 1.0F + kEpsilon) {
+        throw std::invalid_argument(
+            std::string(label)
+            + " coefficients must be finite, non-negative, and sum to at most one");
     }
-    if (point_light.enabled) {
-        return &point_light.normal;
-    }
-    return nullptr;
 }
 
-bool world_position_required(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light,
-    const MaterialState& material) {
-    return point_light.enabled
-        || (directional_light.enabled && material_has_specular(material));
+void validate_directional_light(const DirectionalLight& light) {
+    if (!finite_vec3(light.direction_to_light)
+        || length(light.direction_to_light) <= kEpsilon) {
+        throw std::invalid_argument("directional light direction must be finite and non-zero");
+    }
+    if (!finite_vec3(light.viewer_position)) {
+        throw std::invalid_argument("directional light viewer position must be finite");
+    }
+    validate_light_coefficients(light.ambient, light.diffuse, "directional light");
+}
+
+void validate_point_light(const PointLight& light) {
+    if (!finite_vec3(light.position)) {
+        throw std::invalid_argument("point light position must be finite");
+    }
+    if (!finite_vec3(light.viewer_position)) {
+        throw std::invalid_argument("point light viewer position must be finite");
+    }
+    validate_light_coefficients(light.ambient, light.diffuse, "point light");
+    if (!std::isfinite(light.linear_attenuation)
+        || !std::isfinite(light.quadratic_attenuation)
+        || light.linear_attenuation < 0.0F
+        || light.quadratic_attenuation < 0.0F) {
+        throw std::invalid_argument(
+            "point light attenuation coefficients must be finite and non-negative");
+    }
+}
+
+const NormalBinding& selected_normal_binding(const FixedLight& light) {
+    switch (light.type) {
+        case FixedLightType::Directional:
+            return light.directional.normal;
+        case FixedLightType::Point:
+            return light.point.normal;
+    }
+    throw std::logic_error("validated fixed-light collection contains an unknown light type");
+}
+
+bool collection_has_directional(const FixedLightCollection& fixed_lights) {
+    const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+    for (std::size_t i = 0U; i < count; ++i) {
+        if (fixed_lights.lights[i].type == FixedLightType::Directional) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool collection_has_point(const FixedLightCollection& fixed_lights) {
+    const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+    for (std::size_t i = 0U; i < count; ++i) {
+        if (fixed_lights.lights[i].type == FixedLightType::Point) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool finite_mat4(const Mat4& matrix) {
@@ -145,17 +192,6 @@ void validate_material_state(const MaterialState& material) {
     }
 }
 
-void validate_light_coefficients(float ambient, float diffuse, const char* label) {
-    if (!std::isfinite(ambient) || !std::isfinite(diffuse)
-        || ambient < 0.0F || diffuse < 0.0F
-        || ambient > 1.0F || diffuse > 1.0F
-        || ambient + diffuse > 1.0F + kEpsilon) {
-        throw std::invalid_argument(
-            std::string(label)
-            + " coefficients must be finite, non-negative, and sum to at most one");
-    }
-}
-
 void validate_pack(const VaryingPack& pack) {
     if (pack.count > kMaxVaryings) {
         throw std::invalid_argument("varying pack count exceeds fixed capacity");
@@ -196,7 +232,6 @@ void validate_output_binding(
             }
             break;
         case BaseColorSource::Texture:
-            break;
         case BaseColorSource::ConstantWhite:
             break;
         case BaseColorSource::Auto:
@@ -305,9 +340,11 @@ void preflight_lighting_world_positions(
     const Mesh& mesh,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material,
     const Mat4& model) {
-    if (!world_position_required(directional_light, point_light, material)) {
+    if (!fixed_lighting_world_position_required(
+            directional_light, point_light, fixed_lights, material)) {
         return;
     }
     for (const Vertex& vertex : mesh.vertices) {
@@ -351,6 +388,45 @@ void preflight_tangent_frames(
 
 }  // namespace
 
+bool fixed_lighting_enabled(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights) {
+    return directional_light.enabled || point_light.enabled || fixed_lights.count != 0U;
+}
+
+const NormalBinding* active_normal_binding(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights) {
+    if (fixed_lights.count != 0U) {
+        if (fixed_lights.count > kMaxFixedLights) {
+            return nullptr;
+        }
+        return &selected_normal_binding(fixed_lights.lights[0]);
+    }
+    if (directional_light.enabled) {
+        return &directional_light.normal;
+    }
+    if (point_light.enabled) {
+        return &point_light.normal;
+    }
+    return nullptr;
+}
+
+bool fixed_lighting_world_position_required(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
+    const MaterialState& material) {
+    if (fixed_lights.count != 0U) {
+        return collection_has_point(fixed_lights)
+            || (material_has_specular(material) && collection_has_directional(fixed_lights));
+    }
+    return point_light.enabled
+        || (directional_light.enabled && material_has_specular(material));
+}
+
 void validate_face_culling(CullMode cull_mode, FrontFace front_face) {
     switch (cull_mode) {
         case CullMode::None:
@@ -390,15 +466,96 @@ void validate_alpha_to_coverage_target(
     }
 }
 
-void validate_shadow_state_definition(
-    const ShadowState& state,
-    bool directional_light_enabled) {
-    if (!state.enabled) {
+void validate_fixed_lighting_definition(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights) {
+    if (fixed_lights.count > kMaxFixedLights) {
+        throw std::invalid_argument("fixed-light collection exceeds its bounded capacity");
+    }
+    if (fixed_lights.count == 0U) {
+        if (directional_light.enabled && point_light.enabled) {
+            throw std::invalid_argument("legacy directional and point lights are mutually exclusive");
+        }
+        if (directional_light.enabled) {
+            validate_directional_light(directional_light);
+        }
+        if (point_light.enabled) {
+            validate_point_light(point_light);
+        }
         return;
     }
-    if (!directional_light_enabled) {
-        throw std::invalid_argument("directional shadow mapping requires an enabled directional light");
+
+    if (directional_light.enabled || point_light.enabled) {
+        throw std::invalid_argument(
+            "fixed-light collection is mutually exclusive with legacy single-light state");
     }
+
+    const NormalBinding* shared_normal = nullptr;
+    for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
+        const FixedLight& light = fixed_lights.lights[i];
+        const NormalBinding* normal = nullptr;
+        switch (light.type) {
+            case FixedLightType::Directional:
+                if (!light.directional.enabled || light.point.enabled) {
+                    throw std::invalid_argument(
+                        "directional collection record requires only its directional payload enabled");
+                }
+                validate_directional_light(light.directional);
+                normal = &light.directional.normal;
+                break;
+            case FixedLightType::Point:
+                if (!light.point.enabled || light.directional.enabled) {
+                    throw std::invalid_argument(
+                        "point collection record requires only its point payload enabled");
+                }
+                validate_point_light(light.point);
+                normal = &light.point.normal;
+                break;
+            default:
+                throw std::invalid_argument("fixed-light collection contains an unknown light type");
+        }
+        if (shared_normal == nullptr) {
+            shared_normal = normal;
+        } else if (!same_normal_binding(*shared_normal, *normal)) {
+            throw std::invalid_argument("fixed-light collection must share one normal binding");
+        }
+    }
+}
+
+void validate_shadow_state_definition(
+    const ShadowState& state,
+    const DirectionalLight& directional_light,
+    const FixedLightCollection& fixed_lights) {
+    if (fixed_lights.count == 0U) {
+        if (fixed_lights.shadowed_directional_index) {
+            throw std::invalid_argument("legacy fixed lighting cannot name a collection shadow index");
+        }
+        if (!state.enabled) {
+            return;
+        }
+        if (!directional_light.enabled) {
+            throw std::invalid_argument("directional shadow mapping requires an enabled directional light");
+        }
+    } else {
+        if (!state.enabled) {
+            if (fixed_lights.shadowed_directional_index) {
+                throw std::invalid_argument("shadow association requires enabled shadow state");
+            }
+            return;
+        }
+        if (!fixed_lights.shadowed_directional_index) {
+            throw std::invalid_argument("multi-light shadow mapping requires a directional light association");
+        }
+        const std::size_t index = *fixed_lights.shadowed_directional_index;
+        if (index >= fixed_lights.count) {
+            throw std::out_of_range("multi-light shadow association exceeds the fixed-light collection");
+        }
+        if (fixed_lights.lights[index].type != FixedLightType::Directional) {
+            throw std::invalid_argument("multi-light shadow association must target a directional light");
+        }
+    }
+
     if (!state.map) {
         throw std::invalid_argument("directional shadow mapping requires a depth texture");
     }
@@ -407,45 +564,6 @@ void validate_shadow_state_definition(
     }
     if (!finite_mat4(state.light_view_projection)) {
         throw std::invalid_argument("directional shadow light view-projection transform must be finite");
-    }
-}
-
-void validate_fixed_lighting_definition(
-    const DirectionalLight& directional_light,
-    const PointLight& point_light) {
-    if (directional_light.enabled && point_light.enabled) {
-        throw std::invalid_argument("directional and point lights are mutually exclusive");
-    }
-
-    if (directional_light.enabled) {
-        if (!finite_vec3(directional_light.direction_to_light)
-            || length(directional_light.direction_to_light) <= kEpsilon) {
-            throw std::invalid_argument("directional light direction must be finite and non-zero");
-        }
-        if (!finite_vec3(directional_light.viewer_position)) {
-            throw std::invalid_argument("directional light viewer position must be finite");
-        }
-        validate_light_coefficients(
-            directional_light.ambient,
-            directional_light.diffuse,
-            "directional light");
-    }
-
-    if (point_light.enabled) {
-        if (!finite_vec3(point_light.position)) {
-            throw std::invalid_argument("point light position must be finite");
-        }
-        if (!finite_vec3(point_light.viewer_position)) {
-            throw std::invalid_argument("point light viewer position must be finite");
-        }
-        validate_light_coefficients(point_light.ambient, point_light.diffuse, "point light");
-        if (!std::isfinite(point_light.linear_attenuation)
-            || !std::isfinite(point_light.quadratic_attenuation)
-            || point_light.linear_attenuation < 0.0F
-            || point_light.quadratic_attenuation < 0.0F) {
-            throw std::invalid_argument(
-                "point light attenuation coefficients must be finite and non-negative");
-        }
     }
 }
 
@@ -481,6 +599,7 @@ void preflight_mesh_range_submission(
     const TextureBinding& texture_binding,
     const DirectionalLight& directional_light,
     const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
     const MaterialState& material_state,
     BaseColorSource base_color_source,
     CullMode cull_mode,
@@ -494,8 +613,9 @@ void preflight_mesh_range_submission(
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
-    validate_fixed_lighting_definition(directional_light, point_light);
-    const bool lighting_enabled = fixed_lighting_enabled(directional_light, point_light);
+    validate_fixed_lighting_definition(directional_light, point_light, fixed_lights);
+    const bool lighting_enabled = fixed_lighting_enabled(
+        directional_light, point_light, fixed_lights);
     if (mvp_only && (lighting_enabled || shadow_state.enabled)) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
@@ -512,11 +632,12 @@ void preflight_mesh_range_submission(
     validate_blend_state(blend_state);
     validate_raster_target(framebuffer);
     validate_alpha_to_coverage_target(framebuffer, alpha_to_coverage_state);
-    validate_shadow_state_definition(shadow_state, directional_light.enabled);
+    validate_shadow_state_definition(shadow_state, directional_light, fixed_lights);
     (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
-    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
+    const NormalBinding* normal_binding = active_normal_binding(
+        directional_light, point_light, fixed_lights);
     validate_mesh_range(mesh, range, color_binding, texture_binding, source, normal_binding);
 
     if (normal_binding != nullptr && !mesh.vertices.empty()) {
@@ -530,6 +651,7 @@ void preflight_mesh_range_submission(
             mesh,
             directional_light,
             point_light,
+            fixed_lights,
             material_state,
             *model);
     }

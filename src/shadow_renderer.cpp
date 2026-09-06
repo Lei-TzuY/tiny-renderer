@@ -101,6 +101,7 @@ void preflight_shadow_entries(
                 shadow_texture_binding(draw, options),
                 {},
                 {},
+                {},
                 draw.material,
                 BaseColorSource::ConstantWhite,
                 cull_mode,

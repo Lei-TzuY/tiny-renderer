@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -25,12 +26,7 @@ struct TextureBinding {
     std::size_t u_channel{0U};
     std::size_t v_channel{1U};
     SamplerState sampler{};
-    // Optional opacity-map role sharing the same UV channels and sampler.
-    // This keeps texture-coordinate ownership singular while allowing an
-    // opacity texture even when RGB base color is not texture sourced.
     const Texture2D* opacity_texture{nullptr};
-    // Optional tangent-space normal map. It shares the same UV channels and
-    // sampler and is consumed only by the existing fixed-light stage.
     const Texture2D* normal_texture{nullptr};
 };
 
@@ -47,9 +43,6 @@ enum class CullMode {
     Front,
 };
 
-// Front-face winding is defined in normalized device coordinates after
-// homogeneous clipping and perspective divide, before the framebuffer's
-// top-left-origin viewport transform can invert Y orientation.
 enum class FrontFace {
     CounterClockwise,
     Clockwise,
@@ -63,24 +56,15 @@ struct RasterRect {
 };
 
 struct ViewportState {
-    // null viewport means the complete framebuffer. A present viewport must
-    // have non-zero extent and fit fully inside the target.
     std::optional<RasterRect> viewport{};
-    // null scissor disables scissoring. A zero-extent present scissor is a
-    // valid deterministic empty clip; non-empty scissors use half-open bounds.
     std::optional<RasterRect> scissor{};
 };
 
 struct AlphaToCoverageState {
-    // Alpha-to-coverage is deliberately a raster coverage state rather than a
-    // framebuffer ownership state. When enabled it requires a 4x target.
     bool enabled{false};
 };
 
 struct AlphaTestState {
-    // A fragment/sample survives exactly when opacity >= threshold. The test
-    // runs after opacity interpolation/sampling and before framebuffer
-    // ownership or alpha-to-coverage.
     bool enabled{false};
     float threshold{0.5F};
 };
@@ -97,9 +81,6 @@ struct DirectionalLight {
     Vec3 direction_to_light{0.0F, 0.0F, 1.0F};
     float ambient{0.0F};
     float diffuse{1.0F};
-    // Explicit world-space eye position for view-dependent specular lighting.
-    // It must be finite whenever directional lighting is enabled, but affects
-    // shading only while the bound material has non-zero specular reflectance.
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
 };
 
@@ -110,11 +91,27 @@ struct PointLight {
     float ambient{0.0F};
     float diffuse{1.0F};
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
-    // Diffuse/specular attenuation is exactly
-    // 1 / (1 + linear * distance + quadratic * distance^2). Ambient is not
-    // attenuated. Coefficients must be finite and non-negative.
     float linear_attenuation{0.0F};
     float quadratic_attenuation{0.0F};
+};
+
+constexpr std::size_t kMaxFixedLights = 4U;
+
+enum class FixedLightType {
+    Directional,
+    Point,
+};
+
+struct FixedLight {
+    FixedLightType type{FixedLightType::Directional};
+    DirectionalLight directional{};
+    PointLight point{};
+};
+
+struct FixedLightCollection {
+    std::array<FixedLight, kMaxFixedLights> lights{};
+    std::size_t count{0U};
+    std::optional<std::size_t> shadowed_directional_index{};
 };
 
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);
@@ -141,7 +138,8 @@ public:
         AlphaTestState alpha_test_state = {},
         FragmentProgramPtr fragment_program = {},
         VertexProgramPtr vertex_program = {},
-        PointLight point_light = {})
+        PointLight point_light = {},
+        FixedLightCollection fixed_lights = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -159,7 +157,8 @@ public:
           alpha_test_state_(alpha_test_state),
           fragment_program_(std::move(fragment_program)),
           vertex_program_(std::move(vertex_program)),
-          point_light_(point_light) {}
+          point_light_(point_light),
+          fixed_lights_(fixed_lights) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -192,6 +191,7 @@ private:
     FragmentProgramPtr fragment_program_;
     VertexProgramPtr vertex_program_;
     PointLight point_light_;
+    FixedLightCollection fixed_lights_;
 };
 
 }  // namespace tiny_renderer
