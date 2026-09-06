@@ -24,6 +24,7 @@ struct ModelRenderOptions {
     ShadowState shadow_state{};
     AlphaTestState alpha_test_state{};
     FragmentProgramPtr fragment_program{};
+    VertexProgramPtr vertex_program{};
 };
 
 class PreparedModelSubmission {
