@@ -106,7 +106,7 @@ void validate_color_binding(const ColorBinding& binding, std::size_t varying_cou
 }
 
 void validate_texture_binding(const TextureBinding& binding, std::size_t varying_count) {
-    if (binding.texture == nullptr) {
+    if (binding.texture == nullptr && binding.opacity_texture == nullptr) {
         return;
     }
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
@@ -157,23 +157,24 @@ void validate_output_binding(
     switch (source) {
         case BaseColorSource::VaryingColor:
             validate_color_binding(color_binding, varying_count);
-            return;
+            break;
         case BaseColorSource::Texture:
-            validate_texture_binding(texture_binding, varying_count);
-            return;
+            break;
         case BaseColorSource::ConstantWhite:
-            return;
+            break;
         case BaseColorSource::Auto:
             throw std::logic_error("automatic base-color source must be resolved before validation");
     }
-    throw std::logic_error("unreachable base-color source validation state");
+    if (source == BaseColorSource::Texture || texture_binding.opacity_texture != nullptr) {
+        validate_texture_binding(texture_binding, varying_count);
+    }
 }
 
 void validate_texture_coordinates(
     const VaryingPack& pack,
     const TextureBinding& binding,
     BaseColorSource source) {
-    if (source != BaseColorSource::Texture) {
+    if (source != BaseColorSource::Texture && binding.opacity_texture == nullptr) {
         return;
     }
     const float u = pack.values[binding.u_channel];
@@ -578,6 +579,26 @@ Vec3 base_fragment_color(
     throw std::logic_error("unreachable base-color source shading state");
 }
 
+float fragment_opacity(
+    const VaryingPack& varyings,
+    const TextureBinding& texture_binding,
+    const MaterialState& material) {
+    if (texture_binding.opacity_texture == nullptr) {
+        return material.opacity;
+    }
+    const Vec3 sampled = texture_binding.opacity_texture->sample(
+        {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+        texture_binding.sampler);
+    // Texture2D stores RGB only. For bounded teaching-space opacity maps we use
+    // the arithmetic mean of sampled linear RGB, clamped to [0,1]. This is a
+    // deterministic scalar rule, not a luminance or colorimetric claim.
+    const float map_opacity = std::clamp(
+        (sampled.x + sampled.y + sampled.z) / 3.0F,
+        0.0F,
+        1.0F);
+    return material.opacity * map_opacity;
+}
+
 ShadedFragment shade_fragment(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
@@ -591,8 +612,9 @@ ShadedFragment shade_fragment(
         source_color.y * material.albedo.y,
         source_color.z * material.albedo.z,
     };
+    const float opacity = fragment_opacity(varyings, texture_binding, material);
     if (!light.enabled) {
-        return {base, material.opacity};
+        return {base, opacity};
     }
 
     const Vec3 interpolated_normal{
@@ -601,17 +623,17 @@ ShadedFragment shade_fragment(
         varyings.values[light.normal.z],
     };
     if (!finite_vec3(interpolated_normal)) {
-        return {base * light.ambient, material.opacity};
+        return {base * light.ambient, opacity};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {base * light.ambient, material.opacity};
+        return {base * light.ambient, opacity};
     }
 
     const Vec3 normal = interpolated_normal / normal_length;
     const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
     const float intensity = light.ambient + light.diffuse * lambert;
-    return {base * intensity, material.opacity};
+    return {base * intensity, opacity};
 }
 
 void rasterize_screen_triangle(
