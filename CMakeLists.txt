@@ -187,4 +187,11 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_shadow_tests tests/test_shadow.cpp)
     target_link_libraries(tiny_renderer_shadow_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_shadow_tests COMMAND tiny_renderer_shadow_tests)
+
+    add_executable(tiny_renderer_alpha_test_tests tests/test_alpha_test.cpp)
+    target_link_libraries(tiny_renderer_alpha_test_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_alpha_test_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_alpha_test_tests COMMAND tiny_renderer_alpha_test_tests)
 endif()

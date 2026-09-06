@@ -22,6 +22,7 @@ struct ModelRenderOptions {
     BlendState blend_state{};
     AlphaToCoverageState alpha_to_coverage_state{};
     ShadowState shadow_state{};
+    AlphaTestState alpha_test_state{};
 };
 
 class PreparedModelSubmission {

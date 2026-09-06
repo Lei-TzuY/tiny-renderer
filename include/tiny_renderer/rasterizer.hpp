@@ -71,6 +71,14 @@ struct AlphaToCoverageState {
     bool enabled{false};
 };
 
+struct AlphaTestState {
+    // A fragment/sample survives exactly when opacity >= threshold. The test
+    // runs after opacity interpolation/sampling and before framebuffer
+    // ownership or alpha-to-coverage.
+    bool enabled{false};
+    float threshold{0.5F};
+};
+
 struct NormalBinding {
     std::size_t x{0U};
     std::size_t y{1U};
@@ -105,7 +113,8 @@ public:
         StencilState stencil_state = {},
         BlendState blend_state = {},
         AlphaToCoverageState alpha_to_coverage_state = {},
-        ShadowState shadow_state = {})
+        ShadowState shadow_state = {},
+        AlphaTestState alpha_test_state = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -119,7 +128,8 @@ public:
           stencil_state_(stencil_state),
           blend_state_(blend_state),
           alpha_to_coverage_state_(alpha_to_coverage_state),
-          shadow_state_(shadow_state) {}
+          shadow_state_(shadow_state),
+          alpha_test_state_(alpha_test_state) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -148,6 +158,7 @@ private:
     BlendState blend_state_;
     AlphaToCoverageState alpha_to_coverage_state_;
     ShadowState shadow_state_;
+    AlphaTestState alpha_test_state_;
 };
 
 }  // namespace tiny_renderer

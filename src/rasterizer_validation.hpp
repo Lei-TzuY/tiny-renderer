@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cmath>
 #include <optional>
+#include <stdexcept>
 
 #include "tiny_renderer/rasterizer.hpp"
 
@@ -19,6 +21,15 @@ void validate_alpha_to_coverage_target(
 void validate_shadow_state_definition(
     const ShadowState& state,
     bool directional_light_enabled);
+
+inline void validate_alpha_test_state(const AlphaTestState& state) {
+    if (!std::isfinite(state.threshold)
+        || state.threshold < 0.0F
+        || state.threshold > 1.0F) {
+        throw std::invalid_argument("alpha test threshold must be finite and within [0, 1]");
+    }
+}
+
 [[nodiscard]] ResolvedViewportState resolve_viewport_state(
     const Framebuffer& framebuffer,
     const ViewportState& state);
