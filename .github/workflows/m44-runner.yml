@@ -1,0 +1,76 @@
+name: m44-runner
+
+on:
+  push:
+    branches:
+      - milestone-44-per-record-shadow-bindings
+
+permissions:
+  contents: write
+
+jobs:
+  implement-verify-seal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: milestone-44-per-record-shadow-bindings
+          fetch-depth: 0
+
+      - name: Apply production slice from construction plan
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/m44-construction.yml').read_text()
+          start = '      - name: Apply Milestone 44 production slice\n'
+          end = '      - name: Configure\n'
+          if source.count(start) != 1 or source.count(end) != 1:
+              raise SystemExit('cannot locate construction production step')
+          block = source.split(start, 1)[1].split(end, 1)[0]
+          run_marker = '        run: |\n'
+          if block.count(run_marker) != 1:
+              raise SystemExit('cannot locate construction run block')
+          indented = block.split(run_marker, 1)[1]
+          lines = indented.splitlines()
+          script_lines = []
+          for line in lines:
+              if line.startswith('          '):
+                  script_lines.append(line[10:])
+              elif line.strip() == '':
+                  script_lines.append('')
+              else:
+                  raise SystemExit(f'unexpected construction indentation: {line!r}')
+          script = '\n'.join(script_lines) + '\n'
+          old = '"""return collection_has_point(fixed_lights)'
+          new = '"""        return collection_has_point(fixed_lights)'
+          count = script.count(old)
+          if count != 2:
+              raise SystemExit(f'expected exactly two stale world-position anchors, found {count}')
+          script = script.replace(old, new)
+          Path('/tmp/m44-apply.sh').write_text(script)
+          PY
+          bash /tmp/m44-apply.sh
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTINY_RENDERER_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Run full tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Seal production changes
+        shell: bash
+        run: |
+          git config user.name "LeiZ"
+          git config user.email "52287354+Lei-TzuY@users.noreply.github.com"
+          git add CMakeLists.txt ROADMAP.md STATUS.md include src tests
+          if git diff --cached --quiet; then
+            echo "No production changes to seal"
+            exit 1
+          fi
+          git commit -m "Milestone 44: per-record typed shadow bindings"
+          git push origin HEAD:milestone-44-per-record-shadow-bindings
