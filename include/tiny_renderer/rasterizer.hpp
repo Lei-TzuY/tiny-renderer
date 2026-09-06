@@ -10,6 +10,7 @@
 #include "tiny_renderer/mesh.hpp"
 #include "tiny_renderer/shadow.hpp"
 #include "tiny_renderer/texture.hpp"
+#include "tiny_renderer/vertex_program.hpp"
 
 namespace tiny_renderer {
 
@@ -117,7 +118,8 @@ public:
         AlphaToCoverageState alpha_to_coverage_state = {},
         ShadowState shadow_state = {},
         AlphaTestState alpha_test_state = {},
-        FragmentProgramPtr fragment_program = {})
+        FragmentProgramPtr fragment_program = {},
+        VertexProgramPtr vertex_program = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -133,7 +135,8 @@ public:
           alpha_to_coverage_state_(alpha_to_coverage_state),
           shadow_state_(shadow_state),
           alpha_test_state_(alpha_test_state),
-          fragment_program_(std::move(fragment_program)) {}
+          fragment_program_(std::move(fragment_program)),
+          vertex_program_(std::move(vertex_program)) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -164,6 +167,7 @@ private:
     ShadowState shadow_state_;
     AlphaTestState alpha_test_state_;
     FragmentProgramPtr fragment_program_;
+    VertexProgramPtr vertex_program_;
 };
 
 }  // namespace tiny_renderer

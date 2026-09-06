@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "rasterizer_validation.hpp"
+#include "vertex_program_internal.hpp"
 
 namespace tiny_renderer {
 
@@ -1033,6 +1034,8 @@ void draw_triangle_impl(
 }  // namespace
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection) {
+    const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
+
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1046,12 +1049,12 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
-    validate_fragment_program(fragment_program_, triangle[0].varyings.count);
+    validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, programmed[0].varyings.count);
 
-    Triangle prepared = triangle;
+    Triangle prepared = programmed;
     if (light.enabled) {
-        prepared = transform_triangle_normals(triangle, light.normal, normal_matrix(model));
+        prepared = transform_triangle_normals(programmed, light.normal, normal_matrix(model));
     }
     const Mat4 light_mvp = shadow_state_.enabled
         ? shadow_state_.light_view_projection * model
@@ -1082,6 +1085,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     if (directional_light_.enabled || shadow_state_.enabled) {
         throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
+    const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
+
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1095,11 +1100,11 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
-    validate_fragment_program(fragment_program_, triangle[0].varyings.count);
+    validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, programmed[0].varyings.count);
     draw_triangle_impl(
         framebuffer_,
-        triangle,
+        programmed,
         mvp,
         nullptr,
         color_binding_,
@@ -1120,6 +1125,10 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view, const Mat4& projection) {
+    const detail::PreparedVertexMesh programmed =
+        detail::prepare_vertex_program_mesh(vertex_program_, mesh);
+    const Mesh& vertex_mesh = programmed.get();
+
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1133,12 +1142,12 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_mesh(mesh, color_binding_, texture_binding_, source, light);
-    validate_fragment_program(fragment_program_, mesh_varying_count(mesh));
+    validate_mesh(vertex_mesh, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, mesh_varying_count(vertex_mesh));
 
-    Mesh prepared = mesh;
-    if (light.enabled && !mesh.vertices.empty()) {
-        prepared = transform_mesh_normals(mesh, light.normal, normal_matrix(model));
+    Mesh prepared = vertex_mesh;
+    if (light.enabled && !vertex_mesh.vertices.empty()) {
+        prepared = transform_mesh_normals(vertex_mesh, light.normal, normal_matrix(model));
     }
     const Mat4 mvp = projection * view * model;
     const Mat4 light_mvp = shadow_state_.enabled
@@ -1172,6 +1181,10 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     if (directional_light_.enabled || shadow_state_.enabled) {
         throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
+    const detail::PreparedVertexMesh programmed =
+        detail::prepare_vertex_program_mesh(vertex_program_, mesh);
+    const Mesh& prepared_mesh = programmed.get();
+
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
@@ -1185,12 +1198,12 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
-    validate_mesh(mesh, color_binding_, texture_binding_, source, light);
-    validate_fragment_program(fragment_program_, mesh_varying_count(mesh));
-    for (const TriangleIndices& indices : mesh.triangles) {
+    validate_mesh(prepared_mesh, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, mesh_varying_count(prepared_mesh));
+    for (const TriangleIndices& indices : prepared_mesh.triangles) {
         draw_triangle_impl(
             framebuffer_,
-            assemble_triangle(mesh, indices),
+            assemble_triangle(prepared_mesh, indices),
             mvp,
             nullptr,
             color_binding_,

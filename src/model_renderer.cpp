@@ -5,8 +5,10 @@
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "rasterizer_validation.hpp"
+#include "vertex_program_internal.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -107,6 +109,9 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
         options.directional_light.enabled);
     detail::validate_alpha_test_state(options.alpha_test_state);
     validate_fragment_program_for_mesh(options.fragment_program, asset.mesh);
+    detail::validate_vertex_program_static(
+        options.vertex_program,
+        detail::vertex_program_varying_count(asset.mesh));
     bool sampler_needed = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
@@ -137,6 +142,7 @@ BaseColorSource base_color_source_for(const MaterialDraw& draw) {
 void preflight_prepared_model_transform(
     const Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
+    const Mesh& mesh,
     const Mat4& model) {
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
@@ -144,7 +150,7 @@ void preflight_prepared_model_transform(
     for (const MaterialDraw& draw : asset.draws) {
         detail::preflight_mesh_range_submission(
             framebuffer,
-            asset.mesh,
+            mesh,
             DrawRange{0U, 0U},
             {},
             texture_binding_for(draw, options),
@@ -164,17 +170,18 @@ void preflight_prepared_model_transform(
     }
 }
 
-void execute_prepared_model_transform(
-    Framebuffer& framebuffer,
+void preflight_prepared_model_mvp(
+    const Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
-    const Mat4& model,
-    const Mat4& view,
-    const Mat4& projection) {
+    const Mesh& mesh) {
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
+    detail::validate_alpha_test_state(options.alpha_test_state);
     for (const MaterialDraw& draw : asset.draws) {
-        Rasterizer rasterizer(
+        detail::preflight_mesh_range_submission(
             framebuffer,
+            mesh,
+            DrawRange{0U, 0U},
             {},
             texture_binding_for(draw, options),
             options.directional_light,
@@ -188,9 +195,60 @@ void execute_prepared_model_transform(
             options.blend_state,
             options.alpha_to_coverage_state,
             options.shadow_state,
-            options.alpha_test_state,
-            options.fragment_program);
-        rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
+            nullptr,
+            true);
+    }
+}
+
+Rasterizer model_rasterizer(
+    Framebuffer& framebuffer,
+    const MaterialDraw& draw,
+    const ModelRenderOptions& options) {
+    return Rasterizer(
+        framebuffer,
+        {},
+        texture_binding_for(draw, options),
+        options.directional_light,
+        draw.material,
+        base_color_source_for(draw),
+        options.cull_mode,
+        options.front_face,
+        options.depth_state,
+        options.viewport_state,
+        options.stencil_state,
+        options.blend_state,
+        options.alpha_to_coverage_state,
+        options.shadow_state,
+        options.alpha_test_state,
+        options.fragment_program,
+        {});
+}
+
+void execute_prepared_model_transform(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mesh& mesh,
+    const Mat4& model,
+    const Mat4& view,
+    const Mat4& projection) {
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    for (const MaterialDraw& draw : asset.draws) {
+        Rasterizer rasterizer = model_rasterizer(framebuffer, draw, options);
+        rasterizer.draw_mesh_range(mesh, draw.range, model, view, projection);
+    }
+}
+
+void execute_prepared_model_mvp(
+    Framebuffer& framebuffer,
+    const PreparedModelSubmission& prepared,
+    const Mesh& mesh,
+    const Mat4& mvp) {
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    for (const MaterialDraw& draw : asset.draws) {
+        Rasterizer rasterizer = model_rasterizer(framebuffer, draw, options);
+        rasterizer.draw_mesh_range(mesh, draw.range, mvp);
     }
 }
 
@@ -198,6 +256,7 @@ template <typename PreflightDraw, typename SubmitRange>
 void draw_validated_model_impl(
     Framebuffer& framebuffer,
     const ModelAsset& asset,
+    const Mesh& mesh,
     const ModelRenderOptions& options,
     PreflightDraw&& preflight_draw,
     SubmitRange&& submit_range) {
@@ -211,24 +270,8 @@ void draw_validated_model_impl(
     }
 
     for (const MaterialDraw& draw : asset.draws) {
-        Rasterizer rasterizer(
-            framebuffer,
-            {},
-            texture_binding_for(draw, options),
-            options.directional_light,
-            draw.material,
-            base_color_source_for(draw),
-            options.cull_mode,
-            options.front_face,
-            options.depth_state,
-            options.viewport_state,
-            options.stencil_state,
-            options.blend_state,
-            options.alpha_to_coverage_state,
-            options.shadow_state,
-            options.alpha_test_state,
-            options.fragment_program);
-        submit_range(rasterizer, draw.range);
+        Rasterizer rasterizer = model_rasterizer(framebuffer, draw, options);
+        submit_range(rasterizer, mesh, draw.range);
     }
 }
 
@@ -252,12 +295,30 @@ void draw_prepared_model_instances(
         return;
     }
 
-    for (const Mat4& model : models) {
-        preflight_prepared_model_transform(framebuffer, prepared, model);
+    std::vector<detail::PreparedVertexMesh> meshes;
+    meshes.reserve(models.size());
+    for (std::size_t i = 0U; i < models.size(); ++i) {
+        meshes.push_back(detail::prepare_vertex_program_mesh(
+            prepared.options().vertex_program,
+            prepared.asset().mesh));
     }
 
-    for (const Mat4& model : models) {
-        execute_prepared_model_transform(framebuffer, prepared, model, view, projection);
+    for (std::size_t i = 0U; i < models.size(); ++i) {
+        preflight_prepared_model_transform(
+            framebuffer,
+            prepared,
+            meshes[i].get(),
+            models[i]);
+    }
+
+    for (std::size_t i = 0U; i < models.size(); ++i) {
+        execute_prepared_model_transform(
+            framebuffer,
+            prepared,
+            meshes[i].get(),
+            models[i],
+            view,
+            projection);
     }
 }
 
@@ -265,59 +326,24 @@ void draw_prepared_model_instances(
     Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
     std::span<const Mat4> mvps) {
-    const ModelAsset& asset = prepared.asset();
-    const ModelRenderOptions& options = prepared.options();
-    if (mvps.empty() || asset.draws.empty()) {
+    if (mvps.empty() || prepared.asset().draws.empty()) {
         return;
     }
 
-    detail::validate_alpha_test_state(options.alpha_test_state);
-    for (const Mat4& mvp : mvps) {
-        (void)mvp;
-        for (const MaterialDraw& draw : asset.draws) {
-            detail::preflight_mesh_range_submission(
-                framebuffer,
-                asset.mesh,
-                DrawRange{0U, 0U},
-                {},
-                texture_binding_for(draw, options),
-                options.directional_light,
-                draw.material,
-                base_color_source_for(draw),
-                options.cull_mode,
-                options.front_face,
-                options.depth_state,
-                options.viewport_state,
-                options.stencil_state,
-                options.blend_state,
-                options.alpha_to_coverage_state,
-                options.shadow_state,
-                nullptr,
-                true);
-        }
+    std::vector<detail::PreparedVertexMesh> meshes;
+    meshes.reserve(mvps.size());
+    for (std::size_t i = 0U; i < mvps.size(); ++i) {
+        meshes.push_back(detail::prepare_vertex_program_mesh(
+            prepared.options().vertex_program,
+            prepared.asset().mesh));
     }
 
-    for (const Mat4& mvp : mvps) {
-        for (const MaterialDraw& draw : asset.draws) {
-            Rasterizer rasterizer(
-                framebuffer,
-                {},
-                texture_binding_for(draw, options),
-                options.directional_light,
-                draw.material,
-                base_color_source_for(draw),
-                options.cull_mode,
-                options.front_face,
-                options.depth_state,
-                options.viewport_state,
-                options.stencil_state,
-                options.blend_state,
-                options.alpha_to_coverage_state,
-                options.shadow_state,
-                options.alpha_test_state,
-                options.fragment_program);
-            rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
-        }
+    for (std::size_t i = 0U; i < mvps.size(); ++i) {
+        preflight_prepared_model_mvp(framebuffer, prepared, meshes[i].get());
+    }
+
+    for (std::size_t i = 0U; i < mvps.size(); ++i) {
+        execute_prepared_model_mvp(framebuffer, prepared, meshes[i].get(), mvps[i]);
     }
 }
 
@@ -336,15 +362,28 @@ void draw_prepared_model_list(
         }
     }
 
+    std::vector<detail::PreparedVertexMesh> meshes;
+    meshes.reserve(entries.size());
     for (const PreparedModelListEntry& entry : entries) {
-        preflight_prepared_model_transform(framebuffer, *entry.prepared, entry.model);
+        meshes.push_back(detail::prepare_vertex_program_mesh(
+            entry.prepared->options().vertex_program,
+            entry.prepared->asset().mesh));
     }
 
-    for (const PreparedModelListEntry& entry : entries) {
+    for (std::size_t i = 0U; i < entries.size(); ++i) {
+        preflight_prepared_model_transform(
+            framebuffer,
+            *entries[i].prepared,
+            meshes[i].get(),
+            entries[i].model);
+    }
+
+    for (std::size_t i = 0U; i < entries.size(); ++i) {
         execute_prepared_model_transform(
             framebuffer,
-            *entry.prepared,
-            entry.model,
+            *entries[i].prepared,
+            meshes[i].get(),
+            entries[i].model,
             view,
             projection);
     }
@@ -382,14 +421,19 @@ void draw_model_asset(
     const Mat4& projection,
     ModelRenderOptions options) {
     validate_static_model_state(asset, options);
+    const detail::PreparedVertexMesh programmed =
+        detail::prepare_vertex_program_mesh(options.vertex_program, asset.mesh);
+    const Mesh& mesh = programmed.get();
+
     draw_validated_model_impl(
         framebuffer,
         asset,
+        mesh,
         options,
         [&](const MaterialDraw& draw) {
             detail::preflight_mesh_range_submission(
                 framebuffer,
-                asset.mesh,
+                mesh,
                 DrawRange{0U, 0U},
                 {},
                 texture_binding_for(draw, options),
@@ -407,8 +451,8 @@ void draw_model_asset(
                 &model,
                 false);
         },
-        [&](Rasterizer& rasterizer, DrawRange range) {
-            rasterizer.draw_mesh_range(asset.mesh, range, model, view, projection);
+        [&](Rasterizer& rasterizer, const Mesh& render_mesh, DrawRange range) {
+            rasterizer.draw_mesh_range(render_mesh, range, model, view, projection);
         });
 }
 
@@ -418,14 +462,19 @@ void draw_model_asset(
     const Mat4& mvp,
     ModelRenderOptions options) {
     validate_static_model_state(asset, options);
+    const detail::PreparedVertexMesh programmed =
+        detail::prepare_vertex_program_mesh(options.vertex_program, asset.mesh);
+    const Mesh& mesh = programmed.get();
+
     draw_validated_model_impl(
         framebuffer,
         asset,
+        mesh,
         options,
         [&](const MaterialDraw& draw) {
             detail::preflight_mesh_range_submission(
                 framebuffer,
-                asset.mesh,
+                mesh,
                 DrawRange{0U, 0U},
                 {},
                 texture_binding_for(draw, options),
@@ -443,8 +492,8 @@ void draw_model_asset(
                 nullptr,
                 true);
         },
-        [&](Rasterizer& rasterizer, DrawRange range) {
-            rasterizer.draw_mesh_range(asset.mesh, range, mvp);
+        [&](Rasterizer& rasterizer, const Mesh& render_mesh, DrawRange range) {
+            rasterizer.draw_mesh_range(render_mesh, range, mvp);
         });
 }
 
