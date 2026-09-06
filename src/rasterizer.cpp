@@ -71,6 +71,7 @@ struct SampleLocation {
 struct ShadedFragment {
     Vec3 rgb;
     float opacity{1.0F};
+    bool discard{false};
 };
 
 SampleLocation sample_location(SampleCount count, std::size_t sample_index) {
@@ -120,6 +121,42 @@ bool alpha_test_accepts(const AlphaTestState& state, float opacity) {
 
 bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+void validate_fragment_program(
+    const FragmentProgramPtr& fragment_program,
+    std::size_t varying_count) {
+    if (fragment_program) {
+        fragment_program->validate(varying_count);
+    }
+}
+
+ShadedFragment run_fragment_program(
+    const FragmentProgram* fragment_program,
+    const VaryingPack& varyings,
+    const ShadedFragment& fixed_fragment,
+    const Vec2& sample_position,
+    std::size_t sample_index,
+    float depth) {
+    if (fragment_program == nullptr) {
+        return fixed_fragment;
+    }
+
+    const FragmentProgramOutput output = fragment_program->shade(FragmentProgramInput{
+        varyings,
+        fixed_fragment.rgb,
+        fixed_fragment.opacity,
+        sample_position,
+        sample_index,
+        depth,
+    });
+    if (!finite_vec3(output.rgb)) {
+        throw std::invalid_argument("fragment program RGB output must be finite");
+    }
+    if (!std::isfinite(output.opacity) || output.opacity < 0.0F || output.opacity > 1.0F) {
+        throw std::invalid_argument("fragment program opacity output must be finite and within [0, 1]");
+    }
+    return {output.rgb, output.opacity, output.discard};
 }
 
 void validate_pack(const VaryingPack& pack) {
@@ -706,7 +743,7 @@ ShadedFragment shade_fragment(
     };
     const float opacity = fragment_opacity(varyings, texture_binding, material);
     if (!light.enabled) {
-        return {base, opacity};
+        return {base, opacity, false};
     }
 
     const Vec3 interpolated_normal{
@@ -715,18 +752,18 @@ ShadedFragment shade_fragment(
         varyings.values[light.normal.z],
     };
     if (!finite_vec3(interpolated_normal)) {
-        return {base * light.ambient, opacity};
+        return {base * light.ambient, opacity, false};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {base * light.ambient, opacity};
+        return {base * light.ambient, opacity, false};
     }
 
     const Vec3 normal = interpolated_normal / normal_length;
     const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
     const float visibility = shadow_visibility(shadow, light_clip);
     const float intensity = light.ambient + light.diffuse * lambert * visibility;
-    return {base * intensity, opacity};
+    return {base * intensity, opacity, false};
 }
 
 void rasterize_screen_triangle(
@@ -743,6 +780,7 @@ void rasterize_screen_triangle(
     const AlphaToCoverageState& alpha_to_coverage_state,
     const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
+    const FragmentProgram* fragment_program,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
@@ -838,7 +876,7 @@ void rasterize_screen_triangle(
                 const Vec4 light_clip = shadow_state.enabled
                     ? interpolate_light_clip(v, bary, reciprocal_w)
                     : Vec4{};
-                const ShadedFragment fragment = shade_fragment(
+                const ShadedFragment fixed_fragment = shade_fragment(
                     varyings,
                     color_binding,
                     texture_binding,
@@ -847,6 +885,16 @@ void rasterize_screen_triangle(
                     material,
                     shadow_state,
                     light_clip);
+                const ShadedFragment fragment = run_fragment_program(
+                    fragment_program,
+                    varyings,
+                    fixed_fragment,
+                    p,
+                    sample_index,
+                    depth);
+                if (fragment.discard) {
+                    continue;
+                }
                 if (!alpha_test_accepts(alpha_test_state, fragment.opacity)) {
                     continue;
                 }
@@ -901,6 +949,10 @@ void validate_mesh(
     }
 }
 
+std::size_t mesh_varying_count(const Mesh& mesh) {
+    return mesh.vertices.empty() ? 0U : mesh.vertices.front().varyings.count;
+}
+
 Triangle assemble_triangle(const Mesh& mesh, const TriangleIndices& indices) {
     return Triangle{mesh.vertices[indices[0]], mesh.vertices[indices[1]], mesh.vertices[indices[2]]};
 }
@@ -923,6 +975,7 @@ void draw_triangle_impl(
     const AlphaToCoverageState& alpha_to_coverage_state,
     const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
+    const FragmentProgram* fragment_program,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
@@ -972,6 +1025,7 @@ void draw_triangle_impl(
             alpha_to_coverage_state,
             alpha_test_state,
             shadow_state,
+            fragment_program,
             viewport_state.scissor);
     }
 }
@@ -993,6 +1047,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, triangle[0].varyings.count);
 
     Triangle prepared = triangle;
     if (light.enabled) {
@@ -1019,6 +1074,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         alpha_to_coverage_state_,
         alpha_test_state_,
         shadow_state_,
+        fragment_program_.get(),
         viewport_state);
 }
 
@@ -1040,6 +1096,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_triangle_varyings(triangle, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, triangle[0].varyings.count);
     draw_triangle_impl(
         framebuffer_,
         triangle,
@@ -1058,6 +1115,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         alpha_to_coverage_state_,
         alpha_test_state_,
         shadow_state_,
+        fragment_program_.get(),
         viewport_state);
 }
 
@@ -1076,6 +1134,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_mesh(mesh, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, mesh_varying_count(mesh));
 
     Mesh prepared = mesh;
     if (light.enabled && !mesh.vertices.empty()) {
@@ -1104,6 +1163,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             alpha_to_coverage_state_,
             alpha_test_state_,
             shadow_state_,
+            fragment_program_.get(),
             viewport_state);
     }
 }
@@ -1126,6 +1186,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     const MaterialState material = prepare_material_state(material_state_);
     const DirectionalLight light = prepare_directional_light(directional_light_);
     validate_mesh(mesh, color_binding_, texture_binding_, source, light);
+    validate_fragment_program(fragment_program_, mesh_varying_count(mesh));
     for (const TriangleIndices& indices : mesh.triangles) {
         draw_triangle_impl(
             framebuffer_,
@@ -1145,6 +1206,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             alpha_to_coverage_state_,
             alpha_test_state_,
             shadow_state_,
+            fragment_program_.get(),
             viewport_state);
     }
 }
