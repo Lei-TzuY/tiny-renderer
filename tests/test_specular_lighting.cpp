@@ -228,7 +228,8 @@ void test_file_driven_specular_material_matches_programmatic_state() {
     manual.draws[0].material.specular = {1.0F, 0.5F, 0.25F};
     manual.draws[0].material.shininess = 32.0F;
 
-    const ModelRenderOptions options = glossy_options({0.0F, 0.0F, 4.0F});
+    ModelRenderOptions options = glossy_options({0.0F, 0.0F, 4.0F});
+    options.directional_light.normal = {2U, 3U, 4U};
     Framebuffer imported_framebuffer(65U, 65U);
     draw_model_asset(
         imported_framebuffer,
