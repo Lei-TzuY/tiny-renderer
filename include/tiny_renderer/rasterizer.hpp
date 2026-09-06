@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <utility>
 
 #include "tiny_renderer/fragment_program.hpp"
 #include "tiny_renderer/framebuffer.hpp"
