@@ -31,8 +31,20 @@ struct ObjMaterialUse {
     std::size_t line{};
 };
 
+struct ObjMaterialLibraryRef {
+    std::string filename;
+    std::size_t line{};
+
+    friend bool operator==(const ObjMaterialLibraryRef&, const ObjMaterialLibraryRef&) = default;
+};
+
 struct ObjModelSource {
     Mesh mesh;
+    // Ordered authoritative material-library metadata. The bounded strict path
+    // may capture multiple sibling MTL files while preserving declaration order.
+    std::vector<ObjMaterialLibraryRef> material_libraries;
+    // Legacy single-library projection retained for source compatibility. It is
+    // populated iff exactly one material library was declared.
     std::optional<std::string> material_library_filename;
     std::vector<ObjMaterialUse> used_materials;
     std::vector<std::string> face_materials;

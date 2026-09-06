@@ -1,0 +1,3 @@
+newmtl extra
+Kd 0.8 0.2 0.4
+map_Kd checker.ppm
