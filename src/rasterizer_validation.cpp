@@ -193,9 +193,16 @@ void validate_directional_record_shadow(const ShadowState& state) {
     if (!state.enabled) {
         return;
     }
+    if (state.cascades) {
+        if (state.map) {
+            throw std::invalid_argument(
+                "per-record directional shadow cannot bind a single map and cascades simultaneously");
+        }
+        return;
+    }
     if (!state.map) {
         throw std::invalid_argument(
-            "per-record directional shadow requires a depth texture");
+            "per-record directional shadow requires a depth texture or cascade set");
     }
     if (!std::isfinite(state.bias) || state.bias < 0.0F) {
         throw std::invalid_argument(
@@ -785,6 +792,10 @@ void validate_shadow_state_definition(
     const DirectionalLight& directional_light,
     const FixedLightCollection& fixed_lights) {
     validate_shadow_sampling_mode(state.sampling);
+    if (state.cascades) {
+        throw std::invalid_argument(
+            "cascaded directional shadows require a per-record directional shadow binding");
+    }
     if (fixed_lights.count == 0U) {
         if (fixed_lights.shadowed_directional_index) {
             throw std::invalid_argument("legacy fixed lighting cannot name a collection shadow index");
