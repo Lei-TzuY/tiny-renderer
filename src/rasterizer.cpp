@@ -57,10 +57,37 @@ struct FixedPoint2 {
     std::int64_t y{};
 };
 
+struct SampleLocation {
+    std::int64_t fixed_x{};
+    std::int64_t fixed_y{};
+    float x{};
+    float y{};
+};
+
 struct ShadedFragment {
     Vec3 rgb;
     float opacity{1.0F};
 };
+
+SampleLocation sample_location(SampleCount count, std::size_t sample_index) {
+    if (count == SampleCount::One) {
+        if (sample_index != 0U) {
+            throw std::logic_error("single-sample raster requested an invalid sample index");
+        }
+        return {128, 128, 0.5F, 0.5F};
+    }
+    if (count == SampleCount::Four) {
+        switch (sample_index) {
+            case 0U: return {64, 64, 0.25F, 0.25F};
+            case 1U: return {192, 64, 0.75F, 0.25F};
+            case 2U: return {64, 192, 0.25F, 0.75F};
+            case 3U: return {192, 192, 0.75F, 0.75F};
+            default:
+                throw std::logic_error("4x raster requested an invalid sample index");
+        }
+    }
+    throw std::logic_error("raster target has an unsupported sample count");
+}
 
 bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -652,52 +679,62 @@ void rasterize_screen_triangle(
     const bool tl0 = is_top_left(fixed[1], fixed[2]);
     const bool tl1 = is_top_left(fixed[2], fixed[0]);
     const bool tl2 = is_top_left(fixed[0], fixed[1]);
+    const std::size_t samples_per_pixel = framebuffer.samples_per_pixel();
 
     for (int y = min_y; y <= max_y; ++y) {
         for (int x = min_x; x <= max_x; ++x) {
-            const FixedPoint2 sample{
-                static_cast<std::int64_t>(x) * kSubpixelScale + kSubpixelHalf,
-                static_cast<std::int64_t>(y) * kSubpixelScale + kSubpixelHalf,
-            };
-            const std::int64_t e0_fixed = fixed_edge(fixed[1], fixed[2], sample);
-            const std::int64_t e1_fixed = fixed_edge(fixed[2], fixed[0], sample);
-            const std::int64_t e2_fixed = fixed_edge(fixed[0], fixed[1], sample);
-            if (!edge_accept(e0_fixed, tl0) || !edge_accept(e1_fixed, tl1) || !edge_accept(e2_fixed, tl2)) {
-                continue;
-            }
+            for (std::size_t sample_index = 0U; sample_index < samples_per_pixel; ++sample_index) {
+                const SampleLocation location = sample_location(framebuffer.sample_count(), sample_index);
+                const FixedPoint2 sample{
+                    static_cast<std::int64_t>(x) * kSubpixelScale + location.fixed_x,
+                    static_cast<std::int64_t>(y) * kSubpixelScale + location.fixed_y,
+                };
+                const std::int64_t e0_fixed = fixed_edge(fixed[1], fixed[2], sample);
+                const std::int64_t e1_fixed = fixed_edge(fixed[2], fixed[0], sample);
+                const std::int64_t e2_fixed = fixed_edge(fixed[0], fixed[1], sample);
+                if (!edge_accept(e0_fixed, tl0)
+                    || !edge_accept(e1_fixed, tl1)
+                    || !edge_accept(e2_fixed, tl2)) {
+                    continue;
+                }
 
-            const Vec2 p{static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F};
-            const float e0 = edge(v[1].position, v[2].position, p);
-            const float e1 = edge(v[2].position, v[0].position, p);
-            const float e2 = edge(v[0].position, v[1].position, p);
-            const Vec3 bary{e0 / interpolation_area, e1 / interpolation_area, e2 / interpolation_area};
-            const float ndc_z = bary.x * v[0].ndc_z + bary.y * v[1].ndc_z + bary.z * v[2].ndc_z;
-            const float depth = ndc_z * 0.5F + 0.5F;
-            if (depth < 0.0F || depth > 1.0F || !std::isfinite(depth)) {
-                continue;
-            }
+                const Vec2 p{
+                    static_cast<float>(x) + location.x,
+                    static_cast<float>(y) + location.y,
+                };
+                const float e0 = edge(v[1].position, v[2].position, p);
+                const float e1 = edge(v[2].position, v[0].position, p);
+                const float e2 = edge(v[0].position, v[1].position, p);
+                const Vec3 bary{e0 / interpolation_area, e1 / interpolation_area, e2 / interpolation_area};
+                const float ndc_z = bary.x * v[0].ndc_z + bary.y * v[1].ndc_z + bary.z * v[2].ndc_z;
+                const float depth = ndc_z * 0.5F + 0.5F;
+                if (depth < 0.0F || depth > 1.0F || !std::isfinite(depth)) {
+                    continue;
+                }
 
-            const float reciprocal_w = bary.x * v[0].inv_w + bary.y * v[1].inv_w + bary.z * v[2].inv_w;
-            if (std::fabs(reciprocal_w) <= kEpsilon || !std::isfinite(reciprocal_w)) {
-                continue;
+                const float reciprocal_w = bary.x * v[0].inv_w + bary.y * v[1].inv_w + bary.z * v[2].inv_w;
+                if (std::fabs(reciprocal_w) <= kEpsilon || !std::isfinite(reciprocal_w)) {
+                    continue;
+                }
+                const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
+                const ShadedFragment fragment = shade_fragment(
+                    varyings,
+                    color_binding,
+                    texture_binding,
+                    source,
+                    light,
+                    material);
+                framebuffer.test_and_write_sample(
+                    static_cast<std::size_t>(x),
+                    static_cast<std::size_t>(y),
+                    sample_index,
+                    depth,
+                    fragment.rgb,
+                    depth_state,
+                    stencil_state,
+                    blend_state,
+                    fragment.opacity);
             }
-            const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
-            const ShadedFragment fragment = shade_fragment(
-                varyings,
-                color_binding,
-                texture_binding,
-                source,
-                light,
-                material);
-            framebuffer.test_and_write(
-                static_cast<std::size_t>(x),
-                static_cast<std::size_t>(y),
-                depth,
-                fragment.rgb,
-                depth_state,
-                stencil_state,
-                blend_state,
-                fragment.opacity);
         }
     }
 }
