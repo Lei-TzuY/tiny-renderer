@@ -279,4 +279,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_spot_shadow_tests tests/test_spot_shadow.cpp)
     target_link_libraries(tiny_renderer_spot_shadow_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_spot_shadow_tests COMMAND tiny_renderer_spot_shadow_tests)
+    add_executable(tiny_renderer_light_color_tests tests/test_light_color.cpp)
+    target_link_libraries(tiny_renderer_light_color_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_light_color_tests COMMAND tiny_renderer_light_color_tests)
+
 endif()

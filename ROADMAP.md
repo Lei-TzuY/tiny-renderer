@@ -244,20 +244,40 @@ After M39, the canonical OBJ parser was expanded with bounded signed relative fa
 - Regression coverage locks six axial/tie face rules, capture depth, near/far validation, origin ownership, mismatched-origin rejection before color/depth/stencil writes, selective multi-light shadowing, prepared lifetime/list equivalence, and malformed association/list behavior.
 - The milestone does not claim PCF/soft shadows, cubemap seam filtering, multiple point-cubemap associations, spotlight support, GPU cubemap APIs, automatic shadow allocation, physically based lighting, or performance parity.
 
-## Next frontier — Milestone 41
+### Milestone 41 — bounded deterministic spotlight shading
 
-The next architectural promotion is **bounded deterministic spotlight shading**. With directional and point lights, caller-ordered multi-light accumulation, and both directional/point hard-shadow resource topologies established, the next valuable illumination capability is a real cone light integrated through the same verified world-space and ownership pipeline rather than an enum/API shell.
+- `SpotLight` integrates finite position/direction, cosine-space cone falloff, distance attenuation, shared normal binding, and Blinn-Phong response through the existing fixed-light path.
+- Caller-order accumulation with directional/point records, fragment-program ordering, normal mapping, prepared/list execution, and fail-closed validation are regression-covered.
 
-Acceptance for the first slice should require:
+### Milestone 42 — bounded deterministic spotlight shadow mapping
 
-- one `SpotLight` fixed-light record with finite world-space position, finite non-zero direction, shared normal binding, finite viewer position, bounded ambient/diffuse coefficients, and finite non-negative linear/quadratic distance attenuation;
-- explicit finite inner/outer cone state with one documented deterministic angular falloff and strict ordering constraints; malformed or degenerate cone definitions reject before framebuffer mutation instead of being silently clamped;
-- diffuse/specular spotlight response computed from the same perspective-correct world-space fragment position and normal-mapped shading normal used by point lights, with ambient and cone/distance attenuation semantics documented explicitly;
-- exact caller-order accumulation with existing directional/point records, preserving one completed fixed-light result before the optional fragment program and the established discard → alpha test → A2C → stencil/depth/blend/color ownership sequence;
-- direct/range/model/prepared/list propagation, vertex-program deformation, normal mapping, shared/static preflight, and whole-list fail-closed semantics without a parallel renderer;
-- deterministic analytic regressions for inside/transition/outside cone response, distance attenuation composition, Blinn-Phong specular, mixed-light ordering, program ordering, prepared/list equivalence, and invalid state before writes;
-- the first slice does not yet add spotlight shadow maps, cookie/projector textures, IES profiles, physically based photometry, unlimited lights, GPU execution, or performance claims.
+- `SpotShadowMap` owns the validated spotlight capture identity plus immutable depth data; `render_spot_shadow_map` reuses prepared geometry, vertex programs, alpha-tested cutouts, homogeneous clipping, culling, and the established depth path.
+- One typed spotlight association selectively modulates that record's diffuse/specular contribution while preserving ambient semantics and unrelated lights; prepared/list lifetime and fail-closed capture/association validation are covered.
+
+After M42, bounded interop slices added multiple sibling OBJ material libraries and a strict uncompressed 24-bit TGA decoder behind the shared texture-image dispatch path. These are integrated capabilities, not a replacement rendering path.
+
+### Milestone 43 — deterministic RGB light color
+
+- Directional, point, and spotlight records carry bounded finite `[0,1]` RGB color with white defaults.
+- Ambient, Lambert diffuse, and Blinn-Phong specular use one component-wise light-color rule before exact caller-order accumulation; attenuation, cone falloff, and shadow visibility remain scalar factors.
+- Legacy singular lights, fixed-light collections, shadows, normal mapping, fragment programs, direct/range/model/prepared/list submission, and fail-closed validation stay on the existing path.
+- Regression coverage locks white compatibility, colored diffuse/specular, mixed-light accumulation, shadow/program ordering, invalid color before writes, and prepared-list equivalence.
+- This milestone does not make spectral, color-temperature, sRGB, HDR photometry, PBR, GPU, or performance claims.
+
+## Next frontier — Milestone 44
+
+The next architectural promotion is **bounded per-record typed shadow bindings for fixed-light collections**. The current topology permits one associated shadow resource per light type, which prevents two same-type lights from being independently shadowed even though multi-light accumulation is already caller ordered and fixed-capacity.
+
+Acceptance for that slice should require:
+
+- each active fixed-light record may carry at most one matching typed shadow binding while preserving the collection's fixed capacity and caller order;
+- multiple directional, point, or spotlight records of the same type can retain independent validated shadow resources and biases without adding a second shading loop;
+- resource type/capture identity mismatches, missing resources, invalid bias, and malformed later prepared-list entries reject before any framebuffer write;
+- prepared plans own all bound shadow lifetimes, and direct/range/model/instance/list execution remains equivalent to sequential submission;
+- visibility modulates only the bound record's direct colored contribution while ambient and unrelated lights remain unchanged;
+- existing singleton shadow state remains source-compatible or receives one explicit deterministic migration path with regression evidence;
+- no PCF/soft shadows, cascades, cookies/IES, automatic shadow allocation, unbounded lights, scene graph, GPU API, or performance claim is added.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations and masks, centroid interpolation, temporal antialiasing, percentage-closer/cascaded/soft shadows, cubemap seam filtering, multiple simultaneous point-shadow resources, spotlight shadows, explicit light colors, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, PCF/cascaded/soft shadows, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
