@@ -198,4 +198,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_fragment_program_tests tests/test_fragment_program.cpp)
     target_link_libraries(tiny_renderer_fragment_program_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_fragment_program_tests COMMAND tiny_renderer_fragment_program_tests)
+
+    add_executable(tiny_renderer_vertex_program_tests tests/test_vertex_program.cpp)
+    target_link_libraries(tiny_renderer_vertex_program_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_vertex_program_tests COMMAND tiny_renderer_vertex_program_tests)
 endif()
