@@ -120,6 +120,7 @@ void preflight_shadow_entries(
                 depth_only_blend,
                 {},
                 {},
+                {},
                 nullptr,
                 true);
         }
@@ -182,6 +183,11 @@ std::array<Mat4, kCubemapFaceCount> point_shadow_face_view_projections(
     float far_plane) {
     if (!finite_vec3(light_position)) {
         throw std::invalid_argument("point shadow light position must be finite");
+    }
+    if (!std::isfinite(near_plane) || !std::isfinite(far_plane)
+        || near_plane <= 0.0F || far_plane <= near_plane) {
+        throw std::invalid_argument(
+            "point shadow near/far planes must be finite with 0 < near < far");
     }
 
     const Mat4 projection = Mat4::perspective(
