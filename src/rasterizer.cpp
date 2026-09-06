@@ -46,7 +46,9 @@ struct ClipVertex {
     Vec4 position;
     VaryingPack varyings;
     Vec4 light_clip_position{};
+    Vec3 world_position{};
     bool has_light_clip{false};
+    bool has_world_position{false};
 };
 
 struct ScreenVertex {
@@ -55,7 +57,9 @@ struct ScreenVertex {
     float inv_w{};
     VaryingPack interpolation_terms;
     Vec4 light_clip_times_inv_w{};
+    Vec3 world_position_times_inv_w{};
     bool has_light_clip{false};
+    bool has_world_position{false};
 };
 
 struct FixedPoint2 {
@@ -123,6 +127,50 @@ bool alpha_test_accepts(const AlphaTestState& state, float opacity) {
 
 bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+bool material_has_specular(const MaterialState& material) {
+    return material.specular.x > 0.0F || material.specular.y > 0.0F || material.specular.z > 0.0F;
+}
+
+Vec3 transform_world_position(const Mat4& model, const Vec3& position) {
+    const Vec4 world = model * Vec4{position.x, position.y, position.z, 1.0F};
+    if (!std::isfinite(world.x) || !std::isfinite(world.y) || !std::isfinite(world.z)
+        || !std::isfinite(world.w) || std::fabs(world.w) <= kEpsilon) {
+        throw std::invalid_argument("specular world-space position transform is numerically unstable");
+    }
+    const float inv_w = 1.0F / world.w;
+    const Vec3 result{world.x * inv_w, world.y * inv_w, world.z * inv_w};
+    if (!finite_vec3(result)) {
+        throw std::invalid_argument("specular world-space position must remain finite");
+    }
+    return result;
+}
+
+void validate_specular_world_positions(
+    const Triangle& triangle,
+    const DirectionalLight& light,
+    const MaterialState& material,
+    const Mat4& model) {
+    if (!light.enabled || !material_has_specular(material)) {
+        return;
+    }
+    for (const Vertex& vertex : triangle) {
+        (void)transform_world_position(model, vertex.position);
+    }
+}
+
+void validate_specular_world_positions(
+    const Mesh& mesh,
+    const DirectionalLight& light,
+    const MaterialState& material,
+    const Mat4& model) {
+    if (!light.enabled || !material_has_specular(material)) {
+        return;
+    }
+    for (const Vertex& vertex : mesh.vertices) {
+        (void)transform_world_position(model, vertex.position);
+    }
 }
 
 void validate_fragment_program(
@@ -278,6 +326,9 @@ DirectionalLight prepare_directional_light(const DirectionalLight& light) {
     if (!finite_vec3(light.direction_to_light) || length(light.direction_to_light) <= kEpsilon) {
         throw std::invalid_argument("directional light direction must be finite and non-zero");
     }
+    if (!finite_vec3(light.viewer_position)) {
+        throw std::invalid_argument("directional light viewer position must be finite");
+    }
     if (!std::isfinite(light.ambient) || !std::isfinite(light.diffuse)
         || light.ambient < 0.0F || light.diffuse < 0.0F
         || light.ambient > 1.0F || light.diffuse > 1.0F
@@ -298,6 +349,16 @@ MaterialState prepare_material_state(const MaterialState& material) {
     }
     if (!std::isfinite(material.opacity) || material.opacity < 0.0F || material.opacity > 1.0F) {
         throw std::invalid_argument("material opacity must be finite and within [0, 1]");
+    }
+    if (!finite_vec3(material.specular)
+        || material.specular.x < 0.0F || material.specular.x > 1.0F
+        || material.specular.y < 0.0F || material.specular.y > 1.0F
+        || material.specular.z < 0.0F || material.specular.z > 1.0F) {
+        throw std::invalid_argument("material specular components must be finite and within [0, 1]");
+    }
+    if (!std::isfinite(material.shininess)
+        || material.shininess < 1.0F || material.shininess > 1000.0F) {
+        throw std::invalid_argument("material shininess must be finite and within [1, 1000]");
     }
     return material;
 }
@@ -446,14 +507,22 @@ ClipVertex lerp(const ClipVertex& a, const ClipVertex& b, float t) {
     if (a.has_light_clip != b.has_light_clip) {
         throw std::logic_error("clipped shadow coordinate availability mismatch");
     }
+    if (a.has_world_position != b.has_world_position) {
+        throw std::logic_error("clipped world-position availability mismatch");
+    }
     const Vec4 light_clip_position = a.has_light_clip
         ? a.light_clip_position + (b.light_clip_position - a.light_clip_position) * t
         : Vec4{};
+    const Vec3 world_position = a.has_world_position
+        ? a.world_position + (b.world_position - a.world_position) * t
+        : Vec3{};
     return {
         position,
         interpolate_clip_varyings(a.varyings, b.varyings, t, noperspective_t),
         light_clip_position,
+        world_position,
         a.has_light_clip,
+        a.has_world_position,
     };
 }
 
@@ -568,7 +637,9 @@ std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, const RasterRect
         inv_w,
         prepare_interpolation_terms(vertex.varyings, inv_w),
         vertex.has_light_clip ? vertex.light_clip_position * inv_w : Vec4{},
+        vertex.has_world_position ? vertex.world_position * inv_w : Vec3{},
         vertex.has_light_clip,
+        vertex.has_world_position,
     };
 }
 
@@ -650,6 +721,23 @@ Vec4 interpolate_light_clip(
         + v[1].light_clip_times_inv_w * bary.y
         + v[2].light_clip_times_inv_w * bary.z;
     return numerator * (1.0F / reciprocal_w);
+}
+
+Vec3 interpolate_world_position(
+    const std::array<ScreenVertex, 3>& v,
+    const Vec3& bary,
+    float reciprocal_w) {
+    if (!v[0].has_world_position || !v[1].has_world_position || !v[2].has_world_position) {
+        throw std::logic_error("specular shading requires a generated world-space position");
+    }
+    const Vec3 numerator = v[0].world_position_times_inv_w * bary.x
+        + v[1].world_position_times_inv_w * bary.y
+        + v[2].world_position_times_inv_w * bary.z;
+    const Vec3 result = numerator * (1.0F / reciprocal_w);
+    if (!finite_vec3(result)) {
+        throw std::logic_error("interpolated specular world-space position became non-finite");
+    }
+    return result;
 }
 
 Vec3 base_fragment_color(
@@ -740,6 +828,7 @@ ShadedFragment shade_fragment(
     const MaterialState& material,
     const ShadowState& shadow,
     const Vec4& light_clip,
+    const Vec3& world_position,
     const detail::TangentFrame* tangent_frame) {
     const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
     const Vec3 base{
@@ -773,8 +862,30 @@ ShadedFragment shade_fragment(
         tangent_frame);
     const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
     const float visibility = shadow_visibility(shadow, light_clip);
-    const float intensity = light.ambient + light.diffuse * lambert * visibility;
-    return {base * intensity, opacity, false};
+    const float diffuse_intensity = light.diffuse * lambert * visibility;
+    Vec3 shaded = base * (light.ambient + diffuse_intensity);
+
+    if (material_has_specular(material)) {
+        const Vec3 to_viewer = light.viewer_position - world_position;
+        const float view_length = length(to_viewer);
+        if (finite_vec3(to_viewer) && std::isfinite(view_length) && view_length > kEpsilon) {
+            const Vec3 view_direction = to_viewer / view_length;
+            const Vec3 half_sum = light.direction_to_light + view_direction;
+            const float half_length = length(half_sum);
+            if (finite_vec3(half_sum) && std::isfinite(half_length) && half_length > kEpsilon) {
+                const Vec3 half_direction = half_sum / half_length;
+                const float nh = std::clamp(dot(normal, half_direction), 0.0F, 1.0F);
+                const float specular_strength = light.diffuse * visibility
+                    * std::pow(nh, material.shininess);
+                shaded = {
+                    shaded.x + material.specular.x * specular_strength,
+                    shaded.y + material.specular.y * specular_strength,
+                    shaded.z + material.specular.z * specular_strength,
+                };
+            }
+        }
+    }
+    return {shaded, opacity, false};
 }
 
 void rasterize_screen_triangle(
@@ -888,6 +999,9 @@ void rasterize_screen_triangle(
                 const Vec4 light_clip = shadow_state.enabled
                     ? interpolate_light_clip(v, bary, reciprocal_w)
                     : Vec4{};
+                const Vec3 world_position = light.enabled && material_has_specular(material)
+                    ? interpolate_world_position(v, bary, reciprocal_w)
+                    : Vec3{};
                 const ShadedFragment fixed_fragment = shade_fragment(
                     varyings,
                     color_binding,
@@ -897,6 +1011,7 @@ void rasterize_screen_triangle(
                     material,
                     shadow_state,
                     light_clip,
+                    world_position,
                     tangent_frame);
                 const ShadedFragment fragment = run_fragment_program(
                     fragment_program,
@@ -974,6 +1089,7 @@ void draw_triangle_impl(
     Framebuffer& framebuffer,
     const Triangle& triangle,
     const Mat4& mvp,
+    const Mat4* model,
     const Mat4* light_mvp,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
@@ -991,6 +1107,11 @@ void draw_triangle_impl(
     const FragmentProgram* fragment_program,
     const detail::TangentFrame* tangent_frame,
     const detail::ResolvedViewportState& viewport_state) {
+    const bool needs_world_position = light.enabled && material_has_specular(material);
+    if (needs_world_position && model == nullptr) {
+        throw std::logic_error("specular shading requires a model transform");
+    }
+
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
         const Vec4 object_position{
@@ -1003,7 +1124,9 @@ void draw_triangle_impl(
             mvp * object_position,
             triangle[i].varyings,
             light_mvp != nullptr ? (*light_mvp) * object_position : Vec4{},
+            needs_world_position ? transform_world_position(*model, triangle[i].position) : Vec3{},
             light_mvp != nullptr,
+            needs_world_position,
         };
     }
     apply_flat_provoking_vertex(clip);
@@ -1068,6 +1191,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     if (texture_binding_.normal_texture != nullptr && !light.enabled) {
         throw std::invalid_argument("normal mapping requires an enabled directional light");
     }
+    validate_specular_world_positions(programmed, light, material, model);
 
     std::optional<detail::TangentFrame> tangent_frame;
     if (texture_binding_.normal_texture != nullptr) {
@@ -1085,6 +1209,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         framebuffer_,
         prepared,
         projection * view * model,
+        &model,
         shadow_state_.enabled ? &light_mvp : nullptr,
         color_binding_,
         texture_binding_,
@@ -1133,6 +1258,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         programmed,
         mvp,
         nullptr,
+        nullptr,
         color_binding_,
         texture_binding_,
         source,
@@ -1174,6 +1300,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     if (texture_binding_.normal_texture != nullptr && !light.enabled) {
         throw std::invalid_argument("normal mapping requires an enabled directional light");
     }
+    validate_specular_world_positions(vertex_mesh, light, material, model);
 
     std::vector<detail::TangentFrame> tangent_frames;
     if (texture_binding_.normal_texture != nullptr) {
@@ -1201,6 +1328,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             framebuffer_,
             assemble_triangle(prepared, indices),
             mvp,
+            &model,
             shadow_state_.enabled ? &light_mvp : nullptr,
             color_binding_,
             texture_binding_,
@@ -1252,6 +1380,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             framebuffer_,
             assemble_triangle(prepared_mesh, indices),
             mvp,
+            nullptr,
             nullptr,
             color_binding_,
             texture_binding_,
