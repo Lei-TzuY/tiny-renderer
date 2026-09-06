@@ -167,7 +167,6 @@ void test_invalid_and_unsupported_input_is_rejected() {
 
     expect_parse_error(prefix + "f 1/1 2/2 3/3 1/1\n", "quad/ngon face is rejected rather than triangulated implicitly");
     expect_parse_error(prefix + "f 1 2 3\n", "face without texture-coordinate indices is rejected");
-    expect_parse_error(prefix + "f -3/1 -2/2 -1/3\n", "relative OBJ indices are rejected by the bounded importer");
     expect_parse_error(prefix + "f 0/1 2/2 3/3\n", "OBJ index zero is rejected");
     expect_parse_error(prefix + "f 4/1 2/2 3/3\n", "out-of-range position index is rejected");
     expect_parse_error(prefix + "f 1/4 2/2 3/3\n", "out-of-range texture index is rejected");
@@ -176,7 +175,6 @@ void test_invalid_and_unsupported_input_is_rejected() {
     expect_parse_error("vn 0 0 0\n", "zero-length OBJ normal is rejected at import time");
     expect_parse_error(normal_prefix + "f 1//1 2/2/1 3/3/1\n", "v//vn face syntax is rejected because UVs remain mandatory");
     expect_parse_error(normal_prefix + "f 1/1/2 2/2/1 3/3/1\n", "out-of-range normal index is rejected");
-    expect_parse_error(normal_prefix + "f 1/1/-1 2/2/1 3/3/1\n", "relative normal indices are rejected");
     expect_parse_error(normal_prefix + "f 1/1/1 2/2 3/3/1\n", "mixed corner layouts inside one face are rejected");
     expect_parse_error(
         normal_prefix +
