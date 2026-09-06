@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -35,17 +34,9 @@ inline Mat3 model_linear_matrix(const Mat4& model) {
 }
 
 inline void validate_normal_texture(const Texture2D& texture) {
-    for (std::size_t y = 0U; y < texture.height(); ++y) {
-        for (std::size_t x = 0U; x < texture.width(); ++x) {
-            const Vec3& texel = texture.texel(x, y);
-            if (!normal_mapping_finite_vec3(texel)
-                || texel.x < 0.0F || texel.x > 1.0F
-                || texel.y < 0.0F || texel.y > 1.0F
-                || texel.z < 0.0F || texel.z > 1.0F) {
-                throw std::invalid_argument(
-                    "normal map texels must be finite and within [0, 1]");
-            }
-        }
+    if (!texture.texels_within_unit_range()) {
+        throw std::invalid_argument(
+            "normal map texels must be finite and within [0, 1]");
     }
 }
 
