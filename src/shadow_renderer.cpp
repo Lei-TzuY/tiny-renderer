@@ -50,6 +50,48 @@ void validate_culling(CullMode cull_mode, FrontFace front_face) {
     }
 }
 
+void validate_shadow_sampling_mode(ShadowSamplingMode mode) {
+    switch (mode) {
+        case ShadowSamplingMode::Hard:
+        case ShadowSamplingMode::Pcf3x3:
+            return;
+    }
+    throw std::invalid_argument("shadow cascade capture uses an unknown sampling mode");
+}
+
+void validate_cascade_capture_definition(
+    const Mat4& camera_view,
+    std::span<const DirectionalShadowCascadeCapture> cascades) {
+    if (!finite_mat4(camera_view)) {
+        throw std::invalid_argument("shadow cascade camera view must be finite");
+    }
+    if (camera_view(3U, 0U) != 0.0F
+        || camera_view(3U, 1U) != 0.0F
+        || camera_view(3U, 2U) != 0.0F
+        || camera_view(3U, 3U) != 1.0F) {
+        throw std::invalid_argument("shadow cascade camera view must be affine");
+    }
+    if (cascades.empty() || cascades.size() > kMaxDirectionalShadowCascades) {
+        throw std::invalid_argument("shadow cascade capture count exceeds the bounded capacity");
+    }
+    float previous_split = 0.0F;
+    for (const DirectionalShadowCascadeCapture& cascade : cascades) {
+        if (!std::isfinite(cascade.split_view_depth)
+            || cascade.split_view_depth <= previous_split) {
+            throw std::invalid_argument(
+                "shadow cascade capture splits must be finite, positive, and strictly increasing");
+        }
+        if (!finite_mat4(cascade.light_view_projection)) {
+            throw std::invalid_argument("shadow cascade capture view-projection must be finite");
+        }
+        if (!std::isfinite(cascade.bias) || cascade.bias < 0.0F) {
+            throw std::invalid_argument("shadow cascade capture bias must be finite and non-negative");
+        }
+        validate_shadow_sampling_mode(cascade.sampling);
+        previous_split = cascade.split_view_depth;
+    }
+}
+
 TextureBinding shadow_texture_binding(
     const MaterialDraw& draw,
     const ModelRenderOptions& options) {
@@ -308,6 +350,54 @@ std::shared_ptr<const DepthTexture2D> render_directional_shadow_map(
         options.front_face);
 
     return std::make_shared<const DepthTexture2D>(capture_depth_texture(framebuffer));
+}
+
+std::shared_ptr<const CascadedDirectionalShadowMap> render_directional_shadow_cascades(
+    std::span<const PreparedModelListEntry> entries,
+    const Mat4& camera_view,
+    std::span<const DirectionalShadowCascadeCapture> cascades,
+    DirectionalShadowMapOptions options) {
+    if (options.width == 0U || options.height == 0U) {
+        throw std::invalid_argument("shadow cascade map dimensions must be non-zero");
+    }
+    validate_cascade_capture_definition(camera_view, cascades);
+    validate_culling(options.cull_mode, options.front_face);
+    validate_shadow_entries(entries);
+    const std::vector<detail::PreparedVertexMesh> meshes =
+        prepare_shadow_meshes(entries);
+
+    Framebuffer framebuffer{options.width, options.height, SampleCount::One};
+    preflight_shadow_entries(
+        framebuffer,
+        entries,
+        meshes,
+        options.cull_mode,
+        options.front_face);
+
+    std::array<DirectionalShadowCascade, kMaxDirectionalShadowCascades> captured{};
+    for (std::size_t index = 0U; index < cascades.size(); ++index) {
+        const DirectionalShadowCascadeCapture& definition = cascades[index];
+        framebuffer.clear({0.0F, 0.0F, 0.0F}, 1.0F, 0U);
+        draw_shadow_entries(
+            framebuffer,
+            entries,
+            meshes,
+            definition.light_view_projection,
+            options.cull_mode,
+            options.front_face);
+        captured[index] = DirectionalShadowCascade{
+            definition.split_view_depth,
+            std::make_shared<const DepthTexture2D>(capture_depth_texture(framebuffer)),
+            definition.light_view_projection,
+            definition.bias,
+            definition.sampling,
+        };
+    }
+
+    return std::make_shared<const CascadedDirectionalShadowMap>(
+        camera_view,
+        std::move(captured),
+        cascades.size());
 }
 
 std::shared_ptr<const DepthCubemap> render_point_shadow_cubemap(
