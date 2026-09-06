@@ -600,6 +600,14 @@ void validate_point_shadow_state_definition(
     if (!state.map) {
         throw std::invalid_argument("point shadow mapping requires a depth cubemap");
     }
+    const Vec3& capture_position = state.map->light_position();
+    const Vec3& light_position = fixed_lights.lights[index].point.position;
+    if (capture_position.x != light_position.x
+        || capture_position.y != light_position.y
+        || capture_position.z != light_position.z) {
+        throw std::invalid_argument(
+            "point shadow cubemap capture position must match the associated point light");
+    }
     if (!std::isfinite(state.bias) || state.bias < 0.0F) {
         throw std::invalid_argument("point shadow bias must be finite and non-negative");
     }
