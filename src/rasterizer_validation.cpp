@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "normal_mapping_internal.hpp"
+
 namespace tiny_renderer::detail {
 namespace {
 
@@ -140,7 +142,9 @@ void validate_layout_match(const VaryingPack& reference, const VaryingPack& cand
 bool texture_coordinates_required(
     const TextureBinding& texture_binding,
     BaseColorSource source) {
-    return source == BaseColorSource::Texture || texture_binding.opacity_texture != nullptr;
+    return source == BaseColorSource::Texture
+        || texture_binding.opacity_texture != nullptr
+        || texture_binding.normal_texture != nullptr;
 }
 
 void validate_output_binding(
@@ -254,6 +258,28 @@ void preflight_transformed_normals(const Mesh& mesh, const DirectionalLight& lig
     }
 }
 
+Triangle assemble_triangle(const Mesh& mesh, const TriangleIndices& indices) {
+    return Triangle{mesh.vertices[indices[0]], mesh.vertices[indices[1]], mesh.vertices[indices[2]]};
+}
+
+void preflight_tangent_frames(
+    const Mesh& mesh,
+    DrawRange range,
+    const TextureBinding& texture_binding,
+    const Mat4& model) {
+    if (texture_binding.normal_texture == nullptr) {
+        return;
+    }
+    validate_normal_texture(*texture_binding.normal_texture);
+    const std::size_t end = range.first_triangle + range.triangle_count;
+    for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {
+        (void)prepare_tangent_frame(
+            assemble_triangle(mesh, mesh.triangles[triangle_index]),
+            texture_binding,
+            model);
+    }
+}
+
 }  // namespace
 
 void validate_face_culling(CullMode cull_mode, FrontFace front_face) {
@@ -362,6 +388,12 @@ void preflight_mesh_range_submission(
     if (mvp_only && (directional_light.enabled || shadow_state.enabled)) {
         throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
+    if (texture_binding.normal_texture != nullptr && !directional_light.enabled) {
+        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    }
+    if (texture_binding.normal_texture != nullptr && (mvp_only || model == nullptr)) {
+        throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
+    }
 
     validate_face_culling(cull_mode, front_face);
     validate_depth_state(depth_state);
@@ -381,6 +413,9 @@ void preflight_mesh_range_submission(
             throw std::logic_error("model transform required for lit range preflight");
         }
         preflight_transformed_normals(mesh, light, normal_matrix(*model));
+    }
+    if (texture_binding.normal_texture != nullptr && model != nullptr) {
+        preflight_tangent_frames(mesh, range, texture_binding, *model);
     }
 }
 
