@@ -254,4 +254,8 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_point_shadow_tests tests/test_point_shadow.cpp)
     target_link_libraries(tiny_renderer_point_shadow_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_point_shadow_tests COMMAND tiny_renderer_point_shadow_tests)
+
+    add_executable(tiny_renderer_spotlight_tests tests/test_spotlight.cpp)
+    target_link_libraries(tiny_renderer_spotlight_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_spotlight_tests COMMAND tiny_renderer_spotlight_tests)
 endif()
