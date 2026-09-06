@@ -336,9 +336,16 @@ PointLight prepare_point_light(const PointLight& light) {
 FixedLightCollection prepare_fixed_lights(const FixedLightCollection& lights) {
     FixedLightCollection prepared = lights;
     for (std::size_t i = 0U; i < prepared.count; ++i) {
-        if (prepared.lights[i].type == FixedLightType::Directional) {
-            prepared.lights[i].directional.direction_to_light =
-                normalize(prepared.lights[i].directional.direction_to_light);
+        switch (prepared.lights[i].type) {
+            case FixedLightType::Directional:
+                prepared.lights[i].directional.direction_to_light =
+                    normalize(prepared.lights[i].directional.direction_to_light);
+                break;
+            case FixedLightType::Point:
+                break;
+            case FixedLightType::Spot:
+                prepared.lights[i].spot.direction = normalize(prepared.lights[i].spot.direction);
+                break;
         }
     }
     return prepared;
@@ -858,15 +865,36 @@ float point_shadow_visibility(
     return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
 }
 
-float point_attenuation(const PointLight& light, float distance) {
+float attenuation(float linear, float quadratic, float distance) {
     const double d = static_cast<double>(distance);
     const double denominator = 1.0
-        + static_cast<double>(light.linear_attenuation) * d
-        + static_cast<double>(light.quadratic_attenuation) * d * d;
+        + static_cast<double>(linear) * d
+        + static_cast<double>(quadratic) * d * d;
     if (!std::isfinite(denominator)) {
         return 0.0F;
     }
     return static_cast<float>(1.0 / denominator);
+}
+
+float point_attenuation(const PointLight& light, float distance) {
+    return attenuation(light.linear_attenuation, light.quadratic_attenuation, distance);
+}
+
+float spot_attenuation(const SpotLight& light, float distance) {
+    return attenuation(light.linear_attenuation, light.quadratic_attenuation, distance);
+}
+
+float spot_cone_factor(const SpotLight& light, const Vec3& direction_to_light) {
+    const Vec3 light_to_fragment = direction_to_light * -1.0F;
+    const float cone_cos = dot(light.direction, light_to_fragment);
+    if (cone_cos >= light.inner_cone_cos) {
+        return 1.0F;
+    }
+    if (cone_cos <= light.outer_cone_cos) {
+        return 0.0F;
+    }
+    return (cone_cos - light.outer_cone_cos)
+        / (light.inner_cone_cos - light.outer_cone_cos);
 }
 
 float ambient_sum(
@@ -880,9 +908,17 @@ float ambient_sum(
     float sum = 0.0F;
     for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
         const FixedLight& light = fixed_lights.lights[i];
-        sum += light.type == FixedLightType::Directional
-            ? light.directional.ambient
-            : light.point.ambient;
+        switch (light.type) {
+            case FixedLightType::Directional:
+                sum += light.directional.ambient;
+                break;
+            case FixedLightType::Point:
+                sum += light.point.ambient;
+                break;
+            case FixedLightType::Spot:
+                sum += light.spot.ambient;
+                break;
+        }
     }
     return sum;
 }
@@ -893,13 +929,15 @@ Vec3 light_contribution(
     const MaterialState& material,
     const DirectionalLight* directional_light,
     const PointLight* point_light,
+    const SpotLight* spot_light,
     float visibility,
     const Vec3& world_position) {
     Vec3 direction_to_light{};
     Vec3 viewer_position{};
     float ambient = 0.0F;
     float diffuse = 0.0F;
-    float attenuation = 1.0F;
+    float attenuation_factor = 1.0F;
+    float cone_factor = 1.0F;
 
     if (directional_light != nullptr) {
         direction_to_light = directional_light->direction_to_light;
@@ -916,13 +954,26 @@ Vec3 light_contribution(
             return base * ambient;
         }
         direction_to_light = to_light / distance;
-        attenuation = point_attenuation(*point_light, distance);
+        attenuation_factor = point_attenuation(*point_light, distance);
+    } else if (spot_light != nullptr) {
+        ambient = spot_light->ambient;
+        diffuse = spot_light->diffuse;
+        viewer_position = spot_light->viewer_position;
+        const Vec3 to_light = spot_light->position - world_position;
+        const float distance = length(to_light);
+        if (!finite_vec3(to_light) || !std::isfinite(distance) || distance <= kEpsilon) {
+            return base * ambient;
+        }
+        direction_to_light = to_light / distance;
+        attenuation_factor = spot_attenuation(*spot_light, distance);
+        cone_factor = spot_cone_factor(*spot_light, direction_to_light);
     } else {
         throw std::logic_error("fixed-light contribution requires one selected light payload");
     }
 
+    const float direct_factor = visibility * attenuation_factor * cone_factor;
     const float lambert = std::clamp(dot(normal, direction_to_light), 0.0F, 1.0F);
-    const float diffuse_intensity = diffuse * lambert * visibility * attenuation;
+    const float diffuse_intensity = diffuse * lambert * direct_factor;
     Vec3 shaded = base * (ambient + diffuse_intensity);
 
     if (material_has_specular(material)) {
@@ -935,7 +986,7 @@ Vec3 light_contribution(
             if (finite_vec3(half_sum) && std::isfinite(half_length) && half_length > kEpsilon) {
                 const Vec3 half_direction = half_sum / half_length;
                 const float nh = std::clamp(dot(normal, half_direction), 0.0F, 1.0F);
-                const float specular_strength = diffuse * visibility * attenuation
+                const float specular_strength = diffuse * direct_factor
                     * std::pow(nh, material.shininess);
                 shaded = {
                     shaded.x + material.specular.x * specular_strength,
@@ -1002,45 +1053,63 @@ ShadedFragment shade_fragment(
             : 1.0F;
         const Vec3 shaded = directional_light.enabled
             ? light_contribution(
-                base, normal, material, &directional_light, nullptr, visibility, world_position)
+                base, normal, material, &directional_light, nullptr, nullptr, visibility, world_position)
             : light_contribution(
-                base, normal, material, nullptr, &point_light, 1.0F, world_position);
+                base, normal, material, nullptr, &point_light, nullptr, 1.0F, world_position);
         return {shaded, opacity, false};
     }
 
     Vec3 shaded{};
     for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
         const FixedLight& light = fixed_lights.lights[i];
-        if (light.type == FixedLightType::Directional) {
-            const bool is_shadowed = shadow.enabled
-                && fixed_lights.shadowed_directional_index
-                && *fixed_lights.shadowed_directional_index == i;
-            const float visibility = is_shadowed
-                ? shadow_visibility(shadow, light_clip)
-                : 1.0F;
-            shaded = shaded + light_contribution(
-                base,
-                normal,
-                material,
-                &light.directional,
-                nullptr,
-                visibility,
-                world_position);
-        } else {
-            const bool is_shadowed = point_shadow.enabled
-                && fixed_lights.shadowed_point_index
-                && *fixed_lights.shadowed_point_index == i;
-            const float visibility = is_shadowed
-                ? point_shadow_visibility(point_shadow, light.point, world_position)
-                : 1.0F;
-            shaded = shaded + light_contribution(
-                base,
-                normal,
-                material,
-                nullptr,
-                &light.point,
-                visibility,
-                world_position);
+        switch (light.type) {
+            case FixedLightType::Directional: {
+                const bool is_shadowed = shadow.enabled
+                    && fixed_lights.shadowed_directional_index
+                    && *fixed_lights.shadowed_directional_index == i;
+                const float visibility = is_shadowed
+                    ? shadow_visibility(shadow, light_clip)
+                    : 1.0F;
+                shaded = shaded + light_contribution(
+                    base,
+                    normal,
+                    material,
+                    &light.directional,
+                    nullptr,
+                    nullptr,
+                    visibility,
+                    world_position);
+                break;
+            }
+            case FixedLightType::Point: {
+                const bool is_shadowed = point_shadow.enabled
+                    && fixed_lights.shadowed_point_index
+                    && *fixed_lights.shadowed_point_index == i;
+                const float visibility = is_shadowed
+                    ? point_shadow_visibility(point_shadow, light.point, world_position)
+                    : 1.0F;
+                shaded = shaded + light_contribution(
+                    base,
+                    normal,
+                    material,
+                    nullptr,
+                    &light.point,
+                    nullptr,
+                    visibility,
+                    world_position);
+                break;
+            }
+            case FixedLightType::Spot:
+                shaded = shaded + light_contribution(
+                    base,
+                    normal,
+                    material,
+                    nullptr,
+                    nullptr,
+                    &light.spot,
+                    1.0F,
+                    world_position);
+                break;
         }
     }
     return {shaded, opacity, false};

@@ -73,12 +73,42 @@ void validate_point_light(const PointLight& light) {
     }
 }
 
+void validate_spot_light(const SpotLight& light) {
+    if (!finite_vec3(light.position)) {
+        throw std::invalid_argument("spot light position must be finite");
+    }
+    if (!finite_vec3(light.direction) || length(light.direction) <= kEpsilon) {
+        throw std::invalid_argument("spot light direction must be finite and non-zero");
+    }
+    if (!finite_vec3(light.viewer_position)) {
+        throw std::invalid_argument("spot light viewer position must be finite");
+    }
+    validate_light_coefficients(light.ambient, light.diffuse, "spot light");
+    if (!std::isfinite(light.linear_attenuation)
+        || !std::isfinite(light.quadratic_attenuation)
+        || light.linear_attenuation < 0.0F
+        || light.quadratic_attenuation < 0.0F) {
+        throw std::invalid_argument(
+            "spot light attenuation coefficients must be finite and non-negative");
+    }
+    if (!std::isfinite(light.inner_cone_cos)
+        || !std::isfinite(light.outer_cone_cos)
+        || light.inner_cone_cos < -1.0F || light.inner_cone_cos > 1.0F
+        || light.outer_cone_cos < -1.0F || light.outer_cone_cos > 1.0F
+        || light.inner_cone_cos <= light.outer_cone_cos) {
+        throw std::invalid_argument(
+            "spot light cone cosines must be finite within [-1, 1] with inner greater than outer");
+    }
+}
+
 const NormalBinding& selected_normal_binding(const FixedLight& light) {
     switch (light.type) {
         case FixedLightType::Directional:
             return light.directional.normal;
         case FixedLightType::Point:
             return light.point.normal;
+        case FixedLightType::Spot:
+            return light.spot.normal;
     }
     throw std::logic_error("validated fixed-light collection contains an unknown light type");
 }
@@ -97,6 +127,16 @@ bool collection_has_point(const FixedLightCollection& fixed_lights) {
     const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
     for (std::size_t i = 0U; i < count; ++i) {
         if (fixed_lights.lights[i].type == FixedLightType::Point) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool collection_has_spot(const FixedLightCollection& fixed_lights) {
+    const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+    for (std::size_t i = 0U; i < count; ++i) {
+        if (fixed_lights.lights[i].type == FixedLightType::Spot) {
             return true;
         }
     }
@@ -422,6 +462,7 @@ bool fixed_lighting_world_position_required(
     const MaterialState& material) {
     if (fixed_lights.count != 0U) {
         return collection_has_point(fixed_lights)
+            || collection_has_spot(fixed_lights)
             || (material_has_specular(material) && collection_has_directional(fixed_lights));
     }
     return point_light.enabled
@@ -498,7 +539,7 @@ void validate_fixed_lighting_definition(
         const NormalBinding* normal = nullptr;
         switch (light.type) {
             case FixedLightType::Directional:
-                if (!light.directional.enabled || light.point.enabled) {
+                if (!light.directional.enabled || light.point.enabled || light.spot.enabled) {
                     throw std::invalid_argument(
                         "directional collection record requires only its directional payload enabled");
                 }
@@ -506,12 +547,20 @@ void validate_fixed_lighting_definition(
                 normal = &light.directional.normal;
                 break;
             case FixedLightType::Point:
-                if (!light.point.enabled || light.directional.enabled) {
+                if (!light.point.enabled || light.directional.enabled || light.spot.enabled) {
                     throw std::invalid_argument(
                         "point collection record requires only its point payload enabled");
                 }
                 validate_point_light(light.point);
                 normal = &light.point.normal;
+                break;
+            case FixedLightType::Spot:
+                if (!light.spot.enabled || light.directional.enabled || light.point.enabled) {
+                    throw std::invalid_argument(
+                        "spot collection record requires only its spot payload enabled");
+                }
+                validate_spot_light(light.spot);
+                normal = &light.spot.normal;
                 break;
             default:
                 throw std::invalid_argument("fixed-light collection contains an unknown light type");
