@@ -60,7 +60,7 @@ float parse_float(const std::string& token, std::size_t line, const char* field)
     return value;
 }
 
-std::int64_t parse_positive_index(std::string_view token, std::size_t line, const char* field) {
+std::int64_t parse_index(std::string_view token, std::size_t line, const char* field) {
     std::int64_t value{};
     const char* const begin = token.data();
     const char* const end = begin + token.size();
@@ -68,8 +68,8 @@ std::int64_t parse_positive_index(std::string_view token, std::size_t line, cons
     if (error != std::errc{} || ptr != end) {
         fail(line, std::string("invalid ") + field + " index '" + std::string(token) + "'");
     }
-    if (value <= 0) {
-        fail(line, "only positive absolute OBJ indices are supported");
+    if (value == 0) {
+        fail(line, std::string(field) + " OBJ index must not be zero");
     }
     return value;
 }
@@ -83,8 +83,8 @@ FaceReference parse_face_reference(const std::string& token, std::size_t line) {
     const std::size_t second_slash = token.find('/', first_slash + 1U);
     if (second_slash == std::string::npos) {
         return {
-            parse_positive_index(std::string_view(token).substr(0U, first_slash), line, "position"),
-            parse_positive_index(std::string_view(token).substr(first_slash + 1U), line, "texture-coordinate"),
+            parse_index(std::string_view(token).substr(0U, first_slash), line, "position"),
+            parse_index(std::string_view(token).substr(first_slash + 1U), line, "texture-coordinate"),
             0,
             FaceLayout::PositionTexcoord,
         };
@@ -97,22 +97,33 @@ FaceReference parse_face_reference(const std::string& token, std::size_t line) {
     }
 
     return {
-        parse_positive_index(std::string_view(token).substr(0U, first_slash), line, "position"),
-        parse_positive_index(
+        parse_index(std::string_view(token).substr(0U, first_slash), line, "position"),
+        parse_index(
             std::string_view(token).substr(first_slash + 1U, second_slash - first_slash - 1U),
             line,
             "texture-coordinate"),
-        parse_positive_index(std::string_view(token).substr(second_slash + 1U), line, "normal"),
+        parse_index(std::string_view(token).substr(second_slash + 1U), line, "normal"),
         FaceLayout::PositionTexcoordNormal,
     };
 }
 
-std::size_t resolve_index(std::int64_t one_based, std::size_t extent, std::size_t line, const char* field) {
-    const std::uint64_t positive = static_cast<std::uint64_t>(one_based);
-    if (positive > static_cast<std::uint64_t>(extent)) {
-        fail(line, std::string(field) + " index is out of range");
+std::size_t resolve_index(std::int64_t index, std::size_t extent, std::size_t line, const char* field) {
+    if (index > 0) {
+        const std::uint64_t positive = static_cast<std::uint64_t>(index);
+        if (positive > static_cast<std::uint64_t>(extent)) {
+            fail(line, std::string(field) + " index is out of range");
+        }
+        return static_cast<std::size_t>(positive - 1U);
     }
-    return static_cast<std::size_t>(positive - 1U);
+
+    if (index == std::numeric_limits<std::int64_t>::min()) {
+        fail(line, std::string(field) + " relative index is out of range");
+    }
+    const std::uint64_t magnitude = static_cast<std::uint64_t>(-index);
+    if (magnitude > static_cast<std::uint64_t>(extent)) {
+        fail(line, std::string(field) + " relative index is out of range");
+    }
+    return extent - static_cast<std::size_t>(magnitude);
 }
 
 bool is_ignored_metadata_directive(const std::string& directive) {
