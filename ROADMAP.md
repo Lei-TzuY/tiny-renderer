@@ -117,23 +117,34 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Regression coverage locks opacity 0/0.5/1 analytic composition, opaque-default compatibility, invalid material/fragment/MTL rejection, depth-write-disabled transparent passes, stencil/scissor interaction, homogeneous clipping continuity, prepared-list equivalence, and caller-order significance.
 - The milestone enables bounded caller-ordered transparency only; it does not add destination alpha, alpha textures, automatic sorting, order-independent transparency, or physically based transmission.
 
-## Next frontier — Milestone 29
+### Milestone 29 — deterministic 4× multisampling
 
-The next architectural promotion is **deterministic 4× multisample antialiasing with per-sample ownership and resolve**. Coverage is still evaluated only at the pixel center, so subpixel edge visibility cannot be represented even though the renderer already has deterministic fixed-point coverage and explicit depth/stencil/blend stages.
+- `Framebuffer` owns explicit `SampleCount::{One, Four}` target state; single-sample remains the default and preserves established byte/hash output.
+- 4× mode stores RGB, depth, and stencil independently per sample and uses the fixed quarter-offset 2×2 pattern `(0.25,0.25)`, `(0.75,0.25)`, `(0.25,0.75)`, `(0.75,0.75)`, represented exactly in the existing 1/256 fixed-point coverage domain.
+- Top-left coverage, barycentrics, perspective interpolation, depth evaluation, material shading, stencil operations, blending, and color masks execute per covered sample through the same triangle raster path.
+- `Framebuffer::test_and_write_sample` centralizes per-sample stencil → depth → blend → RGB ownership; the legacy pixel-level ownership entry point rejects multisample targets instead of silently touching only one sample.
+- RGB output resolves four float sample colors by deterministic equal-weight averaging; 1× resolve is a direct copy, while sample-specific color/depth/stencil inspection remains available for regression evidence.
+- Viewport/scissor remain pixel-space half-open state, and model/prepared/list submission inherits multisampling from the framebuffer target without adding sample state to model render options or duplicating geometry/material paths.
+- Framebuffer pixel/sample allocation is overflow-checked before storage allocation, and unsupported sample counts fail closed.
+- Regression coverage locks 1× deterministic compatibility, quarter-edge coverage, exact shared-edge sample ownership, per-sample depth/stencil isolation, source-alpha-before-resolve behavior, clipped/scissored multisample side effects, prepared-list equivalence, and storage validation.
+- This first multisample slice does not claim configurable sample locations, alpha-to-coverage, sample masks, centroid interpolation, temporal antialiasing, coverage-shading optimization, or performance improvement.
+
+## Next frontier — Milestone 30
+
+The next architectural promotion is **owned MTL `map_d` opacity maps integrated through material submission and fragment opacity**. Material opacity is currently uniform per draw, so textured cutout/transparency information cannot travel from an imported asset through the same verified opacity/blend/MSAA pipeline.
 
 Acceptance for that slice should require:
 
-- an explicit sample-count state supporting the legacy single-sample path and one deterministic 4× mode; single-sample remains the default and must stay byte/hash-identical;
-- a fixed documented 2×2 sample pattern represented exactly in the existing fixed-point subpixel domain rather than using random/jittered positions;
-- top-left edge coverage, barycentrics, perspective interpolation, depth evaluation, material shading, stencil operations, blending, and color write masks execute per covered sample without introducing a parallel triangle pipeline;
-- depth, stencil, and color ownership are isolated per sample so one covered sample cannot incorrectly occlude or update another sample in the same pixel;
-- RGB output performs a deterministic equal-weight resolve of the four float sample colors at the existing framebuffer/output boundary, with explicit sample inspection APIs where needed for regression evidence;
-- viewport/scissor semantics remain pixel-space half-open bounds while each accepted pixel evaluates only its configured sample locations;
-- model, prepared-instance, and heterogeneous-list submission reuse the same multisample-aware raster path without duplicating geometry/material state;
-- deterministic regressions cover single-sample compatibility, edge partial coverage, shared-edge top-left ownership, per-sample depth/stencil independence, blend resolve, clipped geometry, scissor interaction, and prepared/list propagation;
-- the first multisample slice does not claim alpha-to-coverage, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, or performance improvements;
-- no performance claim is made without a controlled benchmark.
+- the bounded rich MTL path accepts at most one `map_d <filename>` per material with the same sibling-path safety and deterministic duplicate/malformed diagnostics used for existing mapped assets;
+- `MaterialDraw` owns an optional opacity texture with shared lifetime semantics matching diffuse `map_Kd`, including deterministic deduplication when repeated materials reference the same file;
+- opacity maps reuse the material draw's existing UV channels and sampler state rather than introducing a parallel coordinate path or texture-transform syntax;
+- the RGB `Texture2D` sample is converted to one bounded opacity scalar by a single documented rule in the renderer's current linear teaching color space, and fragment opacity becomes material `d` multiplied by that sampled scalar;
+- missing `map_d` preserves every existing uniform-opacity result byte/hash-identically, while a present opacity map requires valid UV varyings and fails closed before framebuffer mutation when the binding is invalid;
+- direct model submission, prepared plans, instance batches, and heterogeneous prepared lists preserve owned opacity-texture lifetime and execute through the existing shading/raster path;
+- deterministic file-driven regressions compare imported `map_d` assets with equivalent programmatic opacity-texture submission under source-alpha blending on both 1× and 4× targets, including clipping/scissor and prepared/list propagation;
+- the slice does not add destination alpha, image formats beyond the existing bounded PPM path, alpha test/discard, alpha-to-coverage, automatic transparency sorting, order-independent transparency, or physically based transmission;
+- no performance or colorimetric claim is made without controlled evidence.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, alpha textures, transparency sorting/OIT, alpha-to-coverage, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, alpha-to-coverage, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
