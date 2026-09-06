@@ -93,6 +93,7 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
     detail::validate_shadow_state_definition(
         options.shadow_state,
         options.directional_light.enabled);
+    detail::validate_alpha_test_state(options.alpha_test_state);
     bool sampler_needed = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
@@ -126,6 +127,7 @@ void preflight_prepared_model_transform(
     const Mat4& model) {
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
+    detail::validate_alpha_test_state(options.alpha_test_state);
     for (const MaterialDraw& draw : asset.draws) {
         detail::preflight_mesh_range_submission(
             framebuffer,
@@ -172,7 +174,8 @@ void execute_prepared_model_transform(
             options.stencil_state,
             options.blend_state,
             options.alpha_to_coverage_state,
-            options.shadow_state);
+            options.shadow_state,
+            options.alpha_test_state);
         rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
     }
 }
@@ -188,6 +191,7 @@ void draw_validated_model_impl(
         return;
     }
 
+    detail::validate_alpha_test_state(options.alpha_test_state);
     for (const MaterialDraw& draw : asset.draws) {
         preflight_draw(draw);
     }
@@ -207,7 +211,8 @@ void draw_validated_model_impl(
             options.stencil_state,
             options.blend_state,
             options.alpha_to_coverage_state,
-            options.shadow_state);
+            options.shadow_state,
+            options.alpha_test_state);
         submit_range(rasterizer, draw.range);
     }
 }
@@ -251,6 +256,7 @@ void draw_prepared_model_instances(
         return;
     }
 
+    detail::validate_alpha_test_state(options.alpha_test_state);
     for (const Mat4& mvp : mvps) {
         (void)mvp;
         for (const MaterialDraw& draw : asset.draws) {
@@ -292,7 +298,8 @@ void draw_prepared_model_instances(
                 options.stencil_state,
                 options.blend_state,
                 options.alpha_to_coverage_state,
-                options.shadow_state);
+                options.shadow_state,
+                options.alpha_test_state);
             rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
         }
     }
