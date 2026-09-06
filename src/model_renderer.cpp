@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "normal_mapping_internal.hpp"
 #include "rasterizer_validation.hpp"
 #include "vertex_program_internal.hpp"
 
@@ -113,11 +114,20 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
         options.vertex_program,
         detail::vertex_program_varying_count(asset.mesh));
     bool sampler_needed = false;
+    bool normal_map_present = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
         sampler_needed = sampler_needed
             || static_cast<bool>(draw.diffuse_texture)
-            || static_cast<bool>(draw.opacity_texture);
+            || static_cast<bool>(draw.opacity_texture)
+            || static_cast<bool>(draw.normal_texture);
+        if (draw.normal_texture) {
+            normal_map_present = true;
+            detail::validate_normal_texture(*draw.normal_texture);
+        }
+    }
+    if (normal_map_present && !options.directional_light.enabled) {
+        throw std::invalid_argument("normal mapping requires an enabled directional light");
     }
     if (sampler_needed) {
         validate_sampler(options.sampler);
@@ -132,6 +142,7 @@ TextureBinding texture_binding_for(const MaterialDraw& draw, const ModelRenderOp
         options.sampler,
     };
     binding.opacity_texture = draw.opacity_texture.get();
+    binding.normal_texture = draw.normal_texture.get();
     return binding;
 }
 
@@ -151,7 +162,7 @@ void preflight_prepared_model_transform(
         detail::preflight_mesh_range_submission(
             framebuffer,
             mesh,
-            DrawRange{0U, 0U},
+            draw.range,
             {},
             texture_binding_for(draw, options),
             options.directional_light,
@@ -181,7 +192,7 @@ void preflight_prepared_model_mvp(
         detail::preflight_mesh_range_submission(
             framebuffer,
             mesh,
-            DrawRange{0U, 0U},
+            draw.range,
             {},
             texture_binding_for(draw, options),
             options.directional_light,
@@ -434,7 +445,7 @@ void draw_model_asset(
             detail::preflight_mesh_range_submission(
                 framebuffer,
                 mesh,
-                DrawRange{0U, 0U},
+                draw.range,
                 {},
                 texture_binding_for(draw, options),
                 options.directional_light,
@@ -475,7 +486,7 @@ void draw_model_asset(
             detail::preflight_mesh_range_submission(
                 framebuffer,
                 mesh,
-                DrawRange{0U, 0U},
+                draw.range,
                 {},
                 texture_binding_for(draw, options),
                 options.directional_light,
