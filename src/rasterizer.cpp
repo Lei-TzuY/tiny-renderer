@@ -111,6 +111,13 @@ bool alpha_to_coverage_accepts(
     return sample_index < alpha_to_coverage_sample_count(opacity);
 }
 
+bool alpha_test_accepts(const AlphaTestState& state, float opacity) {
+    if (!state.enabled) {
+        return true;
+    }
+    return opacity >= state.threshold;
+}
+
 bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
@@ -734,6 +741,7 @@ void rasterize_screen_triangle(
     const StencilState& stencil_state,
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
+    const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
@@ -839,6 +847,9 @@ void rasterize_screen_triangle(
                     material,
                     shadow_state,
                     light_clip);
+                if (!alpha_test_accepts(alpha_test_state, fragment.opacity)) {
+                    continue;
+                }
                 if (!alpha_to_coverage_accepts(
                         alpha_to_coverage_state,
                         fragment.opacity,
@@ -910,6 +921,7 @@ void draw_triangle_impl(
     const StencilState& stencil_state,
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
+    const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
@@ -958,6 +970,7 @@ void draw_triangle_impl(
             stencil_state,
             blend_state,
             alpha_to_coverage_state,
+            alpha_test_state,
             shadow_state,
             viewport_state.scissor);
     }
@@ -970,6 +983,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
+    detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
@@ -1003,6 +1017,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         stencil_state_,
         blend_state_,
         alpha_to_coverage_state_,
+        alpha_test_state_,
         shadow_state_,
         viewport_state);
 }
@@ -1015,6 +1030,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
+    detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
@@ -1040,6 +1056,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         stencil_state_,
         blend_state_,
         alpha_to_coverage_state_,
+        alpha_test_state_,
         shadow_state_,
         viewport_state);
 }
@@ -1049,6 +1066,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
+    detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
@@ -1084,6 +1102,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             stencil_state_,
             blend_state_,
             alpha_to_coverage_state_,
+            alpha_test_state_,
             shadow_state_,
             viewport_state);
     }
@@ -1097,6 +1116,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     validate_depth_state(depth_state_);
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
+    detail::validate_alpha_test_state(alpha_test_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
@@ -1123,6 +1143,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             stencil_state_,
             blend_state_,
             alpha_to_coverage_state_,
+            alpha_test_state_,
             shadow_state_,
             viewport_state);
     }
