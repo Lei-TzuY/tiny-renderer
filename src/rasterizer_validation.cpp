@@ -29,6 +29,32 @@ bool material_has_specular(const MaterialState& material) {
         || material.specular.z > 0.0F;
 }
 
+bool fixed_lighting_enabled(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light) {
+    return directional_light.enabled || point_light.enabled;
+}
+
+const NormalBinding* active_normal_binding(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light) {
+    if (directional_light.enabled) {
+        return &directional_light.normal;
+    }
+    if (point_light.enabled) {
+        return &point_light.normal;
+    }
+    return nullptr;
+}
+
+bool world_position_required(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const MaterialState& material) {
+    return point_light.enabled
+        || (directional_light.enabled && material_has_specular(material));
+}
+
 bool finite_mat4(const Mat4& matrix) {
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
@@ -119,25 +145,15 @@ void validate_material_state(const MaterialState& material) {
     }
 }
 
-DirectionalLight prepare_directional_light(const DirectionalLight& light) {
-    if (!light.enabled) {
-        return light;
+void validate_light_coefficients(float ambient, float diffuse, const char* label) {
+    if (!std::isfinite(ambient) || !std::isfinite(diffuse)
+        || ambient < 0.0F || diffuse < 0.0F
+        || ambient > 1.0F || diffuse > 1.0F
+        || ambient + diffuse > 1.0F + kEpsilon) {
+        throw std::invalid_argument(
+            std::string(label)
+            + " coefficients must be finite, non-negative, and sum to at most one");
     }
-    if (!finite_vec3(light.direction_to_light) || length(light.direction_to_light) <= kEpsilon) {
-        throw std::invalid_argument("directional light direction must be finite and non-zero");
-    }
-    if (!finite_vec3(light.viewer_position)) {
-        throw std::invalid_argument("directional light viewer position must be finite");
-    }
-    if (!std::isfinite(light.ambient) || !std::isfinite(light.diffuse)
-        || light.ambient < 0.0F || light.diffuse < 0.0F
-        || light.ambient > 1.0F || light.diffuse > 1.0F
-        || light.ambient + light.diffuse > 1.0F + kEpsilon) {
-        throw std::invalid_argument("directional light coefficients must be finite, non-negative, and sum to at most one");
-    }
-    DirectionalLight prepared = light;
-    prepared.direction_to_light = normalize(light.direction_to_light);
-    return prepared;
 }
 
 void validate_pack(const VaryingPack& pack) {
@@ -208,7 +224,7 @@ void validate_vertex_state(
     const VaryingPack& reference,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light) {
+    const NormalBinding* normal_binding) {
     validate_layout_match(reference, vertex.varyings);
     if (texture_coordinates_required(texture_binding, source)) {
         const float u = vertex.varyings.values[texture_binding.u_channel];
@@ -219,11 +235,11 @@ void validate_vertex_state(
             throw std::invalid_argument("texture coordinates exceed safe finite range");
         }
     }
-    if (light.enabled) {
+    if (normal_binding != nullptr) {
         const Vec3 normal{
-            vertex.varyings.values[light.normal.x],
-            vertex.varyings.values[light.normal.y],
-            vertex.varyings.values[light.normal.z],
+            vertex.varyings.values[normal_binding->x],
+            vertex.varyings.values[normal_binding->y],
+            vertex.varyings.values[normal_binding->z],
         };
         if (!finite_vec3(normal) || length(normal) <= kEpsilon) {
             throw std::invalid_argument("vertex normal must be finite and non-zero");
@@ -237,7 +253,7 @@ void validate_mesh_range(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
-    const DirectionalLight& light) {
+    const NormalBinding* normal_binding) {
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {
         for (const std::uint32_t index : mesh.triangles[triangle_index]) {
@@ -253,23 +269,31 @@ void validate_mesh_range(
 
     validate_pack(mesh.vertices.front().varyings);
     validate_output_binding(color_binding, texture_binding, source, mesh.vertices.front().varyings.count);
-    if (light.enabled) {
-        validate_normal_binding(light.normal, mesh.vertices.front().varyings);
+    if (normal_binding != nullptr) {
+        validate_normal_binding(*normal_binding, mesh.vertices.front().varyings);
     }
     for (const Vertex& vertex : mesh.vertices) {
-        validate_vertex_state(vertex, mesh.vertices.front().varyings, texture_binding, source, light);
+        validate_vertex_state(
+            vertex,
+            mesh.vertices.front().varyings,
+            texture_binding,
+            source,
+            normal_binding);
     }
 }
 
-void preflight_transformed_normals(const Mesh& mesh, const DirectionalLight& light, const Mat3& matrix) {
-    if (!light.enabled) {
+void preflight_transformed_normals(
+    const Mesh& mesh,
+    const NormalBinding* normal_binding,
+    const Mat3& matrix) {
+    if (normal_binding == nullptr) {
         return;
     }
     for (const Vertex& vertex : mesh.vertices) {
         const Vec3 transformed = matrix * Vec3{
-            vertex.varyings.values[light.normal.x],
-            vertex.varyings.values[light.normal.y],
-            vertex.varyings.values[light.normal.z],
+            vertex.varyings.values[normal_binding->x],
+            vertex.varyings.values[normal_binding->y],
+            vertex.varyings.values[normal_binding->z],
         };
         if (!finite_vec3(transformed) || length(transformed) <= kEpsilon) {
             throw std::invalid_argument("transformed vertex normal is numerically unstable");
@@ -277,12 +301,13 @@ void preflight_transformed_normals(const Mesh& mesh, const DirectionalLight& lig
     }
 }
 
-void preflight_specular_world_positions(
+void preflight_lighting_world_positions(
     const Mesh& mesh,
-    const DirectionalLight& light,
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material,
     const Mat4& model) {
-    if (!light.enabled || !material_has_specular(material)) {
+    if (!world_position_required(directional_light, point_light, material)) {
         return;
     }
     for (const Vertex& vertex : mesh.vertices) {
@@ -292,12 +317,12 @@ void preflight_specular_world_positions(
             || !std::isfinite(world.z) || !std::isfinite(world.w)
             || std::fabs(world.w) <= kEpsilon) {
             throw std::invalid_argument(
-                "specular world-space position transform is numerically unstable");
+                "lighting world-space position transform is numerically unstable");
         }
         const float inv_w = 1.0F / world.w;
         const Vec3 position{world.x * inv_w, world.y * inv_w, world.z * inv_w};
         if (!finite_vec3(position)) {
-            throw std::invalid_argument("specular world-space position must remain finite");
+            throw std::invalid_argument("lighting world-space position must remain finite");
         }
     }
 }
@@ -385,6 +410,45 @@ void validate_shadow_state_definition(
     }
 }
 
+void validate_fixed_lighting_definition(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light) {
+    if (directional_light.enabled && point_light.enabled) {
+        throw std::invalid_argument("directional and point lights are mutually exclusive");
+    }
+
+    if (directional_light.enabled) {
+        if (!finite_vec3(directional_light.direction_to_light)
+            || length(directional_light.direction_to_light) <= kEpsilon) {
+            throw std::invalid_argument("directional light direction must be finite and non-zero");
+        }
+        if (!finite_vec3(directional_light.viewer_position)) {
+            throw std::invalid_argument("directional light viewer position must be finite");
+        }
+        validate_light_coefficients(
+            directional_light.ambient,
+            directional_light.diffuse,
+            "directional light");
+    }
+
+    if (point_light.enabled) {
+        if (!finite_vec3(point_light.position)) {
+            throw std::invalid_argument("point light position must be finite");
+        }
+        if (!finite_vec3(point_light.viewer_position)) {
+            throw std::invalid_argument("point light viewer position must be finite");
+        }
+        validate_light_coefficients(point_light.ambient, point_light.diffuse, "point light");
+        if (!std::isfinite(point_light.linear_attenuation)
+            || !std::isfinite(point_light.quadratic_attenuation)
+            || point_light.linear_attenuation < 0.0F
+            || point_light.quadratic_attenuation < 0.0F) {
+            throw std::invalid_argument(
+                "point light attenuation coefficients must be finite and non-negative");
+        }
+    }
+}
+
 ResolvedViewportState resolve_viewport_state(
     const Framebuffer& framebuffer,
     const ViewportState& state) {
@@ -416,6 +480,7 @@ void preflight_mesh_range_submission(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material_state,
     BaseColorSource base_color_source,
     CullMode cull_mode,
@@ -429,11 +494,13 @@ void preflight_mesh_range_submission(
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
-    if (mvp_only && (directional_light.enabled || shadow_state.enabled)) {
-        throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
+    validate_fixed_lighting_definition(directional_light, point_light);
+    const bool lighting_enabled = fixed_lighting_enabled(directional_light, point_light);
+    if (mvp_only && (lighting_enabled || shadow_state.enabled)) {
+        throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
-    if (texture_binding.normal_texture != nullptr && !directional_light.enabled) {
-        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    if (texture_binding.normal_texture != nullptr && !lighting_enabled) {
+        throw std::invalid_argument("normal mapping requires an enabled fixed light");
     }
     if (texture_binding.normal_texture != nullptr && (mvp_only || model == nullptr)) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
@@ -449,17 +516,22 @@ void preflight_mesh_range_submission(
     (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
-    const DirectionalLight light = prepare_directional_light(directional_light);
-    validate_mesh_range(mesh, range, color_binding, texture_binding, source, light);
+    const NormalBinding* normal_binding = active_normal_binding(directional_light, point_light);
+    validate_mesh_range(mesh, range, color_binding, texture_binding, source, normal_binding);
 
-    if (light.enabled && !mesh.vertices.empty()) {
+    if (normal_binding != nullptr && !mesh.vertices.empty()) {
         if (model == nullptr) {
             throw std::logic_error("model transform required for lit range preflight");
         }
-        preflight_transformed_normals(mesh, light, normal_matrix(*model));
+        preflight_transformed_normals(mesh, normal_binding, normal_matrix(*model));
     }
     if (model != nullptr) {
-        preflight_specular_world_positions(mesh, light, material_state, *model);
+        preflight_lighting_world_positions(
+            mesh,
+            directional_light,
+            point_light,
+            material_state,
+            *model);
     }
     if (texture_binding.normal_texture != nullptr && model != nullptr) {
         preflight_tangent_frames(mesh, range, texture_binding, *model);
