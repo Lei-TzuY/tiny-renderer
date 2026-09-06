@@ -43,12 +43,30 @@ jobs:
               else:
                   raise SystemExit(f'unexpected construction indentation: {line!r}')
           script = '\n'.join(script_lines) + '\n'
-          old = '"""return collection_has_point(fixed_lights)'
-          new = '"""        return collection_has_point(fixed_lights)'
-          count = script.count(old)
-          if count != 2:
-              raise SystemExit(f'expected exactly two stale world-position anchors, found {count}')
-          script = script.replace(old, new)
+
+          stale_old = '''"""return collection_has_point(fixed_lights)
+        || collection_has_spot(fixed_lights)
+        || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
+          live_old = '''"""        return collection_has_point(fixed_lights)
+            || collection_has_spot(fixed_lights)
+            || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
+          stale_new = '''"""return collection_has_point(fixed_lights)
+        || collection_has_spot(fixed_lights)
+        || collection_has_per_record_directional_shadow(fixed_lights)
+        || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
+          live_new = '''"""        return collection_has_point(fixed_lights)
+            || collection_has_spot(fixed_lights)
+            || collection_has_per_record_directional_shadow(fixed_lights)
+            || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
+          for stale, live, label in (
+              (stale_old, live_old, 'old'),
+              (stale_new, live_new, 'new'),
+          ):
+              count = script.count(stale)
+              if count != 1:
+                  raise SystemExit(f'expected one stale {label} world-position literal, found {count}')
+              script = script.replace(stale, live, 1)
+
           Path('/tmp/m44-apply.sh').write_text(script)
           PY
           bash /tmp/m44-apply.sh
