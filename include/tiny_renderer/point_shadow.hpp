@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "tiny_renderer/math.hpp"
+#include "tiny_renderer/shadow_sampling.hpp"
 
 namespace tiny_renderer {
 
@@ -54,6 +55,7 @@ struct PointShadowState {
     bool enabled{false};
     std::shared_ptr<const DepthCubemap> map;
     float bias{0.0F};
+    ShadowSamplingMode sampling{ShadowSamplingMode::Hard};
 };
 
 }  // namespace tiny_renderer
