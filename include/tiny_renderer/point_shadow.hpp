@@ -29,10 +29,12 @@ class DepthCubemap {
 public:
     DepthCubemap(
         std::size_t size,
+        Vec3 light_position,
         std::array<Mat4, kCubemapFaceCount> face_view_projections,
         std::vector<float> depths);
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] const Vec3& light_position() const noexcept { return light_position_; }
     [[nodiscard]] float depth_at(CubemapFace face, std::size_t x, std::size_t y) const;
     [[nodiscard]] const Mat4& face_view_projection(CubemapFace face) const;
 
@@ -43,6 +45,7 @@ private:
         std::size_t y) const;
 
     std::size_t size_{};
+    Vec3 light_position_{};
     std::array<Mat4, kCubemapFaceCount> face_view_projections_{};
     std::vector<float> depths_;
 };
