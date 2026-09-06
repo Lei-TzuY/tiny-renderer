@@ -64,6 +64,12 @@ struct ViewportState {
     std::optional<RasterRect> scissor{};
 };
 
+struct AlphaToCoverageState {
+    // Alpha-to-coverage is deliberately a raster coverage state rather than a
+    // framebuffer ownership state. When enabled it requires a 4x target.
+    bool enabled{false};
+};
+
 struct NormalBinding {
     std::size_t x{0U};
     std::size_t y{1U};
@@ -96,7 +102,8 @@ public:
         DepthState depth_state = {},
         ViewportState viewport_state = {},
         StencilState stencil_state = {},
-        BlendState blend_state = {})
+        BlendState blend_state = {},
+        AlphaToCoverageState alpha_to_coverage_state = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -108,7 +115,8 @@ public:
           depth_state_(depth_state),
           viewport_state_(viewport_state),
           stencil_state_(stencil_state),
-          blend_state_(blend_state) {}
+          blend_state_(blend_state),
+          alpha_to_coverage_state_(alpha_to_coverage_state) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -135,6 +143,7 @@ private:
     ViewportState viewport_state_;
     StencilState stencil_state_;
     BlendState blend_state_;
+    AlphaToCoverageState alpha_to_coverage_state_;
 };
 
 }  // namespace tiny_renderer
