@@ -42,32 +42,28 @@ jobs:
                   script_lines.append('')
               else:
                   raise SystemExit(f'unexpected construction indentation: {line!r}')
-          script = '\n'.join(script_lines) + '\n'
 
-          stale_old = '''"""return collection_has_point(fixed_lights)
-        || collection_has_spot(fixed_lights)
-        || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
-          live_old = '''"""        return collection_has_point(fixed_lights)
-            || collection_has_spot(fixed_lights)
-            || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
-          stale_new = '''"""return collection_has_point(fixed_lights)
-        || collection_has_spot(fixed_lights)
-        || collection_has_per_record_directional_shadow(fixed_lights)
-        || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
-          live_new = '''"""        return collection_has_point(fixed_lights)
-            || collection_has_spot(fixed_lights)
-            || collection_has_per_record_directional_shadow(fixed_lights)
-            || (material_has_specular(material) && collection_has_directional(fixed_lights));"""'''
-          for stale, live, label in (
-              (stale_old, live_old, 'old'),
-              (stale_new, live_new, 'new'),
-          ):
-              count = script.count(stale)
-              if count != 1:
-                  raise SystemExit(f'expected one stale {label} world-position literal, found {count}')
-              script = script.replace(stale, live, 1)
+          starts = [
+              i for i, line in enumerate(script_lines)
+              if '"""return collection_has_point(fixed_lights)' in line
+          ]
+          if len(starts) != 2:
+              raise SystemExit(f'expected two stale world-position literals, found {len(starts)}')
+          for start_index in starts:
+              script_lines[start_index] = script_lines[start_index].replace(
+                  '"""return collection_has_point(fixed_lights)',
+                  '"""        return collection_has_point(fixed_lights)',
+                  1)
+              cursor = start_index + 1
+              while cursor < len(script_lines):
+                  script_lines[cursor] = '    ' + script_lines[cursor]
+                  if '"""' in script_lines[cursor]:
+                      break
+                  cursor += 1
+              else:
+                  raise SystemExit('unterminated world-position literal')
 
-          Path('/tmp/m44-apply.sh').write_text(script)
+          Path('/tmp/m44-apply.sh').write_text('\n'.join(script_lines) + '\n')
           PY
           bash /tmp/m44-apply.sh
 
