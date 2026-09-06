@@ -43,6 +43,8 @@ constexpr float kMaxTextureCoordinateMagnitude = 1.0e20F;
 struct ClipVertex {
     Vec4 position;
     VaryingPack varyings;
+    Vec4 light_clip_position{};
+    bool has_light_clip{false};
 };
 
 struct ScreenVertex {
@@ -50,6 +52,8 @@ struct ScreenVertex {
     float ndc_z{};
     float inv_w{};
     VaryingPack interpolation_terms;
+    Vec4 light_clip_times_inv_w{};
+    bool has_light_clip{false};
 };
 
 struct FixedPoint2 {
@@ -387,9 +391,17 @@ ClipVertex lerp(const ClipVertex& a, const ClipVertex& b, float t) {
             noperspective_t = projected_t;
         }
     }
+    if (a.has_light_clip != b.has_light_clip) {
+        throw std::logic_error("clipped shadow coordinate availability mismatch");
+    }
+    const Vec4 light_clip_position = a.has_light_clip
+        ? a.light_clip_position + (b.light_clip_position - a.light_clip_position) * t
+        : Vec4{};
     return {
         position,
         interpolate_clip_varyings(a.varyings, b.varyings, t, noperspective_t),
+        light_clip_position,
+        a.has_light_clip,
     };
 }
 
@@ -503,6 +515,8 @@ std::optional<ScreenVertex> to_screen(const ClipVertex& vertex, const RasterRect
         ndc_z,
         inv_w,
         prepare_interpolation_terms(vertex.varyings, inv_w),
+        vertex.has_light_clip ? vertex.light_clip_position * inv_w : Vec4{},
+        vertex.has_light_clip,
     };
 }
 
@@ -573,6 +587,19 @@ VaryingPack interpolate_varyings(
     return result;
 }
 
+Vec4 interpolate_light_clip(
+    const std::array<ScreenVertex, 3>& v,
+    const Vec3& bary,
+    float reciprocal_w) {
+    if (!v[0].has_light_clip || !v[1].has_light_clip || !v[2].has_light_clip) {
+        throw std::logic_error("shadow shading requires a generated light clip coordinate");
+    }
+    const Vec4 numerator = v[0].light_clip_times_inv_w * bary.x
+        + v[1].light_clip_times_inv_w * bary.y
+        + v[2].light_clip_times_inv_w * bary.z;
+    return numerator * (1.0F / reciprocal_w);
+}
+
 Vec3 base_fragment_color(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
@@ -617,13 +644,53 @@ float fragment_opacity(
     return material.opacity * map_opacity;
 }
 
+float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
+    if (!shadow.enabled) {
+        return 1.0F;
+    }
+    if (!finite(light_clip) || light_clip.w <= kEpsilon) {
+        return 1.0F;
+    }
+    if (light_clip.x < -light_clip.w || light_clip.x > light_clip.w
+        || light_clip.y < -light_clip.w || light_clip.y > light_clip.w
+        || light_clip.z < -light_clip.w || light_clip.z > light_clip.w) {
+        return 1.0F;
+    }
+    if (!shadow.map) {
+        throw std::logic_error("validated shadow state lost its depth texture");
+    }
+
+    const float inv_w = 1.0F / light_clip.w;
+    const float ndc_x = light_clip.x * inv_w;
+    const float ndc_y = light_clip.y * inv_w;
+    const float ndc_z = light_clip.z * inv_w;
+    if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y) || !std::isfinite(ndc_z)
+        || ndc_x < -1.0F || ndc_x > 1.0F
+        || ndc_y < -1.0F || ndc_y > 1.0F
+        || ndc_z < -1.0F || ndc_z > 1.0F) {
+        return 1.0F;
+    }
+
+    const float map_max_x = static_cast<float>(shadow.map->width() - 1U);
+    const float map_max_y = static_cast<float>(shadow.map->height() - 1U);
+    const float map_x = (ndc_x * 0.5F + 0.5F) * map_max_x;
+    const float map_y = (1.0F - (ndc_y * 0.5F + 0.5F)) * map_max_y;
+    const std::size_t x = static_cast<std::size_t>(std::llround(map_x));
+    const std::size_t y = static_cast<std::size_t>(std::llround(map_y));
+    const float fragment_depth = ndc_z * 0.5F + 0.5F;
+    const float stored_depth = shadow.map->depth_at(x, y);
+    return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
+}
+
 ShadedFragment shade_fragment(
     const VaryingPack& varyings,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
     const DirectionalLight& light,
-    const MaterialState& material) {
+    const MaterialState& material,
+    const ShadowState& shadow,
+    const Vec4& light_clip) {
     const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
     const Vec3 base{
         source_color.x * material.albedo.x,
@@ -650,7 +717,8 @@ ShadedFragment shade_fragment(
 
     const Vec3 normal = interpolated_normal / normal_length;
     const float lambert = std::clamp(dot(normal, light.direction_to_light), 0.0F, 1.0F);
-    const float intensity = light.ambient + light.diffuse * lambert;
+    const float visibility = shadow_visibility(shadow, light_clip);
+    const float intensity = light.ambient + light.diffuse * lambert * visibility;
     return {base * intensity, opacity};
 }
 
@@ -666,6 +734,7 @@ void rasterize_screen_triangle(
     const StencilState& stencil_state,
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
+    const ShadowState& shadow_state,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
@@ -758,13 +827,18 @@ void rasterize_screen_triangle(
                     continue;
                 }
                 const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
+                const Vec4 light_clip = shadow_state.enabled
+                    ? interpolate_light_clip(v, bary, reciprocal_w)
+                    : Vec4{};
                 const ShadedFragment fragment = shade_fragment(
                     varyings,
                     color_binding,
                     texture_binding,
                     source,
                     light,
-                    material);
+                    material,
+                    shadow_state,
+                    light_clip);
                 if (!alpha_to_coverage_accepts(
                         alpha_to_coverage_state,
                         fragment.opacity,
@@ -824,6 +898,7 @@ void draw_triangle_impl(
     Framebuffer& framebuffer,
     const Triangle& triangle,
     const Mat4& mvp,
+    const Mat4* light_mvp,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
@@ -835,12 +910,21 @@ void draw_triangle_impl(
     const StencilState& stencil_state,
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
+    const ShadowState& shadow_state,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
+        const Vec4 object_position{
+            triangle[i].position.x,
+            triangle[i].position.y,
+            triangle[i].position.z,
+            1.0F,
+        };
         clip[i] = {
-            mvp * Vec4{triangle[i].position.x, triangle[i].position.y, triangle[i].position.z, 1.0F},
+            mvp * object_position,
             triangle[i].varyings,
+            light_mvp != nullptr ? (*light_mvp) * object_position : Vec4{},
+            light_mvp != nullptr,
         };
     }
     apply_flat_provoking_vertex(clip);
@@ -874,6 +958,7 @@ void draw_triangle_impl(
             stencil_state,
             blend_state,
             alpha_to_coverage_state,
+            shadow_state,
             viewport_state.scissor);
     }
 }
@@ -887,6 +972,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -898,10 +984,14 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     if (light.enabled) {
         prepared = transform_triangle_normals(triangle, light.normal, normal_matrix(model));
     }
+    const Mat4 light_mvp = shadow_state_.enabled
+        ? shadow_state_.light_view_projection * model
+        : Mat4::identity();
     draw_triangle_impl(
         framebuffer_,
         prepared,
         projection * view * model,
+        shadow_state_.enabled ? &light_mvp : nullptr,
         color_binding_,
         texture_binding_,
         source,
@@ -913,12 +1003,13 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         stencil_state_,
         blend_state_,
         alpha_to_coverage_state_,
+        shadow_state_,
         viewport_state);
 }
 
 void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
-    if (directional_light_.enabled) {
-        throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
+    if (directional_light_.enabled || shadow_state_.enabled) {
+        throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
@@ -926,6 +1017,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -936,6 +1028,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         framebuffer_,
         triangle,
         mvp,
+        nullptr,
         color_binding_,
         texture_binding_,
         source,
@@ -947,6 +1040,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         stencil_state_,
         blend_state_,
         alpha_to_coverage_state_,
+        shadow_state_,
         viewport_state);
 }
 
@@ -957,6 +1051,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -969,11 +1064,15 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
         prepared = transform_mesh_normals(mesh, light.normal, normal_matrix(model));
     }
     const Mat4 mvp = projection * view * model;
+    const Mat4 light_mvp = shadow_state_.enabled
+        ? shadow_state_.light_view_projection * model
+        : Mat4::identity();
     for (const TriangleIndices& indices : prepared.triangles) {
         draw_triangle_impl(
             framebuffer_,
             assemble_triangle(prepared, indices),
             mvp,
+            shadow_state_.enabled ? &light_mvp : nullptr,
             color_binding_,
             texture_binding_,
             source,
@@ -985,13 +1084,14 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             stencil_state_,
             blend_state_,
             alpha_to_coverage_state_,
+            shadow_state_,
             viewport_state);
     }
 }
 
 void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
-    if (directional_light_.enabled) {
-        throw std::invalid_argument("directional lighting requires separate model/view/projection transforms");
+    if (directional_light_.enabled || shadow_state_.enabled) {
+        throw std::invalid_argument("directional lighting and shadows require separate model/view/projection transforms");
     }
     detail::validate_face_culling(cull_mode_, front_face_);
     validate_depth_state(depth_state_);
@@ -999,6 +1099,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
+    detail::validate_shadow_state_definition(shadow_state_, directional_light_.enabled);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -1010,6 +1111,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             framebuffer_,
             assemble_triangle(mesh, indices),
             mvp,
+            nullptr,
             color_binding_,
             texture_binding_,
             source,
@@ -1021,6 +1123,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             stencil_state_,
             blend_state_,
             alpha_to_coverage_state_,
+            shadow_state_,
             viewport_state);
     }
 }
