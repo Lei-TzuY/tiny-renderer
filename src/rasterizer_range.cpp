@@ -35,6 +35,7 @@ void Rasterizer::draw_mesh_range(
         stencil_state_,
         blend_state_,
         alpha_to_coverage_state_,
+        shadow_state_,
         &model,
         false);
 
@@ -65,6 +66,7 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         stencil_state_,
         blend_state_,
         alpha_to_coverage_state_,
+        shadow_state_,
         nullptr,
         true);
 
