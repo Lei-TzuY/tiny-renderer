@@ -43,13 +43,28 @@ jobs:
               else:
                   raise SystemExit(f'unexpected construction indentation: {line!r}')
 
-          starts = [
+          def indent_literal_continuations(token, expected_count):
+              starts = [i for i, line in enumerate(script_lines) if token in line]
+              if len(starts) != expected_count:
+                  raise SystemExit(
+                      f'expected {expected_count} occurrences of {token!r}, found {len(starts)}')
+              for start_index in starts:
+                  cursor = start_index + 1
+                  while cursor < len(script_lines):
+                      script_lines[cursor] = '    ' + script_lines[cursor]
+                      if '"""' in script_lines[cursor]:
+                          break
+                      cursor += 1
+                  else:
+                      raise SystemExit(f'unterminated literal starting with {token!r}')
+
+          world_starts = [
               i for i, line in enumerate(script_lines)
               if '"""return collection_has_point(fixed_lights)' in line
           ]
-          if len(starts) != 2:
-              raise SystemExit(f'expected two stale world-position literals, found {len(starts)}')
-          for start_index in starts:
+          if len(world_starts) != 2:
+              raise SystemExit(f'expected two stale world-position literals, found {len(world_starts)}')
+          for start_index in world_starts:
               script_lines[start_index] = script_lines[start_index].replace(
                   '"""return collection_has_point(fixed_lights)',
                   '"""        return collection_has_point(fixed_lights)',
@@ -62,6 +77,10 @@ jobs:
                   cursor += 1
               else:
                   raise SystemExit('unterminated world-position literal')
+
+          indent_literal_continuations('"""        if (shared_normal == nullptr) {', 1)
+          indent_literal_continuations(
+              '"""        validate_per_record_shadow_binding(light);', 1)
 
           Path('/tmp/m44-apply.sh').write_text('\n'.join(script_lines) + '\n')
           PY
