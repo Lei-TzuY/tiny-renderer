@@ -812,6 +812,52 @@ float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
     return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
 }
 
+float point_shadow_visibility(
+    const PointShadowState& shadow,
+    const PointLight& light,
+    const Vec3& world_position) {
+    if (!shadow.enabled) {
+        return 1.0F;
+    }
+    if (!shadow.map) {
+        throw std::logic_error("validated point shadow state lost its depth cubemap");
+    }
+    const Vec3 from_light = world_position - light.position;
+    const float distance = length(from_light);
+    if (!finite_vec3(from_light) || !std::isfinite(distance) || distance <= kEpsilon) {
+        return 1.0F;
+    }
+    const CubemapFace face = cubemap_face_for_direction(from_light);
+    const Vec4 clip = shadow.map->face_view_projection(face)
+        * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
+    if (!finite(clip) || clip.w <= kEpsilon) {
+        return 1.0F;
+    }
+    if (clip.x < -clip.w || clip.x > clip.w
+        || clip.y < -clip.w || clip.y > clip.w
+        || clip.z < -clip.w || clip.z > clip.w) {
+        return 1.0F;
+    }
+    const float inv_w = 1.0F / clip.w;
+    const float ndc_x = clip.x * inv_w;
+    const float ndc_y = clip.y * inv_w;
+    const float ndc_z = clip.z * inv_w;
+    if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y) || !std::isfinite(ndc_z)
+        || ndc_x < -1.0F || ndc_x > 1.0F
+        || ndc_y < -1.0F || ndc_y > 1.0F
+        || ndc_z < -1.0F || ndc_z > 1.0F) {
+        return 1.0F;
+    }
+    const float map_max = static_cast<float>(shadow.map->size() - 1U);
+    const float map_x = (ndc_x * 0.5F + 0.5F) * map_max;
+    const float map_y = (1.0F - (ndc_y * 0.5F + 0.5F)) * map_max;
+    const std::size_t x = static_cast<std::size_t>(std::llround(map_x));
+    const std::size_t y = static_cast<std::size_t>(std::llround(map_y));
+    const float fragment_depth = ndc_z * 0.5F + 0.5F;
+    const float stored_depth = shadow.map->depth_at(face, x, y);
+    return fragment_depth - shadow.bias <= stored_depth ? 1.0F : 0.0F;
+}
+
 float point_attenuation(const PointLight& light, float distance) {
     const double d = static_cast<double>(distance);
     const double denominator = 1.0
@@ -912,6 +958,7 @@ ShadedFragment shade_fragment(
     const FixedLightCollection& fixed_lights,
     const MaterialState& material,
     const ShadowState& shadow,
+    const PointShadowState& point_shadow,
     const Vec4& light_clip,
     const Vec3& world_position,
     const detail::TangentFrame* tangent_frame) {
@@ -980,13 +1027,19 @@ ShadedFragment shade_fragment(
                 visibility,
                 world_position);
         } else {
+            const bool is_shadowed = point_shadow.enabled
+                && fixed_lights.shadowed_point_index
+                && *fixed_lights.shadowed_point_index == i;
+            const float visibility = is_shadowed
+                ? point_shadow_visibility(point_shadow, light.point, world_position)
+                : 1.0F;
             shaded = shaded + light_contribution(
                 base,
                 normal,
                 material,
                 nullptr,
                 &light.point,
-                1.0F,
+                visibility,
                 world_position);
         }
     }
@@ -1009,6 +1062,7 @@ void rasterize_screen_triangle(
     const AlphaToCoverageState& alpha_to_coverage_state,
     const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
+    const PointShadowState& point_shadow_state,
     const FragmentProgram* fragment_program,
     const detail::TangentFrame* tangent_frame,
     const std::optional<RasterRect>& scissor) {
@@ -1118,6 +1172,7 @@ void rasterize_screen_triangle(
                     fixed_lights,
                     material,
                     shadow_state,
+                    point_shadow_state,
                     light_clip,
                     world_position,
                     tangent_frame);
@@ -1214,6 +1269,7 @@ void draw_triangle_impl(
     const AlphaToCoverageState& alpha_to_coverage_state,
     const AlphaTestState& alpha_test_state,
     const ShadowState& shadow_state,
+    const PointShadowState& point_shadow_state,
     const FragmentProgram* fragment_program,
     const detail::TangentFrame* tangent_frame,
     const detail::ResolvedViewportState& viewport_state) {
@@ -1276,6 +1332,7 @@ void draw_triangle_impl(
             alpha_to_coverage_state,
             alpha_test_state,
             shadow_state,
+            point_shadow_state,
             fragment_program,
             tangent_frame,
             viewport_state.scissor);
@@ -1295,6 +1352,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
+    detail::validate_point_shadow_state_definition(point_shadow_state_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -1350,6 +1408,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         alpha_to_coverage_state_,
         alpha_test_state_,
         shadow_state_,
+        point_shadow_state_,
         fragment_program_.get(),
         tangent_frame ? &*tangent_frame : nullptr,
         viewport_state);
@@ -1360,7 +1419,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
     if (directional_light_.enabled || point_light_.enabled
-        || fixed_lights_.count != 0U || shadow_state_.enabled) {
+        || fixed_lights_.count != 0U || shadow_state_.enabled || point_shadow_state_.enabled) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
@@ -1373,6 +1432,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
+    detail::validate_point_shadow_state_definition(point_shadow_state_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -1400,6 +1460,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         alpha_to_coverage_state_,
         alpha_test_state_,
         shadow_state_,
+        point_shadow_state_,
         fragment_program_.get(),
         nullptr,
         viewport_state);
@@ -1419,6 +1480,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
+    detail::validate_point_shadow_state_definition(point_shadow_state_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -1484,6 +1546,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             alpha_to_coverage_state_,
             alpha_test_state_,
             shadow_state_,
+            point_shadow_state_,
             fragment_program_.get(),
             tangent_frames.empty() ? nullptr : &tangent_frames[triangle_index],
             viewport_state);
@@ -1495,7 +1558,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
     if (directional_light_.enabled || point_light_.enabled
-        || fixed_lights_.count != 0U || shadow_state_.enabled) {
+        || fixed_lights_.count != 0U || shadow_state_.enabled || point_shadow_state_.enabled) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const detail::PreparedVertexMesh programmed =
@@ -1511,6 +1574,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     validate_raster_target(framebuffer_);
     detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     detail::validate_shadow_state_definition(shadow_state_, directional_light_, fixed_lights_);
+    detail::validate_point_shadow_state_definition(point_shadow_state_, fixed_lights_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -1539,6 +1603,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             alpha_to_coverage_state_,
             alpha_test_state_,
             shadow_state_,
+            point_shadow_state_,
             fragment_program_.get(),
             nullptr,
             viewport_state);
