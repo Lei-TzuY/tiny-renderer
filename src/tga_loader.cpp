@@ -20,8 +20,9 @@ constexpr std::size_t kMaxTgaRasterBytes = 64U * 1024U * 1024U;
 }
 
 std::uint16_t little_endian_u16(const std::array<unsigned char, kTgaHeaderBytes>& header, std::size_t offset) {
-    return static_cast<std::uint16_t>(header[offset])
-        | static_cast<std::uint16_t>(static_cast<std::uint16_t>(header[offset + 1U]) << 8U);
+    return static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(header[offset])
+        | static_cast<std::uint16_t>(static_cast<std::uint16_t>(header[offset + 1U]) << 8U));
 }
 
 std::size_t checked_raster_bytes(std::size_t width, std::size_t height) {
