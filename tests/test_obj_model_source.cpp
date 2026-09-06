@@ -63,6 +63,11 @@ bool same_mesh(const Mesh& a, const Mesh& b) {
     return true;
 }
 
+Mesh parse_legacy(const std::string& obj) {
+    std::istringstream input(obj);
+    return load_obj(input);
+}
+
 ObjModelSource parse_strict(const std::string& obj) {
     std::istringstream input(obj);
     return load_obj_model_source(input);
@@ -77,6 +82,18 @@ Vec3 vertex_normal(const Vertex& vertex) {
         vertex.varyings.values[2],
         vertex.varyings.values[3],
         vertex.varyings.values[4],
+    };
+}
+
+Vec3 uv_free_vertex_normal(const Vertex& vertex) {
+    check(vertex.varyings.count == 3U, "UV-free normal-bearing OBJ vertex exposes exactly xyz normal channels");
+    if (vertex.varyings.count != 3U) {
+        return {};
+    }
+    return {
+        vertex.varyings.values[0],
+        vertex.varyings.values[1],
+        vertex.varyings.values[2],
     };
 }
 
@@ -444,6 +461,158 @@ void test_generated_normals_render_like_equivalent_explicit_normals() {
           "generated-versus-explicit normal render hash is deterministic");
 }
 
+void test_uv_optional_position_and_normal_face_layouts() {
+    const std::string positions =
+        "v 0 0 0\n"
+        "v 1 0 0\n"
+        "v 0 1 0\n";
+
+    const Mesh legacy_position = parse_legacy(positions + "f 1 2 3\n");
+    check(legacy_position.triangles.size() == 1U, "legacy position-only OBJ face emits one triangle");
+    check(legacy_position.vertices.size() == 3U, "legacy position-only OBJ face unifies three vertices");
+    for (const Vertex& vertex : legacy_position.vertices) {
+        check(vertex.varyings.count == 0U, "legacy position-only OBJ face does not invent varying channels");
+    }
+
+    const ObjModelSource generated = parse_strict(positions + "f -3 -2 -1\n");
+    check(!generated.face_has_texture_coordinates,
+          "strict position-only face records that canonical geometry owns no texture coordinates");
+    check(generated.mesh.triangles.size() == 1U, "relative position-only OBJ face emits one triangle");
+    for (const Vertex& vertex : generated.mesh.vertices) {
+        check_normal(uv_free_vertex_normal(vertex), {0.0F, 0.0F, 1.0F},
+                     "strict position-only face generated normal");
+    }
+
+    const std::string explicit_normal =
+        positions
+        + "vn 0 0 2\n"
+        + "f 1//1 2//1 3//1\n";
+    const Mesh legacy_normal = parse_legacy(explicit_normal);
+    check(legacy_normal.vertices.size() == 3U, "legacy v//vn face keeps three canonical vertices");
+    for (const Vertex& vertex : legacy_normal.vertices) {
+        check_normal(uv_free_vertex_normal(vertex), {0.0F, 0.0F, 2.0F},
+                     "legacy v//vn explicit normal");
+    }
+
+    const ObjModelSource strict_normal = parse_strict(explicit_normal);
+    check(!strict_normal.face_has_texture_coordinates,
+          "strict v//vn face records that canonical geometry owns no texture coordinates");
+    for (const Vertex& vertex : strict_normal.mesh.vertices) {
+        check_normal(uv_free_vertex_normal(vertex), {0.0F, 0.0F, 2.0F},
+                     "strict v//vn explicit normal remains authoritative");
+    }
+
+    const ObjModelSource uv_source = parse_strict(
+        positions
+        + "vt 0 0\n"
+        + "vt 1 0\n"
+        + "vt 0 1\n"
+        + "f 1/1 2/2 3/3\n");
+    check(uv_source.face_has_texture_coordinates,
+          "v/vt source records texture-coordinate availability for material enrichment");
+}
+
+void test_uv_optional_face_layout_strictness() {
+    const std::string positions =
+        "v 0 0 0\n"
+        "v 1 0 0\n"
+        "v 0 1 0\n";
+
+    expect_strict_error_line(
+        positions
+        + "vt 0 0\n"
+        + "f 1 2/1 3\n",
+        5U,
+        "mixed corner index layouts in one face");
+
+    expect_strict_error_line(
+        positions
+        + "vn 0 0 1\n"
+        + "f 1 2 3\n"
+        + "f 1//1 2//1 3//1\n",
+        6U,
+        "mixed face layouts in one canonical mesh");
+
+    expect_strict_error_line(
+        positions + "f 1/ 2/ 3/\n",
+        4U,
+        "incomplete texture-coordinate face references");
+}
+
+void test_uv_free_kd_asset_renders_like_explicit_normal_reference() {
+    ModelAsset imported = load_obj_model_asset_file(fixture_path("uv_optional_kd.obj"));
+    check(imported.mesh.triangles.size() == 1U, "UV-free Kd fixture loads one canonical triangle");
+    check(imported.draws.size() == 1U, "UV-free Kd fixture emits one material draw");
+    for (const Vertex& vertex : imported.mesh.vertices) {
+        check_normal(uv_free_vertex_normal(vertex), {0.0F, 0.0F, 1.0F},
+                     "UV-free Kd fixture generated normal");
+    }
+    if (!imported.draws.empty()) {
+        check(imported.draws[0].diffuse_texture == nullptr
+                  && imported.draws[0].opacity_texture == nullptr
+                  && imported.draws[0].normal_texture == nullptr,
+              "UV-free Kd material remains texture-free");
+        check_near(imported.draws[0].material.albedo.x, 0.25F, "UV-free imported Kd red");
+        check_near(imported.draws[0].material.albedo.y, 0.5F, "UV-free imported Kd green");
+        check_near(imported.draws[0].material.albedo.z, 1.0F, "UV-free imported Kd blue");
+    }
+
+    const ObjModelSource explicit_source = parse_strict(
+        "v -0.7 -0.7 0\n"
+        "v 0.7 -0.7 0\n"
+        "v 0 0.7 0\n"
+        "vn 0 0 1\n"
+        "f 1//1 2//1 3//1\n");
+    ModelAsset explicit_asset = one_draw_asset(explicit_source);
+    if (!imported.draws.empty() && !explicit_asset.draws.empty()) {
+        explicit_asset.draws[0].material = imported.draws[0].material;
+    }
+
+    ModelRenderOptions options;
+    options.directional_light.enabled = true;
+    options.directional_light.direction_to_light = {0.0F, 0.0F, 1.0F};
+    options.directional_light.ambient = 0.15F;
+    options.directional_light.diffuse = 0.85F;
+    options.directional_light.viewer_position = {0.0F, 0.0F, 1.0F};
+
+    Framebuffer imported_fb(41U, 41U);
+    Framebuffer explicit_fb(41U, 41U);
+    imported_fb.clear();
+    explicit_fb.clear();
+    draw_model_asset(
+        imported_fb,
+        imported,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        options);
+    draw_model_asset(
+        explicit_fb,
+        explicit_asset,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        options);
+
+    check(imported_fb.rgb8() == explicit_fb.rgb8(),
+          "UV-free imported Kd asset renders byte-identically to explicit v//vn reference geometry");
+    check(imported_fb.fnv1a64() == explicit_fb.fnv1a64(),
+          "UV-free imported Kd asset render hash is deterministic");
+}
+
+void test_uv_free_textured_material_fails_closed_during_asset_load() {
+    bool threw = false;
+    std::size_t line = 0U;
+    try {
+        (void)load_obj_model_asset_file(fixture_path("uv_missing_textured.obj"));
+    } catch (const ObjParseError& error) {
+        threw = true;
+        line = error.line();
+    }
+    check(threw, "textured material on UV-free OBJ geometry is rejected during asset enrichment");
+    check(line == 5U, "UV-free textured material rejection reports the activating usemtl line");
+}
+
 }  // namespace
 
 int main() {
@@ -458,6 +627,10 @@ int main() {
         test_smoothing_directive_strictness_and_legacy_compatibility();
         test_generated_normal_degenerate_face_fails_closed();
         test_generated_normals_render_like_equivalent_explicit_normals();
+        test_uv_optional_position_and_normal_face_layouts();
+        test_uv_optional_face_layout_strictness();
+        test_uv_free_kd_asset_renders_like_explicit_normal_reference();
+        test_uv_free_textured_material_fails_closed_during_asset_load();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;

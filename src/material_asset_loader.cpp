@@ -1,5 +1,6 @@
 #include "tiny_renderer/obj_loader.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -61,6 +62,12 @@ struct LoadedMaterialAssetDefinition {
     std::shared_ptr<const Texture2D> normal_texture;
 };
 
+bool requires_texture_coordinates(const MaterialAssetDefinition& definition) {
+    return definition.diffuse_map_filename.has_value()
+        || definition.opacity_map_filename.has_value()
+        || definition.normal_map_filename.has_value();
+}
+
 }  // namespace
 
 ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
@@ -93,6 +100,22 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
     for (const ObjMaterialUse& used : source.used_materials) {
         if (library.find(used.name) == library.end()) {
             fail(used.line, "usemtl references unknown material '" + used.name + "'");
+        }
+    }
+
+    if (!source.face_has_texture_coordinates) {
+        for (const ObjMaterialUse& used : source.used_materials) {
+            if (std::find(source.face_materials.begin(), source.face_materials.end(), used.name)
+                == source.face_materials.end()) {
+                continue;
+            }
+            const MaterialAssetDefinition& definition = library.at(used.name).definition;
+            if (requires_texture_coordinates(definition)) {
+                fail(
+                    used.line,
+                    "material '" + used.name
+                        + "' uses texture maps but OBJ face layout has no texture coordinates");
+            }
         }
     }
 
