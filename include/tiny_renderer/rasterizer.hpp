@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <optional>
+#include <utility>
 
+#include "tiny_renderer/fragment_program.hpp"
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/material.hpp"
 #include "tiny_renderer/mesh.hpp"
@@ -114,7 +116,8 @@ public:
         BlendState blend_state = {},
         AlphaToCoverageState alpha_to_coverage_state = {},
         ShadowState shadow_state = {},
-        AlphaTestState alpha_test_state = {})
+        AlphaTestState alpha_test_state = {},
+        FragmentProgramPtr fragment_program = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -129,7 +132,8 @@ public:
           blend_state_(blend_state),
           alpha_to_coverage_state_(alpha_to_coverage_state),
           shadow_state_(shadow_state),
-          alpha_test_state_(alpha_test_state) {}
+          alpha_test_state_(alpha_test_state),
+          fragment_program_(std::move(fragment_program)) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -159,6 +163,7 @@ private:
     AlphaToCoverageState alpha_to_coverage_state_;
     ShadowState shadow_state_;
     AlphaTestState alpha_test_state_;
+    FragmentProgramPtr fragment_program_;
 };
 
 }  // namespace tiny_renderer

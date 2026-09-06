@@ -178,20 +178,31 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Regression coverage locks exact threshold equality versus below-threshold discard, RGB/depth/stencil immutability, invalid-threshold fail-closed behavior, 4× alpha-test→A2C ordering, prepared-list/sequential equivalence, a file-driven `map_d` card whose camera silhouette and light-depth cutout agree, disabled solid-caster compatibility, and later invalid shadow UV preflight.
 - This slice does not add stochastic transparency, destination alpha, sorting/OIT, PCF/soft shadows, programmable sample masks/locations, or a general shader language.
 
-## Next frontier — Milestone 34
+### Milestone 34 — bounded programmable fragment stage
 
-The next architectural promotion is a **first-class bounded programmable fragment stage**. Milestones 27–33 now make the fixed fragment pipeline explicit enough—material/texture shading, shadow visibility, opacity, alpha test, alpha-to-coverage, stencil/depth/blend ownership—that the next high-value step is to separate raster/interpolation from fragment policy without creating a second rasterizer or giving user code direct framebuffer mutation access.
+- `FragmentProgram` is a first-class immutable CPU extension point with shared lifetime semantics; omitting a program bypasses the extension and preserves the established fixed fragment path.
+- A program receives read-only interpolated varyings, fixed material/texture/lighting/shadow RGB and opacity, absolute sample position, sample index, and depth. It returns RGB, opacity, and an explicit discard bit without any framebuffer handle or ownership API.
+- Stage ordering is fixed as geometric coverage/interpolation → fixed shading → optional fragment program → program discard → alpha test → alpha-to-coverage → framebuffer stencil/depth/blend/color ownership.
+- Program RGB output must be finite and opacity finite within `[0,1]` before the sample may reach any ownership stage; a program discard exits before alpha testing, A2C, stencil, depth, blending, or color writes.
+- Direct triangle/mesh/range submission validates static program configuration before writes. Direct model preparation performs the same framebuffer-independent validation, and prepared plans retain the program `shared_ptr` independently of the caller's temporary handle.
+- Direct/prepared model execution, instance batches, and heterogeneous prepared lists propagate the same program state through the existing raster path rather than introducing a programmable side pipeline.
+- Regression coverage locks no-program versus identity-program RGB/depth/stencil equivalence, varying-driven color transformation, opacity rewrite feeding alpha test and deterministic 4× A2C, discard with zero ownership side effects, fixed quarter-sample position/index visibility, invalid output rejection, range/prepared static validation, retained lifetime, and prepared-list/sequential equivalence.
+- The milestone is deliberately a bounded CPU teaching interface. It does not claim GLSL/HLSL/SPIR-V compatibility, vertex programmability, derivatives, engine-managed arbitrary resource bindings, JIT compilation, GPU execution, or performance parity.
+
+## Next frontier — Milestone 35
+
+The next architectural promotion is a **bounded programmable object-space vertex stage**. M34 separates raster/interpolation from fragment policy; the next higher-value boundary is to separate source-vertex deformation from the fixed model/view/projection, normal-transform, clipping, and light-space shadow machinery while preserving those verified downstream stages.
 
 Acceptance for that slice should require:
 
-- a first-class immutable fragment-program interface with shared lifetime semantics suitable for direct and prepared submission; the default/no-program path must remain byte/hash and per-sample identical to the current fixed pipeline;
-- the first bounded program surface operates after the existing fixed material/lighting/shadow calculation and receives a read-only fragment input containing interpolated varyings, fixed RGB/opacity, sample position/index, and depth, returning RGB/opacity plus an explicit discard bit without framebuffer access;
-- program output is validated deterministically before ownership: RGB must be finite, opacity finite and within `[0,1]`, and discard exits before alpha test, alpha-to-coverage, stencil, depth, blend, or RGB writes;
-- stage ordering is explicit and regression-locked as geometric coverage/interpolation → fixed shading → optional fragment program → alpha test → alpha-to-coverage → framebuffer stencil/depth/blend/color ownership;
-- model/prepared/instance/list submission owns or borrows program state consistently and preflights all static program configuration before any framebuffer mutation; prepared plans retain program lifetime independently of the caller's temporary handle;
-- deterministic regressions demonstrate a custom varying-driven color transform, opacity rewrite feeding alpha test/A2C, explicit program discard with zero depth/stencil side effects, sample-position-dependent behavior on 4× targets, and direct/prepared/list equivalence;
-- the implementation remains a bounded CPU teaching interface rather than claiming GLSL/HLSL/SPIR-V compatibility, vertex programmability, derivatives, arbitrary texture bindings, JIT compilation, GPU execution, or performance parity;
-- no performance/conformance claim is made without controlled evidence.
+- a first-class immutable vertex-program interface with shared lifetime semantics suitable for direct and prepared submission; the default/no-program path must remain byte/hash and per-sample identical to the current fixed geometry pipeline;
+- the bounded program runs once per submitted source vertex before model/view/projection and light-space transforms, receiving read-only object-space position and the source `VaryingPack`, and returning an object-space position plus varying values without framebuffer, raster, or clip-space ownership;
+- output positions must be finite and numerically bounded for the existing transform/raster safety envelope; output varying count and interpolation qualifiers must remain structurally compatible with the source layout so the existing UV/normal/interpolation validators remain authoritative rather than being bypassed;
+- deformed object-space geometry must feed both camera rendering and directional shadow-map generation through their existing transforms and clipping paths, so a programmatic silhouette cannot silently diverge between the camera and shadow passes;
+- static program configuration is preflighted before framebuffer or shadow-depth mutation, prepared plans retain program lifetime, and direct model, prepared instances, heterogeneous lists, and shadow submission preserve one consistent program binding;
+- deterministic regressions demonstrate object-space position deformation, varying rewrite observed by the M34 fragment stage, homogeneous clipping after deformation, camera/shadow silhouette agreement, invalid output fail-closed behavior, and direct/prepared/list equivalence;
+- the first slice does not expose arbitrary clip-space replacement, programmable projection matrices, tessellation/geometry stages, shader derivatives, mutable buffers, a shader language/JIT, or GPU execution;
+- no performance or shader-API conformance claim is made without controlled evidence.
 
 ## Deliberate later work
 

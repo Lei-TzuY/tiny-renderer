@@ -194,4 +194,8 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_alpha_test_tests COMMAND tiny_renderer_alpha_test_tests)
+
+    add_executable(tiny_renderer_fragment_program_tests tests/test_fragment_program.cpp)
+    target_link_libraries(tiny_renderer_fragment_program_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_fragment_program_tests COMMAND tiny_renderer_fragment_program_tests)
 endif()

@@ -11,6 +11,18 @@ Triangle assemble_triangle(const Mesh& mesh, const TriangleIndices& indices) {
     return Triangle{mesh.vertices[indices[0]], mesh.vertices[indices[1]], mesh.vertices[indices[2]]};
 }
 
+void validate_fragment_program_for_mesh(
+    const FragmentProgramPtr& fragment_program,
+    const Mesh& mesh) {
+    if (!fragment_program) {
+        return;
+    }
+    const std::size_t varying_count = mesh.vertices.empty()
+        ? 0U
+        : mesh.vertices.front().varyings.count;
+    fragment_program->validate(varying_count);
+}
+
 }  // namespace
 
 void Rasterizer::draw_mesh_range(
@@ -39,6 +51,7 @@ void Rasterizer::draw_mesh_range(
         shadow_state_,
         &model,
         false);
+    validate_fragment_program_for_mesh(fragment_program_, mesh);
 
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {
@@ -71,6 +84,7 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         shadow_state_,
         nullptr,
         true);
+    validate_fragment_program_for_mesh(fragment_program_, mesh);
 
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {

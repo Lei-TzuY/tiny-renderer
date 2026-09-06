@@ -83,6 +83,18 @@ void validate_model_structure(const ModelAsset& asset) {
     }
 }
 
+void validate_fragment_program_for_mesh(
+    const FragmentProgramPtr& fragment_program,
+    const Mesh& mesh) {
+    if (!fragment_program) {
+        return;
+    }
+    const std::size_t varying_count = mesh.vertices.empty()
+        ? 0U
+        : mesh.vertices.front().varyings.count;
+    fragment_program->validate(varying_count);
+}
+
 void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptions& options) {
     validate_model_structure(asset);
     detail::validate_face_culling(options.cull_mode, options.front_face);
@@ -94,6 +106,7 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
         options.shadow_state,
         options.directional_light.enabled);
     detail::validate_alpha_test_state(options.alpha_test_state);
+    validate_fragment_program_for_mesh(options.fragment_program, asset.mesh);
     bool sampler_needed = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
@@ -175,7 +188,8 @@ void execute_prepared_model_transform(
             options.blend_state,
             options.alpha_to_coverage_state,
             options.shadow_state,
-            options.alpha_test_state);
+            options.alpha_test_state,
+            options.fragment_program);
         rasterizer.draw_mesh_range(asset.mesh, draw.range, model, view, projection);
     }
 }
@@ -212,7 +226,8 @@ void draw_validated_model_impl(
             options.blend_state,
             options.alpha_to_coverage_state,
             options.shadow_state,
-            options.alpha_test_state);
+            options.alpha_test_state,
+            options.fragment_program);
         submit_range(rasterizer, draw.range);
     }
 }
@@ -220,11 +235,11 @@ void draw_validated_model_impl(
 }  // namespace
 
 PreparedModelSubmission::PreparedModelSubmission(ModelAsset asset, ModelRenderOptions options)
-    : asset_(std::move(asset)), options_(options) {}
+    : asset_(std::move(asset)), options_(std::move(options)) {}
 
 PreparedModelSubmission prepare_model_asset(ModelAsset asset, ModelRenderOptions options) {
     validate_static_model_state(asset, options);
-    return PreparedModelSubmission{std::move(asset), options};
+    return PreparedModelSubmission{std::move(asset), std::move(options)};
 }
 
 void draw_prepared_model_instances(
@@ -299,7 +314,8 @@ void draw_prepared_model_instances(
                 options.blend_state,
                 options.alpha_to_coverage_state,
                 options.shadow_state,
-                options.alpha_test_state);
+                options.alpha_test_state,
+                options.fragment_program);
             rasterizer.draw_mesh_range(asset.mesh, draw.range, mvp);
         }
     }
