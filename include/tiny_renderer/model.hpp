@@ -15,6 +15,7 @@ struct MaterialDraw {
     std::string material_name;
     MaterialState material{};
     std::shared_ptr<const Texture2D> diffuse_texture;
+    std::shared_ptr<const Texture2D> opacity_texture;
 };
 
 struct ModelAsset {
