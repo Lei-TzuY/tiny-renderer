@@ -98,7 +98,8 @@ struct DirectionalLight {
     float ambient{0.0F};
     float diffuse{1.0F};
     // Explicit world-space eye position for view-dependent specular lighting.
-    // It is inert while the bound material has zero specular reflectance.
+    // It must be finite whenever directional lighting is enabled, but affects
+    // shading only while the bound material has non-zero specular reflectance.
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
 };
 
