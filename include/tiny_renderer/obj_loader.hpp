@@ -48,6 +48,10 @@ struct ObjModelSource {
     std::optional<std::string> material_library_filename;
     std::vector<ObjMaterialUse> used_materials;
     std::vector<std::string> face_materials;
+    // Canonical face layout is uniform within one mesh. This bit preserves the
+    // semantic distinction between real OBJ texture coordinates and other
+    // varying channels such as UV-free normals.
+    bool face_has_texture_coordinates{false};
 };
 
 struct MaterialBatch {
