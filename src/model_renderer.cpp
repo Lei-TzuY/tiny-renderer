@@ -93,7 +93,9 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
     bool sampler_needed = false;
     for (const MaterialDraw& draw : asset.draws) {
         validate_material(draw.material);
-        sampler_needed = sampler_needed || static_cast<bool>(draw.diffuse_texture);
+        sampler_needed = sampler_needed
+            || static_cast<bool>(draw.diffuse_texture)
+            || static_cast<bool>(draw.opacity_texture);
     }
     if (sampler_needed) {
         validate_sampler(options.sampler);
@@ -101,15 +103,14 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
 }
 
 TextureBinding texture_binding_for(const MaterialDraw& draw, const ModelRenderOptions& options) {
-    if (!draw.diffuse_texture) {
-        return {};
-    }
-    return TextureBinding{
+    TextureBinding binding{
         draw.diffuse_texture.get(),
         options.u_channel,
         options.v_channel,
         options.sampler,
     };
+    binding.opacity_texture = draw.opacity_texture.get();
+    return binding;
 }
 
 BaseColorSource base_color_source_for(const MaterialDraw& draw) {
