@@ -2,8 +2,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
@@ -77,8 +79,9 @@ TextureBinding texture_binding(
     const Texture2D& texture,
     FilterMode filter = FilterMode::Nearest,
     AddressMode address_u = AddressMode::Clamp,
-    AddressMode address_v = AddressMode::Clamp) {
-    return TextureBinding{&texture, 0U, 1U, SamplerState{address_u, address_v, filter}};
+    AddressMode address_v = AddressMode::Clamp,
+    MipFilterMode mip_filter = MipFilterMode::Disabled) {
+    return TextureBinding{&texture, 0U, 1U, SamplerState{address_u, address_v, filter, mip_filter}};
 }
 
 void test_sampler_address_and_filter_modes() {
@@ -105,6 +108,89 @@ void test_sampler_address_and_filter_modes() {
 
     const SamplerState repeat_bilinear{AddressMode::Repeat, AddressMode::Clamp, FilterMode::Bilinear};
     check_color(texture.sample({0.0F, 0.25F}, repeat_bilinear), {0.5F, 0.5F, 0.0F}, "bilinear repeat filters across U seam");
+}
+
+void test_mip_chain_and_explicit_lod_sampling() {
+    std::vector<Vec3> texels;
+    texels.reserve(9U);
+    for (std::size_t index = 0U; index < 9U; ++index) {
+        const float value = static_cast<float>(index) / 8.0F;
+        texels.push_back({value, value, value});
+    }
+    const Texture2D odd(3U, 3U, texels);
+    check(odd.mip_level_count() == 3U, "3x3 texture owns complete 3x3 -> 2x2 -> 1x1 mip chain");
+    check(odd.mip_width(1U) == 2U && odd.mip_height(1U) == 2U,
+          "odd mip extent uses deterministic ceil-half dimensions");
+    check_color(odd.mip_texel(1U, 0U, 0U), {0.25F, 0.25F, 0.25F},
+                "full 2x2 parent footprint averages equally");
+    check_color(odd.mip_texel(1U, 1U, 0U), {0.4375F, 0.4375F, 0.4375F},
+                "odd right edge averages only existing parent texels");
+    check_color(odd.mip_texel(1U, 0U, 1U), {0.8125F, 0.8125F, 0.8125F},
+                "odd bottom edge averages only existing parent texels");
+    check_color(odd.mip_texel(1U, 1U, 1U), {1.0F, 1.0F, 1.0F},
+                "odd corner preserves its single parent texel");
+    check_color(odd.mip_texel(2U, 0U, 0U), {0.625F, 0.625F, 0.625F},
+                "mip generation recursively averages the previous level");
+
+    const Texture2D texture(2U, 2U, {
+        {1.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+        {1.0F, 1.0F, 1.0F},
+    });
+    const Vec2 uv{0.25F, 0.25F};
+    SamplerState legacy;
+    legacy.filter = FilterMode::Nearest;
+    const Vec3 level_zero = texture.sample(uv, legacy);
+    check_color(texture.sample_lod(uv, 100.0F, legacy), level_zero,
+                "disabled mip policy preserves level-zero result for any explicit LOD");
+
+    SamplerState nearest = legacy;
+    nearest.mip_filter = MipFilterMode::Nearest;
+    check_color(texture.sample_lod(uv, 0.49F, nearest), {1.0F, 0.0F, 0.0F},
+                "nearest mip rounds below half to level zero");
+    check_color(texture.sample_lod(uv, 0.5F, nearest), {0.5F, 0.5F, 0.5F},
+                "nearest mip rounds exact half upward");
+
+    SamplerState linear = nearest;
+    linear.mip_filter = MipFilterMode::Linear;
+    check_color(texture.sample_lod(uv, 0.5F, linear), {0.75F, 0.25F, 0.25F},
+                "linear mip policy interpolates adjacent level samples");
+}
+
+void test_gradient_lod_and_invalid_mip_state() {
+    std::vector<Vec3> texels(64U);
+    for (std::size_t y = 0U; y < 8U; ++y) {
+        for (std::size_t x = 0U; x < 8U; ++x) {
+            const float value = static_cast<float>(x + y * 8U) / 63.0F;
+            texels[y * 8U + x] = {value, value, value};
+        }
+    }
+    const Texture2D texture(8U, 8U, texels);
+    SamplerState sampler;
+    sampler.filter = FilterMode::Bilinear;
+    sampler.mip_filter = MipFilterMode::Nearest;
+    const Vec2 uv{0.37F, 0.61F};
+    const TextureGradients gradients{{0.5F, 0.0F}, {0.0F, 0.125F}};
+    check_color(texture.sample_grad(uv, gradients, sampler), texture.sample_lod(uv, 2.0F, sampler),
+                "gradient sampling uses max texel footprint and log2 LOD");
+
+    SamplerState disabled;
+    disabled.filter = FilterMode::Nearest;
+    const TextureGradients nonfinite{{std::numeric_limits<float>::quiet_NaN(), 0.0F}, {0.0F, 0.0F}};
+    check_color(texture.sample_grad({0.1F, 0.1F}, nonfinite, disabled),
+                texture.sample({0.1F, 0.1F}, disabled),
+                "mip-disabled sampling does not impose derivative requirements");
+
+    SamplerState invalid;
+    invalid.mip_filter = static_cast<MipFilterMode>(99);
+    bool threw = false;
+    try {
+        (void)texture.sample_lod(uv, 0.0F, invalid);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "unknown mip filter mode is rejected deterministically");
 }
 
 void test_perspective_correct_uv_sampling() {
@@ -201,6 +287,8 @@ void test_invalid_uv_binding_is_fail_closed() {
 int main() {
     try {
         test_sampler_address_and_filter_modes();
+        test_mip_chain_and_explicit_lod_sampling();
+        test_gradient_lod_and_invalid_mip_state();
         test_perspective_correct_uv_sampling();
         test_textured_clipping_matches_manual_geometry();
         test_invalid_uv_binding_is_fail_closed();
