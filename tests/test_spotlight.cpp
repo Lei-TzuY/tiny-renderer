@@ -143,7 +143,7 @@ ModelRenderOptions options_for(const SpotLight& light) {
 }
 
 Framebuffer render_model(const ModelRenderOptions& options, const MaterialState& material) {
-    Framebuffer framebuffer(65U, 65U);
+    Framebuffer framebuffer(64U, 64U);
     draw_model_asset(
         framebuffer,
         model_from_triangle(material),
@@ -156,7 +156,7 @@ void test_inside_transition_and_outside_cone() {
     {
         const Framebuffer framebuffer = render_model(options_for(spot()), diffuse_material());
         check_near(
-            framebuffer.color_at(32U, 32U).x,
+            framebuffer.color_at(31U, 31U).x,
             0.7F,
             "inside-cone spotlight applies ambient plus full diffuse contribution");
     }
@@ -168,7 +168,7 @@ void test_inside_transition_and_outside_cone() {
         light.direction = {x, 0.0F, -kTransitionCos};
         const Framebuffer framebuffer = render_model(options_for(light), diffuse_material());
         check_near(
-            framebuffer.color_at(32U, 32U).x,
+            framebuffer.color_at(31U, 31U).x,
             0.4F,
             "spotlight transition cone linearly interpolates in cosine space");
     }
@@ -178,7 +178,7 @@ void test_inside_transition_and_outside_cone() {
         light.direction = {1.0F, 0.0F, 0.0F};
         const Framebuffer framebuffer = render_model(options_for(light), diffuse_material());
         check_near(
-            framebuffer.color_at(32U, 32U).x,
+            framebuffer.color_at(31U, 31U).x,
             0.1F,
             "outside-cone spotlight preserves ambient while suppressing direct lighting");
     }
@@ -189,7 +189,7 @@ void test_distance_attenuation_composes_with_cone() {
     light.linear_attenuation = 0.5F;
     const Framebuffer framebuffer = render_model(options_for(light), diffuse_material());
     check_near(
-        framebuffer.color_at(32U, 32U).x,
+        framebuffer.color_at(31U, 31U).x,
         0.4F,
         "spotlight distance attenuation multiplies direct cone lighting but not ambient");
 }
@@ -199,7 +199,7 @@ void test_blinn_phong_specular_uses_spot_direct_factor() {
     light.ambient = 0.0F;
     const Framebuffer framebuffer = render_model(options_for(light), specular_material());
     check_near(
-        framebuffer.color_at(32U, 32U).x,
+        framebuffer.color_at(31U, 31U).x,
         0.6F,
         "spotlight Blinn-Phong specular shares the cone and attenuation direct factor");
 }
@@ -215,7 +215,7 @@ void test_mixed_fixed_light_collection_accumulates() {
     });
     const Framebuffer framebuffer = render_model(options, diffuse_material());
     check_near(
-        framebuffer.color_at(32U, 32U).x,
+        framebuffer.color_at(31U, 31U).x,
         0.6F,
         "directional, point, and spot records accumulate in caller collection order");
 }
@@ -242,7 +242,7 @@ void test_fragment_program_runs_after_spotlight_shading() {
     options.fragment_program = std::make_shared<const SquareFixedRgb>();
     const Framebuffer framebuffer = render_model(options, diffuse_material());
     check_near(
-        framebuffer.color_at(32U, 32U).x,
+        framebuffer.color_at(31U, 31U).x,
         0.25F,
         "fragment program observes the completed spotlight fixed-light result");
 }
@@ -254,7 +254,7 @@ void test_direct_range_matches_model_submission() {
     const ModelAsset asset = model_from_triangle(material);
     const FixedLightCollection lights = collection({fixed_spot(light)});
 
-    Framebuffer range_framebuffer(65U, 65U);
+    Framebuffer range_framebuffer(64U, 64U);
     Rasterizer rasterizer(
         range_framebuffer,
         {},
@@ -364,14 +364,14 @@ void test_prepared_list_equivalence_and_late_fail_closed() {
     const ModelAsset asset = model_from_triangle(diffuse_material());
     const PreparedModelSubmission prepared = prepare_model_asset(asset, options);
 
-    Framebuffer direct(65U, 65U);
+    Framebuffer direct(64U, 64U);
     draw_model_asset(
         direct,
         asset,
         Mat4::identity(), Mat4::identity(), Mat4::identity(),
         options);
 
-    Framebuffer listed(65U, 65U);
+    Framebuffer listed(64U, 64U);
     const PreparedModelListEntry one[] = {{&prepared, Mat4::identity()}};
     draw_prepared_model_list(listed, one, Mat4::identity(), Mat4::identity());
     check(
@@ -388,11 +388,11 @@ void test_prepared_list_equivalence_and_late_fail_closed() {
         {&prepared, Mat4::identity()},
         {&prepared, invalid_projective},
     };
-    Framebuffer fail_closed(65U, 65U);
+    Framebuffer fail_closed(64U, 64U);
     fail_closed.clear({0.2F, 0.3F, 0.4F}, 0.9F, 13U);
     const auto before = fail_closed.rgb8();
-    const float before_depth = fail_closed.depth_at(32U, 32U);
-    const std::uint8_t before_stencil = fail_closed.stencil_at(32U, 32U);
+    const float before_depth = fail_closed.depth_at(31U, 31U);
+    const std::uint8_t before_stencil = fail_closed.stencil_at(31U, 31U);
 
     bool threw = false;
     try {
@@ -406,9 +406,9 @@ void test_prepared_list_equivalence_and_late_fail_closed() {
     check(threw, "a malformed later spotlight world transform rejects the complete prepared list");
     check(fail_closed.rgb8() == before,
           "later spotlight preflight failure leaves earlier list color untouched");
-    check(fail_closed.depth_at(32U, 32U) == before_depth,
+    check(fail_closed.depth_at(31U, 31U) == before_depth,
           "later spotlight preflight failure leaves earlier list depth untouched");
-    check(fail_closed.stencil_at(32U, 32U) == before_stencil,
+    check(fail_closed.stencil_at(31U, 31U) == before_stencil,
           "later spotlight preflight failure leaves earlier list stencil untouched");
 }
 
