@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "tiny_renderer/math.hpp"
@@ -44,6 +45,12 @@ private:
     std::size_t size_{};
     std::array<Mat4, kCubemapFaceCount> face_view_projections_{};
     std::vector<float> depths_;
+};
+
+struct PointShadowState {
+    bool enabled{false};
+    std::shared_ptr<const DepthCubemap> map;
+    float bias{0.0F};
 };
 
 }  // namespace tiny_renderer
