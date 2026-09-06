@@ -126,6 +126,12 @@ void validate_layout_match(const VaryingPack& reference, const VaryingPack& cand
     }
 }
 
+bool texture_coordinates_required(
+    const TextureBinding& texture_binding,
+    BaseColorSource source) {
+    return source == BaseColorSource::Texture || texture_binding.opacity_texture != nullptr;
+}
+
 void validate_output_binding(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
@@ -138,18 +144,19 @@ void validate_output_binding(
                 || color_binding.blue >= varying_count) {
                 throw std::out_of_range("color binding references unavailable varying channel");
             }
-            return;
+            break;
         case BaseColorSource::Texture:
-            if (texture_binding.u_channel >= varying_count || texture_binding.v_channel >= varying_count) {
-                throw std::out_of_range("texture binding references unavailable varying channel");
-            }
-            return;
+            break;
         case BaseColorSource::ConstantWhite:
-            return;
+            break;
         case BaseColorSource::Auto:
             throw std::logic_error("automatic base-color source must be resolved before validation");
     }
-    throw std::logic_error("unreachable base-color source validation state");
+
+    if (texture_coordinates_required(texture_binding, source)
+        && (texture_binding.u_channel >= varying_count || texture_binding.v_channel >= varying_count)) {
+        throw std::out_of_range("texture binding references unavailable varying channel");
+    }
 }
 
 void validate_normal_binding(const NormalBinding& binding, const VaryingPack& pack) {
@@ -169,7 +176,7 @@ void validate_vertex_state(
     BaseColorSource source,
     const DirectionalLight& light) {
     validate_layout_match(reference, vertex.varyings);
-    if (source == BaseColorSource::Texture) {
+    if (texture_coordinates_required(texture_binding, source)) {
         const float u = vertex.varyings.values[texture_binding.u_channel];
         const float v = vertex.varyings.values[texture_binding.v_channel];
         if (!std::isfinite(u) || !std::isfinite(v)
