@@ -123,6 +123,7 @@ inline TangentFrame prepare_tangent_frame(
 inline Vec3 tangent_space_lighting_normal(
     const TextureBinding& binding,
     const VaryingPack& varyings,
+    const TextureGradients& gradients,
     const Vec3& geometric_normal,
     const TangentFrame* frame) {
     if (binding.normal_texture == nullptr) {
@@ -132,8 +133,9 @@ inline Vec3 tangent_space_lighting_normal(
         throw std::logic_error("normal mapping shading lost its tangent frame");
     }
 
-    const Vec3 sampled = binding.normal_texture->sample(
+    const Vec3 sampled = binding.normal_texture->sample_grad(
         {varyings.values[binding.u_channel], varyings.values[binding.v_channel]},
+        gradients,
         binding.sampler);
     const Vec3 tangent_normal{
         sampled.x * 2.0F - 1.0F,
