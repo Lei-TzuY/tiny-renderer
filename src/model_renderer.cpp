@@ -14,6 +14,10 @@
 namespace tiny_renderer {
 namespace {
 
+bool finite_vec3(const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
 void validate_sampler(const SamplerState& sampler) {
     const auto validate_address = [](AddressMode mode) {
         switch (mode) {
@@ -36,7 +40,7 @@ void validate_sampler(const SamplerState& sampler) {
 
 void validate_material(const MaterialState& material) {
     const Vec3& albedo = material.albedo;
-    if (!std::isfinite(albedo.x) || !std::isfinite(albedo.y) || !std::isfinite(albedo.z)
+    if (!finite_vec3(albedo)
         || albedo.x < 0.0F || albedo.x > 1.0F
         || albedo.y < 0.0F || albedo.y > 1.0F
         || albedo.z < 0.0F || albedo.z > 1.0F) {
@@ -44,6 +48,17 @@ void validate_material(const MaterialState& material) {
     }
     if (!std::isfinite(material.opacity) || material.opacity < 0.0F || material.opacity > 1.0F) {
         throw std::invalid_argument("model material opacity must be finite and within [0, 1]");
+    }
+    const Vec3& specular = material.specular;
+    if (!finite_vec3(specular)
+        || specular.x < 0.0F || specular.x > 1.0F
+        || specular.y < 0.0F || specular.y > 1.0F
+        || specular.z < 0.0F || specular.z > 1.0F) {
+        throw std::invalid_argument("model material specular components must be finite and within [0, 1]");
+    }
+    if (!std::isfinite(material.shininess)
+        || material.shininess < 1.0F || material.shininess > 1000.0F) {
+        throw std::invalid_argument("model material shininess must be finite and within [1, 1000]");
     }
 }
 
@@ -125,6 +140,10 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
             normal_map_present = true;
             detail::validate_normal_texture(*draw.normal_texture);
         }
+    }
+    if (options.directional_light.enabled
+        && !finite_vec3(options.directional_light.viewer_position)) {
+        throw std::invalid_argument("directional light viewer position must be finite");
     }
     if (normal_map_present && !options.directional_light.enabled) {
         throw std::invalid_argument("normal mapping requires an enabled directional light");
