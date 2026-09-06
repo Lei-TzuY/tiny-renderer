@@ -126,6 +126,10 @@ bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+Vec3 modulate_rgb(const Vec3& a, const Vec3& b) {
+    return {a.x * b.x, a.y * b.y, a.z * b.z};
+}
+
 bool material_has_specular(const MaterialState& material) {
     return material.specular.x > 0.0F || material.specular.y > 0.0F || material.specular.z > 0.0F;
 }
@@ -918,26 +922,29 @@ float spot_cone_factor(const SpotLight& light, const Vec3& direction_to_light) {
         / (light.inner_cone_cos - light.outer_cone_cos);
 }
 
-float ambient_sum(
+Vec3 ambient_sum(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
     const FixedLightCollection& fixed_lights) {
     if (fixed_lights.count == 0U) {
-        return directional_light.enabled ? directional_light.ambient
-            : point_light.enabled ? point_light.ambient : 0.0F;
+        return directional_light.enabled
+            ? directional_light.color * directional_light.ambient
+            : point_light.enabled
+                ? point_light.color * point_light.ambient
+                : Vec3{};
     }
-    float sum = 0.0F;
+    Vec3 sum{};
     for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
         const FixedLight& light = fixed_lights.lights[i];
         switch (light.type) {
             case FixedLightType::Directional:
-                sum += light.directional.ambient;
+                sum = sum + light.directional.color * light.directional.ambient;
                 break;
             case FixedLightType::Point:
-                sum += light.point.ambient;
+                sum = sum + light.point.color * light.point.ambient;
                 break;
             case FixedLightType::Spot:
-                sum += light.spot.ambient;
+                sum = sum + light.spot.color * light.spot.ambient;
                 break;
         }
     }
@@ -959,20 +966,23 @@ Vec3 light_contribution(
     float diffuse = 0.0F;
     float attenuation_factor = 1.0F;
     float cone_factor = 1.0F;
+    Vec3 light_color{1.0F, 1.0F, 1.0F};
 
     if (directional_light != nullptr) {
         direction_to_light = directional_light->direction_to_light;
         viewer_position = directional_light->viewer_position;
         ambient = directional_light->ambient;
         diffuse = directional_light->diffuse;
+        light_color = directional_light->color;
     } else if (point_light != nullptr) {
         ambient = point_light->ambient;
         diffuse = point_light->diffuse;
         viewer_position = point_light->viewer_position;
+        light_color = point_light->color;
         const Vec3 to_light = point_light->position - world_position;
         const float distance = length(to_light);
         if (!finite_vec3(to_light) || !std::isfinite(distance) || distance <= kEpsilon) {
-            return base * ambient;
+            return modulate_rgb(base, light_color) * ambient;
         }
         direction_to_light = to_light / distance;
         attenuation_factor = point_attenuation(*point_light, distance);
@@ -980,10 +990,11 @@ Vec3 light_contribution(
         ambient = spot_light->ambient;
         diffuse = spot_light->diffuse;
         viewer_position = spot_light->viewer_position;
+        light_color = spot_light->color;
         const Vec3 to_light = spot_light->position - world_position;
         const float distance = length(to_light);
         if (!finite_vec3(to_light) || !std::isfinite(distance) || distance <= kEpsilon) {
-            return base * ambient;
+            return modulate_rgb(base, light_color) * ambient;
         }
         direction_to_light = to_light / distance;
         attenuation_factor = spot_attenuation(*spot_light, distance);
@@ -995,7 +1006,7 @@ Vec3 light_contribution(
     const float direct_factor = visibility * attenuation_factor * cone_factor;
     const float lambert = std::clamp(dot(normal, direction_to_light), 0.0F, 1.0F);
     const float diffuse_intensity = diffuse * lambert * direct_factor;
-    Vec3 shaded = base * (ambient + diffuse_intensity);
+    Vec3 shaded = modulate_rgb(base, light_color) * (ambient + diffuse_intensity);
 
     if (material_has_specular(material)) {
         const Vec3 to_viewer = viewer_position - world_position;
@@ -1010,9 +1021,9 @@ Vec3 light_contribution(
                 const float specular_strength = diffuse * direct_factor
                     * std::pow(nh, material.shininess);
                 shaded = {
-                    shaded.x + material.specular.x * specular_strength,
-                    shaded.y + material.specular.y * specular_strength,
-                    shaded.z + material.specular.z * specular_strength,
+                    shaded.x + material.specular.x * light_color.x * specular_strength,
+                    shaded.y + material.specular.y * light_color.y * specular_strength,
+                    shaded.z + material.specular.z * light_color.z * specular_strength,
                 };
             }
         }
@@ -1052,13 +1063,13 @@ ShadedFragment shade_fragment(
         varyings.values[normal_binding->y],
         varyings.values[normal_binding->z],
     };
-    const float ambient = ambient_sum(directional_light, point_light, fixed_lights);
+    const Vec3 ambient = ambient_sum(directional_light, point_light, fixed_lights);
     if (!finite_vec3(interpolated_normal)) {
-        return {base * ambient, opacity, false};
+        return {modulate_rgb(base, ambient), opacity, false};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {base * ambient, opacity, false};
+        return {modulate_rgb(base, ambient), opacity, false};
     }
 
     const Vec3 geometric_normal = interpolated_normal / normal_length;

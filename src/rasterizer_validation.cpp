@@ -45,6 +45,16 @@ void validate_light_coefficients(float ambient, float diffuse, const char* label
     }
 }
 
+void validate_light_color(const Vec3& color, const char* label) {
+    if (!finite_vec3(color)
+        || color.x < 0.0F || color.x > 1.0F
+        || color.y < 0.0F || color.y > 1.0F
+        || color.z < 0.0F || color.z > 1.0F) {
+        throw std::invalid_argument(
+            std::string(label) + " color components must be finite and within [0, 1]");
+    }
+}
+
 void validate_directional_light(const DirectionalLight& light) {
     if (!finite_vec3(light.direction_to_light)
         || length(light.direction_to_light) <= kEpsilon) {
@@ -54,6 +64,7 @@ void validate_directional_light(const DirectionalLight& light) {
         throw std::invalid_argument("directional light viewer position must be finite");
     }
     validate_light_coefficients(light.ambient, light.diffuse, "directional light");
+    validate_light_color(light.color, "directional light");
 }
 
 void validate_point_light(const PointLight& light) {
@@ -64,6 +75,7 @@ void validate_point_light(const PointLight& light) {
         throw std::invalid_argument("point light viewer position must be finite");
     }
     validate_light_coefficients(light.ambient, light.diffuse, "point light");
+    validate_light_color(light.color, "point light");
     if (!std::isfinite(light.linear_attenuation)
         || !std::isfinite(light.quadratic_attenuation)
         || light.linear_attenuation < 0.0F
@@ -84,6 +96,7 @@ void validate_spot_light(const SpotLight& light) {
         throw std::invalid_argument("spot light viewer position must be finite");
     }
     validate_light_coefficients(light.ambient, light.diffuse, "spot light");
+    validate_light_color(light.color, "spot light");
     if (!std::isfinite(light.linear_attenuation)
         || !std::isfinite(light.quadratic_attenuation)
         || light.linear_attenuation < 0.0F

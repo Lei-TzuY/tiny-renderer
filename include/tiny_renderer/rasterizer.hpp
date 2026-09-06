@@ -84,6 +84,9 @@ struct DirectionalLight {
     float ambient{0.0F};
     float diffuse{1.0F};
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
+    // Linear teaching-space RGB multiplier shared by this light's ambient,
+    // diffuse, and specular contributions. White preserves legacy behavior.
+    Vec3 color{1.0F, 1.0F, 1.0F};
 };
 
 struct PointLight {
@@ -95,6 +98,7 @@ struct PointLight {
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
     float linear_attenuation{0.0F};
     float quadratic_attenuation{0.0F};
+    Vec3 color{1.0F, 1.0F, 1.0F};
 };
 
 struct SpotLight {
@@ -113,6 +117,7 @@ struct SpotLight {
     // interpolated between them. Validation requires inner > outer.
     float inner_cone_cos{0.9F};
     float outer_cone_cos{0.8F};
+    Vec3 color{1.0F, 1.0F, 1.0F};
 };
 
 constexpr std::size_t kMaxFixedLights = 4U;
