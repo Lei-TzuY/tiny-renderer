@@ -110,6 +110,14 @@ MaterialState diffuse_material() {
     return material;
 }
 
+MaterialState specular_material() {
+    MaterialState material;
+    material.albedo = {0.2F, 0.3F, 0.4F};
+    material.specular = {0.35F, 0.2F, 0.1F};
+    material.shininess = 16.0F;
+    return material;
+}
+
 Framebuffer render_model(const ModelRenderOptions& options, const MaterialState& material) {
     Framebuffer framebuffer(65U, 65U);
     draw_model_asset(
@@ -120,9 +128,9 @@ Framebuffer render_model(const ModelRenderOptions& options, const MaterialState&
     return framebuffer;
 }
 
-void test_single_light_collection_matches_legacy() {
-    const MaterialState material = diffuse_material();
-
+void check_single_light_collection_matches_legacy(
+    const MaterialState& material,
+    const std::string& material_label) {
     ModelRenderOptions legacy_directional;
     legacy_directional.directional_light = directional(0.75F);
     ModelRenderOptions collection_directional;
@@ -131,9 +139,11 @@ void test_single_light_collection_matches_legacy() {
     const Framebuffer legacy_d = render_model(legacy_directional, material);
     const Framebuffer collection_d = render_model(collection_directional, material);
     check(collection_d.rgb8() == legacy_d.rgb8(),
-          "one directional collection light is byte-equivalent to the legacy directional path");
+          "one directional collection light is byte-equivalent to the legacy directional path for "
+              + material_label);
     check(collection_d.fnv1a64() == legacy_d.fnv1a64(),
-          "one directional collection light is hash-equivalent to the legacy directional path");
+          "one directional collection light is hash-equivalent to the legacy directional path for "
+              + material_label);
 
     ModelRenderOptions legacy_point;
     legacy_point.point_light = point(0.75F);
@@ -143,9 +153,16 @@ void test_single_light_collection_matches_legacy() {
     const Framebuffer legacy_p = render_model(legacy_point, material);
     const Framebuffer collection_p = render_model(collection_point, material);
     check(collection_p.rgb8() == legacy_p.rgb8(),
-          "one point collection light is byte-equivalent to the legacy point path");
+          "one point collection light is byte-equivalent to the legacy point path for "
+              + material_label);
     check(collection_p.fnv1a64() == legacy_p.fnv1a64(),
-          "one point collection light is hash-equivalent to the legacy point path");
+          "one point collection light is hash-equivalent to the legacy point path for "
+              + material_label);
+}
+
+void test_single_light_collection_matches_legacy() {
+    check_single_light_collection_matches_legacy(diffuse_material(), "diffuse-only material");
+    check_single_light_collection_matches_legacy(specular_material(), "Blinn-Phong material");
 }
 
 void test_two_point_lights_accumulate_analytically() {
