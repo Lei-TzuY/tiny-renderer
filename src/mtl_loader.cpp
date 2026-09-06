@@ -19,6 +19,8 @@ struct PendingMaterial {
     std::string name;
     MaterialAssetDefinition asset{};
     bool has_kd{false};
+    bool has_ks{false};
+    bool has_ns{false};
     bool has_map_kd{false};
     bool has_d{false};
     bool has_map_d{false};
@@ -29,13 +31,29 @@ struct PendingMaterial {
     throw MtlParseError(line, message);
 }
 
-float parse_unit_float(const std::string& token, std::size_t line, const char* field) {
+float parse_float_token(const std::string& token, std::size_t line, const char* field) {
     float value{};
     const char* const begin = token.data();
     const char* const end = begin + token.size();
     const auto [ptr, error] = std::from_chars(begin, end, value, std::chars_format::general);
-    if (error != std::errc{} || ptr != end || !std::isfinite(value) || value < 0.0F || value > 1.0F) {
+    if (error != std::errc{} || ptr != end || !std::isfinite(value)) {
+        fail(line, std::string(field) + " must be finite");
+    }
+    return value;
+}
+
+float parse_unit_float(const std::string& token, std::size_t line, const char* field) {
+    const float value = parse_float_token(token, line, field);
+    if (value < 0.0F || value > 1.0F) {
         fail(line, std::string(field) + " must be a finite value within [0, 1]");
+    }
+    return value;
+}
+
+float parse_shininess(const std::string& token, std::size_t line) {
+    const float value = parse_float_token(token, line, "Ns shininess");
+    if (value < 1.0F || value > 1000.0F) {
+        fail(line, "Ns shininess must be within [1, 1000]");
     }
     return value;
 }
@@ -95,7 +113,9 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
             if (library.find(name) != library.end()) {
                 fail(line_number, "duplicate material name '" + name + "'");
             }
-            pending = PendingMaterial{name, MaterialAssetDefinition{}, false, false, false, false, false};
+            PendingMaterial next;
+            next.name = name;
+            pending = std::move(next);
             continue;
         }
 
@@ -119,6 +139,46 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
                 parse_unit_float(b_token, line_number, "Kd blue"),
             };
             pending->has_kd = true;
+            continue;
+        }
+
+        if (directive == "Ks") {
+            if (!pending) {
+                fail(line_number, "Ks requires a preceding newmtl");
+            }
+            if (pending->has_ks) {
+                fail(line_number, "material '" + pending->name + "' defines Ks more than once");
+            }
+            std::string r_token;
+            std::string g_token;
+            std::string b_token;
+            std::string extra;
+            if (!(line >> r_token >> g_token >> b_token) || (line >> extra)) {
+                fail(line_number, "Ks must contain exactly three components");
+            }
+            pending->asset.material.specular = {
+                parse_unit_float(r_token, line_number, "Ks red"),
+                parse_unit_float(g_token, line_number, "Ks green"),
+                parse_unit_float(b_token, line_number, "Ks blue"),
+            };
+            pending->has_ks = true;
+            continue;
+        }
+
+        if (directive == "Ns") {
+            if (!pending) {
+                fail(line_number, "Ns requires a preceding newmtl");
+            }
+            if (pending->has_ns) {
+                fail(line_number, "material '" + pending->name + "' defines Ns more than once");
+            }
+            std::string exponent_token;
+            std::string extra;
+            if (!(line >> exponent_token) || (line >> extra)) {
+                fail(line_number, "Ns must contain exactly one shininess component");
+            }
+            pending->asset.material.shininess = parse_shininess(exponent_token, line_number);
+            pending->has_ns = true;
             continue;
         }
 
