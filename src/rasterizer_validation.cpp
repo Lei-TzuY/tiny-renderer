@@ -1,5 +1,6 @@
 #include "rasterizer_validation.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -567,6 +568,43 @@ void validate_shadow_state_definition(
     }
 }
 
+void validate_point_shadow_state_definition(
+    const PointShadowState& state,
+    const FixedLightCollection& fixed_lights) {
+    if (fixed_lights.count == 0U) {
+        if (fixed_lights.shadowed_point_index) {
+            throw std::invalid_argument("legacy fixed lighting cannot name a point-shadow collection index");
+        }
+        if (state.enabled) {
+            throw std::invalid_argument("point shadow mapping requires a fixed-light collection association");
+        }
+        return;
+    }
+
+    if (!state.enabled) {
+        if (fixed_lights.shadowed_point_index) {
+            throw std::invalid_argument("point-shadow association requires enabled point shadow state");
+        }
+        return;
+    }
+    if (!fixed_lights.shadowed_point_index) {
+        throw std::invalid_argument("point shadow mapping requires a point-light association");
+    }
+    const std::size_t index = *fixed_lights.shadowed_point_index;
+    if (index >= fixed_lights.count) {
+        throw std::out_of_range("point-shadow association exceeds the fixed-light collection");
+    }
+    if (fixed_lights.lights[index].type != FixedLightType::Point) {
+        throw std::invalid_argument("point-shadow association must target a point light");
+    }
+    if (!state.map) {
+        throw std::invalid_argument("point shadow mapping requires a depth cubemap");
+    }
+    if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+        throw std::invalid_argument("point shadow bias must be finite and non-negative");
+    }
+}
+
 ResolvedViewportState resolve_viewport_state(
     const Framebuffer& framebuffer,
     const ViewportState& state) {
@@ -610,13 +648,14 @@ void preflight_mesh_range_submission(
     const BlendState& blend_state,
     const AlphaToCoverageState& alpha_to_coverage_state,
     const ShadowState& shadow_state,
+    const PointShadowState& point_shadow_state,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
     validate_fixed_lighting_definition(directional_light, point_light, fixed_lights);
     const bool lighting_enabled = fixed_lighting_enabled(
         directional_light, point_light, fixed_lights);
-    if (mvp_only && (lighting_enabled || shadow_state.enabled)) {
+    if (mvp_only && (lighting_enabled || shadow_state.enabled || point_shadow_state.enabled)) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     if (texture_binding.normal_texture != nullptr && !lighting_enabled) {
@@ -633,6 +672,7 @@ void preflight_mesh_range_submission(
     validate_raster_target(framebuffer);
     validate_alpha_to_coverage_target(framebuffer, alpha_to_coverage_state);
     validate_shadow_state_definition(shadow_state, directional_light, fixed_lights);
+    validate_point_shadow_state_definition(point_shadow_state, fixed_lights);
     (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
