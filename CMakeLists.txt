@@ -10,6 +10,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 add_library(tiny_renderer
     src/framebuffer.cpp
     src/material_asset_loader.cpp
+    src/model_inspection.cpp
     src/model_renderer.cpp
     src/mtl_loader.cpp
     src/obj_loader.cpp
@@ -37,6 +38,9 @@ endif()
 
 add_executable(tiny_renderer_sample src/main.cpp)
 target_link_libraries(tiny_renderer_sample PRIVATE tiny_renderer)
+
+add_executable(tiny_renderer_asset_inspect src/asset_inspect_main.cpp)
+target_link_libraries(tiny_renderer_asset_inspect PRIVATE tiny_renderer)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -102,6 +106,23 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_model_asset_tests COMMAND tiny_renderer_model_asset_tests)
+
+    add_executable(tiny_renderer_asset_inspection_tests tests/test_asset_inspect.cpp)
+    target_link_libraries(tiny_renderer_asset_inspection_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_asset_inspection_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_asset_inspection_tests COMMAND tiny_renderer_asset_inspection_tests)
+    add_test(
+        NAME tiny_renderer_asset_inspect_cli
+        COMMAND tiny_renderer_asset_inspect
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+    )
+    set_tests_properties(tiny_renderer_asset_inspect_cli PROPERTIES
+        PASS_REGULAR_EXPRESSION "format=tiny-renderer-model-asset-inspect-v1"
+    )
+    add_test(NAME tiny_renderer_asset_inspect_usage COMMAND tiny_renderer_asset_inspect)
+    set_tests_properties(tiny_renderer_asset_inspect_usage PROPERTIES WILL_FAIL TRUE)
 
     add_executable(tiny_renderer_direct_range_tests tests/test_direct_range.cpp)
     target_link_libraries(tiny_renderer_direct_range_tests PRIVATE tiny_renderer)
