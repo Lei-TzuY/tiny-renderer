@@ -1,0 +1,873 @@
+name: m44-construction
+
+on:
+  push:
+    branches:
+      - milestone-44-per-record-shadow-bindings
+    paths:
+      - .github/workflows/m44-construction.yml
+
+permissions:
+  contents: write
+
+jobs:
+  implement-verify-seal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: milestone-44-per-record-shadow-bindings
+          fetch-depth: 0
+
+      - name: Apply Milestone 44 production slice
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one target, found {count}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # Public fixed-light records own optional matching typed shadow state.
+          replace_once(
+              "include/tiny_renderer/rasterizer.hpp",
+              """struct FixedLight {
+              FixedLightType type{FixedLightType::Directional};
+              DirectionalLight directional{};
+              PointLight point{};
+              SpotLight spot{};
+          };""",
+              """struct FixedLight {
+              FixedLightType type{FixedLightType::Directional};
+              DirectionalLight directional{};
+              PointLight point{};
+              SpotLight spot{};
+              // Per-record typed shadow bindings. Only the state matching this
+              // record's FixedLightType may be enabled. Trailing placement keeps
+              // existing aggregate initialization source-compatible.
+              ShadowState directional_shadow{};
+              PointShadowState point_shadow{};
+              SpotShadowState spot_shadow{};
+          };""")
+
+          validation = "src/rasterizer_validation.cpp"
+          replace_once(
+              validation,
+              """bool collection_has_spot(const FixedLightCollection& fixed_lights) {
+              const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+              for (std::size_t i = 0U; i < count; ++i) {
+                  if (fixed_lights.lights[i].type == FixedLightType::Spot) {
+                      return true;
+                  }
+              }
+              return false;
+          }
+
+          bool finite_mat4""",
+              """bool collection_has_spot(const FixedLightCollection& fixed_lights) {
+              const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+              for (std::size_t i = 0U; i < count; ++i) {
+                  if (fixed_lights.lights[i].type == FixedLightType::Spot) {
+                      return true;
+                  }
+              }
+              return false;
+          }
+
+          bool collection_has_per_record_directional_shadow(
+              const FixedLightCollection& fixed_lights) {
+              const std::size_t count = std::min(fixed_lights.count, kMaxFixedLights);
+              for (std::size_t i = 0U; i < count; ++i) {
+                  const FixedLight& light = fixed_lights.lights[i];
+                  if (light.type == FixedLightType::Directional
+                      && light.directional_shadow.enabled) {
+                      return true;
+                  }
+              }
+              return false;
+          }
+
+          bool finite_mat4""")
+
+          replace_once(
+              validation,
+              """void validate_draw_range(const Mesh& mesh, DrawRange range) {""",
+              """void validate_directional_record_shadow(const ShadowState& state) {
+              if (!state.enabled) {
+                  return;
+              }
+              if (!state.map) {
+                  throw std::invalid_argument(
+                      "per-record directional shadow requires a depth texture");
+              }
+              if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+                  throw std::invalid_argument(
+                      "per-record directional shadow bias must be finite and non-negative");
+              }
+              if (!finite_mat4(state.light_view_projection)) {
+                  throw std::invalid_argument(
+                      "per-record directional shadow view-projection must be finite");
+              }
+          }
+
+          void validate_point_record_shadow(
+              const PointShadowState& state,
+              const PointLight& light) {
+              if (!state.enabled) {
+                  return;
+              }
+              if (!state.map) {
+                  throw std::invalid_argument(
+                      "per-record point shadow requires a depth cubemap");
+              }
+              if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+                  throw std::invalid_argument(
+                      "per-record point shadow bias must be finite and non-negative");
+              }
+              const Vec3& capture = state.map->light_position();
+              if (capture.x != light.position.x
+                  || capture.y != light.position.y
+                  || capture.z != light.position.z) {
+                  throw std::invalid_argument(
+                      "per-record point shadow capture position must match its point light");
+              }
+          }
+
+          void validate_spot_record_shadow(
+              const SpotShadowState& state,
+              const SpotLight& light) {
+              if (!state.enabled) {
+                  return;
+              }
+              if (!state.map) {
+                  throw std::invalid_argument(
+                      "per-record spot shadow requires a spotlight depth map");
+              }
+              if (!std::isfinite(state.bias) || state.bias < 0.0F) {
+                  throw std::invalid_argument(
+                      "per-record spot shadow bias must be finite and non-negative");
+              }
+              const Vec3& capture_position = state.map->light_position();
+              if (capture_position.x != light.position.x
+                  || capture_position.y != light.position.y
+                  || capture_position.z != light.position.z) {
+                  throw std::invalid_argument(
+                      "per-record spot shadow capture position must match its spotlight");
+              }
+              const Vec3 direction = normalize(light.direction);
+              const Vec3& capture_direction = state.map->light_direction();
+              if (capture_direction.x != direction.x
+                  || capture_direction.y != direction.y
+                  || capture_direction.z != direction.z) {
+                  throw std::invalid_argument(
+                      "per-record spot shadow capture direction must match its spotlight");
+              }
+              if (state.map->outer_cone_cos() != light.outer_cone_cos) {
+                  throw std::invalid_argument(
+                      "per-record spot shadow capture cone must match its spotlight");
+              }
+          }
+
+          void validate_per_record_shadow_binding(const FixedLight& light) {
+              switch (light.type) {
+                  case FixedLightType::Directional:
+                      if (light.point_shadow.enabled || light.spot_shadow.enabled) {
+                          throw std::invalid_argument(
+                              "directional fixed-light record cannot enable point or spot shadow state");
+                      }
+                      validate_directional_record_shadow(light.directional_shadow);
+                      return;
+                  case FixedLightType::Point:
+                      if (light.directional_shadow.enabled || light.spot_shadow.enabled) {
+                          throw std::invalid_argument(
+                              "point fixed-light record cannot enable directional or spot shadow state");
+                      }
+                      validate_point_record_shadow(light.point_shadow, light.point);
+                      return;
+                  case FixedLightType::Spot:
+                      if (light.directional_shadow.enabled || light.point_shadow.enabled) {
+                          throw std::invalid_argument(
+                              "spot fixed-light record cannot enable directional or point shadow state");
+                      }
+                      validate_spot_record_shadow(light.spot_shadow, light.spot);
+                      return;
+              }
+              throw std::invalid_argument(
+                  "fixed-light collection contains an unknown light type");
+          }
+
+          void validate_draw_range(const Mesh& mesh, DrawRange range) {""")
+
+          # Per-record directional projected shadows need perspective-correct world position
+          # even when the material has no specular term.
+          replace_once(
+              validation,
+              """return collection_has_point(fixed_lights)
+                  || collection_has_spot(fixed_lights)
+                  || (material_has_specular(material) && collection_has_directional(fixed_lights));""",
+              """return collection_has_point(fixed_lights)
+                  || collection_has_spot(fixed_lights)
+                  || collection_has_per_record_directional_shadow(fixed_lights)
+                  || (material_has_specular(material) && collection_has_directional(fixed_lights));""")
+
+          # Validate each matching per-record state in the existing bounded collection pass.
+          replace_once(
+              validation,
+              """        if (shared_normal == nullptr) {
+                  shared_normal = normal;
+              } else if (!same_normal_binding(*shared_normal, *normal)) {""",
+              """        validate_per_record_shadow_binding(light);
+              if (shared_normal == nullptr) {
+                  shared_normal = normal;
+              } else if (!same_normal_binding(*shared_normal, *normal)) {""")
+
+          # Legacy singleton associations remain supported but cannot double-bind the
+          # same record as a per-record state.
+          replace_once(
+              validation,
+              """    if (fixed_lights.lights[index].type != FixedLightType::Spot) {
+                  throw std::invalid_argument("spot-shadow association must target a spotlight");
+              }
+              if (!state.map) {""",
+              """    if (fixed_lights.lights[index].type != FixedLightType::Spot) {
+                  throw std::invalid_argument("spot-shadow association must target a spotlight");
+              }
+              if (fixed_lights.lights[index].spot_shadow.enabled) {
+                  throw std::invalid_argument(
+                      "spotlight cannot use legacy and per-record shadow bindings simultaneously");
+              }
+              if (!state.map) {""")
+
+          replace_once(
+              validation,
+              """        if (fixed_lights.lights[index].type != FixedLightType::Directional) {
+                  throw std::invalid_argument("multi-light shadow association must target a directional light");
+              }
+              }
+
+              if (!state.map) {""",
+              """        if (fixed_lights.lights[index].type != FixedLightType::Directional) {
+                  throw std::invalid_argument("multi-light shadow association must target a directional light");
+              }
+              if (fixed_lights.lights[index].directional_shadow.enabled) {
+                  throw std::invalid_argument(
+                      "directional light cannot use legacy and per-record shadow bindings simultaneously");
+              }
+              }
+
+              if (!state.map) {""")
+
+          replace_once(
+              validation,
+              """    if (fixed_lights.lights[index].type != FixedLightType::Point) {
+                  throw std::invalid_argument("point-shadow association must target a point light");
+              }
+              if (!state.map) {""",
+              """    if (fixed_lights.lights[index].type != FixedLightType::Point) {
+                  throw std::invalid_argument("point-shadow association must target a point light");
+              }
+              if (fixed_lights.lights[index].point_shadow.enabled) {
+                  throw std::invalid_argument(
+                      "point light cannot use legacy and per-record shadow bindings simultaneously");
+              }
+              if (!state.map) {""")
+
+          rasterizer = "src/rasterizer.cpp"
+          replace_once(
+              rasterizer,
+              """float spot_shadow_visibility(
+              const SpotShadowState& shadow,
+              const Vec3& world_position) {""",
+              """float directional_shadow_visibility_world(
+              const ShadowState& shadow,
+              const Vec3& world_position) {
+              if (!shadow.enabled) {
+                  return 1.0F;
+              }
+              if (!shadow.map) {
+                  throw std::logic_error(
+                      "validated per-record directional shadow lost its depth texture");
+              }
+              const Vec4 clip = shadow.light_view_projection
+                  * Vec4{world_position.x, world_position.y, world_position.z, 1.0F};
+              return projected_shadow_visibility(*shadow.map, shadow.bias, clip);
+          }
+
+          float spot_shadow_visibility(
+              const SpotShadowState& shadow,
+              const Vec3& world_position) {""")
+
+          old_directional = """            case FixedLightType::Directional: {
+                      const bool is_shadowed = shadow.enabled
+                          && fixed_lights.shadowed_directional_index
+                          && *fixed_lights.shadowed_directional_index == i;
+                      const float visibility = is_shadowed
+                          ? shadow_visibility(shadow, light_clip)
+                          : 1.0F;
+                      shaded = shaded + light_contribution("""
+          new_directional = """            case FixedLightType::Directional: {
+                      float visibility = 1.0F;
+                      if (light.directional_shadow.enabled) {
+                          visibility = directional_shadow_visibility_world(
+                              light.directional_shadow,
+                              world_position);
+                      } else {
+                          const bool legacy_shadowed = shadow.enabled
+                              && fixed_lights.shadowed_directional_index
+                              && *fixed_lights.shadowed_directional_index == i;
+                          if (legacy_shadowed) {
+                              visibility = shadow_visibility(shadow, light_clip);
+                          }
+                      }
+                      shaded = shaded + light_contribution("""
+          replace_once(rasterizer, old_directional, new_directional)
+
+          old_point = """            case FixedLightType::Point: {
+                      const bool is_shadowed = point_shadow.enabled
+                          && fixed_lights.shadowed_point_index
+                          && *fixed_lights.shadowed_point_index == i;
+                      const float visibility = is_shadowed
+                          ? point_shadow_visibility(point_shadow, light.point, world_position)
+                          : 1.0F;
+                      shaded = shaded + light_contribution("""
+          new_point = """            case FixedLightType::Point: {
+                      float visibility = 1.0F;
+                      if (light.point_shadow.enabled) {
+                          visibility = point_shadow_visibility(
+                              light.point_shadow,
+                              light.point,
+                              world_position);
+                      } else {
+                          const bool legacy_shadowed = point_shadow.enabled
+                              && fixed_lights.shadowed_point_index
+                              && *fixed_lights.shadowed_point_index == i;
+                          if (legacy_shadowed) {
+                              visibility = point_shadow_visibility(
+                                  point_shadow,
+                                  light.point,
+                                  world_position);
+                          }
+                      }
+                      shaded = shaded + light_contribution("""
+          replace_once(rasterizer, old_point, new_point)
+
+          old_spot = """            case FixedLightType::Spot: {
+                      const bool is_shadowed = fixed_lights.spot_shadow_state.enabled
+                          && fixed_lights.shadowed_spot_index
+                          && *fixed_lights.shadowed_spot_index == i;
+                      const float visibility = is_shadowed
+                          ? spot_shadow_visibility(fixed_lights.spot_shadow_state, world_position)
+                          : 1.0F;
+                      shaded = shaded + light_contribution("""
+          new_spot = """            case FixedLightType::Spot: {
+                      float visibility = 1.0F;
+                      if (light.spot_shadow.enabled) {
+                          visibility = spot_shadow_visibility(
+                              light.spot_shadow,
+                              world_position);
+                      } else {
+                          const bool legacy_shadowed = fixed_lights.spot_shadow_state.enabled
+                              && fixed_lights.shadowed_spot_index
+                              && *fixed_lights.shadowed_spot_index == i;
+                          if (legacy_shadowed) {
+                              visibility = spot_shadow_visibility(
+                                  fixed_lights.spot_shadow_state,
+                                  world_position);
+                          }
+                      }
+                      shaded = shaded + light_contribution("""
+          replace_once(rasterizer, old_spot, new_spot)
+
+          test = r'''#include <array>
+          #include <cmath>
+          #include <cstddef>
+          #include <cstdint>
+          #include <iostream>
+          #include <limits>
+          #include <memory>
+          #include <stdexcept>
+          #include <string>
+          #include <vector>
+
+          #include "tiny_renderer/framebuffer.hpp"
+          #include "tiny_renderer/model_renderer.hpp"
+          #include "tiny_renderer/point_shadow.hpp"
+          #include "tiny_renderer/rasterizer.hpp"
+          #include "tiny_renderer/shadow.hpp"
+          #include "tiny_renderer/spot_shadow.hpp"
+
+          using namespace tiny_renderer;
+
+          namespace {
+
+          int failures = 0;
+
+          void check(bool condition, const std::string& message) {
+              if (!condition) {
+                  ++failures;
+                  std::cerr << "FAIL: " << message << '\n';
+              }
+          }
+
+          void check_near(float actual, float expected, const std::string& message, float epsilon = 8.0e-3F) {
+              check(
+                  std::fabs(actual - expected) <= epsilon,
+                  message + " (actual=" + std::to_string(actual)
+                      + ", expected=" + std::to_string(expected) + ")");
+          }
+
+          Vertex normal_vertex(const Vec3& position) {
+              return Vertex::with_varyings(position, VaryingPack{0.0F, 0.0F, 1.0F});
+          }
+
+          Triangle camera_triangle() {
+              return Triangle{{
+                  normal_vertex({-0.7F, -0.7F, 0.0F}),
+                  normal_vertex({0.7F, -0.7F, 0.0F}),
+                  normal_vertex({0.0F, 0.7F, 0.0F}),
+              }};
+          }
+
+          ModelAsset model_from_triangle() {
+              const Triangle triangle = camera_triangle();
+              ModelAsset asset;
+              asset.mesh.vertices = {triangle[0], triangle[1], triangle[2]};
+              asset.mesh.triangles = {{0U, 1U, 2U}};
+              MaterialDraw draw;
+              draw.range = {0U, 1U};
+              draw.material_name = "per-record-shadow";
+              draw.material.albedo = {1.0F, 1.0F, 1.0F};
+              draw.material.specular = {0.0F, 0.0F, 0.0F};
+              asset.draws.push_back(draw);
+              return asset;
+          }
+
+          DirectionalLight directional(Vec3 color) {
+              DirectionalLight light;
+              light.enabled = true;
+              light.normal = {0U, 1U, 2U};
+              light.direction_to_light = {0.0F, 0.0F, 1.0F};
+              light.ambient = 0.1F;
+              light.diffuse = 0.4F;
+              light.viewer_position = {0.0F, 0.0F, 4.0F};
+              light.color = color;
+              return light;
+          }
+
+          PointLight point(Vec3 color, float z = 2.0F) {
+              PointLight light;
+              light.enabled = true;
+              light.normal = {0U, 1U, 2U};
+              light.position = {0.0F, 0.0F, z};
+              light.ambient = 0.1F;
+              light.diffuse = 0.4F;
+              light.viewer_position = {0.0F, 0.0F, 4.0F};
+              light.color = color;
+              return light;
+          }
+
+          SpotLight spot(Vec3 color) {
+              SpotLight light;
+              light.enabled = true;
+              light.normal = {0U, 1U, 2U};
+              light.position = {0.0F, 0.0F, 2.0F};
+              light.direction = {0.0F, 0.0F, -1.0F};
+              light.ambient = 0.1F;
+              light.diffuse = 0.4F;
+              light.viewer_position = {0.0F, 0.0F, 4.0F};
+              light.inner_cone_cos = 0.9F;
+              light.outer_cone_cos = 0.8F;
+              light.color = color;
+              return light;
+          }
+
+          FixedLight fixed_directional(const DirectionalLight& light) {
+              FixedLight result;
+              result.type = FixedLightType::Directional;
+              result.directional = light;
+              return result;
+          }
+
+          FixedLight fixed_point(const PointLight& light) {
+              FixedLight result;
+              result.type = FixedLightType::Point;
+              result.point = light;
+              return result;
+          }
+
+          FixedLight fixed_spot(const SpotLight& light) {
+              FixedLight result;
+              result.type = FixedLightType::Spot;
+              result.spot = light;
+              return result;
+          }
+
+          FixedLightCollection collection(std::initializer_list<FixedLight> lights) {
+              FixedLightCollection result;
+              result.count = lights.size();
+              std::size_t index = 0U;
+              for (const FixedLight& light : lights) {
+                  result.lights[index++] = light;
+              }
+              return result;
+          }
+
+          std::shared_ptr<const DepthTexture2D> projected_map(float depth) {
+              return std::make_shared<const DepthTexture2D>(
+                  1U, 1U, std::vector<float>{depth});
+          }
+
+          std::shared_ptr<const DepthCubemap> point_map(const Vec3& position, float depth) {
+              std::array<Mat4, kCubemapFaceCount> transforms{};
+              transforms.fill(Mat4::identity());
+              return std::make_shared<const DepthCubemap>(
+                  1U,
+                  position,
+                  transforms,
+                  std::vector<float>(kCubemapFaceCount, depth));
+          }
+
+          std::shared_ptr<const SpotShadowMap> spot_map(const SpotLight& light, float depth) {
+              return std::make_shared<const SpotShadowMap>(
+                  light.position,
+                  normalize(light.direction),
+                  light.outer_cone_cos,
+                  Mat4::identity(),
+                  DepthTexture2D(1U, 1U, std::vector<float>{depth}));
+          }
+
+          Vec3 render_center(const ModelRenderOptions& options) {
+              Framebuffer framebuffer(65U, 65U);
+              draw_model_asset(
+                  framebuffer,
+                  model_from_triangle(),
+                  Mat4::identity(), Mat4::identity(), Mat4::identity(),
+                  options);
+              return framebuffer.color_at(32U, 32U);
+          }
+
+          std::pair<std::vector<std::uint8_t>, std::uint64_t> render_signature(
+              const ModelRenderOptions& options) {
+              Framebuffer framebuffer(65U, 65U);
+              draw_model_asset(
+                  framebuffer,
+                  model_from_triangle(),
+                  Mat4::identity(), Mat4::identity(), Mat4::identity(),
+                  options);
+              return {framebuffer.rgb8(), framebuffer.fnv1a64()};
+          }
+
+          void test_two_directional_records_have_independent_shadows() {
+              FixedLight red = fixed_directional(directional({1.0F, 0.0F, 0.0F}));
+              red.directional_shadow = {true, projected_map(0.0F), Mat4::identity(), 0.0F};
+              FixedLight green = fixed_directional(directional({0.0F, 1.0F, 0.0F}));
+              green.directional_shadow = {true, projected_map(1.0F), Mat4::identity(), 0.0F};
+              ModelRenderOptions options;
+              options.fixed_lights = collection({red, green});
+              const Vec3 color = render_center(options);
+              check_near(color.x, 0.1F,
+                         "occluded red directional record keeps only its ambient term");
+              check_near(color.y, 0.5F,
+                         "visible green directional record keeps ambient plus direct term");
+              check_near(color.z, 0.0F,
+                         "independent directional shadow bindings do not leak blue energy");
+          }
+
+          void test_two_point_records_have_independent_shadows() {
+              FixedLight red = fixed_point(point({1.0F, 0.0F, 0.0F}));
+              red.point_shadow = {true, point_map(red.point.position, 0.0F), 0.0F};
+              FixedLight green = fixed_point(point({0.0F, 1.0F, 0.0F}));
+              green.point_shadow = {true, point_map(green.point.position, 1.0F), 0.0F};
+              ModelRenderOptions options;
+              options.fixed_lights = collection({red, green});
+              const Vec3 color = render_center(options);
+              check_near(color.x, 0.1F,
+                         "occluded red point record keeps only its ambient term");
+              check_near(color.y, 0.5F,
+                         "visible green point record keeps ambient plus direct term");
+              check_near(color.z, 0.0F,
+                         "independent point shadow bindings do not leak blue energy");
+          }
+
+          void test_two_spot_records_have_independent_shadows() {
+              FixedLight red = fixed_spot(spot({1.0F, 0.0F, 0.0F}));
+              red.spot_shadow = {true, spot_map(red.spot, 0.0F), 0.0F};
+              FixedLight green = fixed_spot(spot({0.0F, 1.0F, 0.0F}));
+              green.spot_shadow = {true, spot_map(green.spot, 1.0F), 0.0F};
+              ModelRenderOptions options;
+              options.fixed_lights = collection({red, green});
+              const Vec3 color = render_center(options);
+              check_near(color.x, 0.1F,
+                         "occluded red spotlight record keeps only its ambient term");
+              check_near(color.y, 0.5F,
+                         "visible green spotlight record keeps ambient plus direct term");
+              check_near(color.z, 0.0F,
+                         "independent spotlight shadow bindings do not leak blue energy");
+          }
+
+          void test_legacy_singleton_migration_is_byte_equivalent() {
+              {
+                  const auto map = projected_map(0.0F);
+                  ModelRenderOptions legacy;
+                  legacy.fixed_lights = collection({fixed_directional(directional({1.0F, 1.0F, 1.0F}))});
+                  legacy.fixed_lights.shadowed_directional_index = 0U;
+                  legacy.shadow_state = {true, map, Mat4::identity(), 0.0F};
+                  ModelRenderOptions modern;
+                  modern.fixed_lights = collection({fixed_directional(directional({1.0F, 1.0F, 1.0F}))});
+                  modern.fixed_lights.lights[0].directional_shadow = legacy.shadow_state;
+                  check(render_signature(legacy) == render_signature(modern),
+                        "legacy directional singleton is byte/hash-equivalent to per-record binding");
+              }
+              {
+                  const PointLight light = point({1.0F, 1.0F, 1.0F});
+                  const auto map = point_map(light.position, 0.0F);
+                  ModelRenderOptions legacy;
+                  legacy.fixed_lights = collection({fixed_point(light)});
+                  legacy.fixed_lights.shadowed_point_index = 0U;
+                  legacy.point_shadow_state = {true, map, 0.0F};
+                  ModelRenderOptions modern;
+                  modern.fixed_lights = collection({fixed_point(light)});
+                  modern.fixed_lights.lights[0].point_shadow = legacy.point_shadow_state;
+                  check(render_signature(legacy) == render_signature(modern),
+                        "legacy point singleton is byte/hash-equivalent to per-record binding");
+              }
+              {
+                  const SpotLight light = spot({1.0F, 1.0F, 1.0F});
+                  const auto map = spot_map(light, 0.0F);
+                  ModelRenderOptions legacy;
+                  legacy.fixed_lights = collection({fixed_spot(light)});
+                  legacy.fixed_lights.shadowed_spot_index = 0U;
+                  legacy.fixed_lights.spot_shadow_state = {true, map, 0.0F};
+                  ModelRenderOptions modern;
+                  modern.fixed_lights = collection({fixed_spot(light)});
+                  modern.fixed_lights.lights[0].spot_shadow = legacy.fixed_lights.spot_shadow_state;
+                  check(render_signature(legacy) == render_signature(modern),
+                        "legacy spot singleton is byte/hash-equivalent to per-record binding");
+              }
+          }
+
+          void test_invalid_binding_and_capture_fail_closed() {
+              const ModelAsset asset = model_from_triangle();
+              {
+                  FixedLight light = fixed_point(point({1.0F, 1.0F, 1.0F}));
+                  light.directional_shadow = {
+                      true, projected_map(1.0F), Mat4::identity(), 0.0F};
+                  ModelRenderOptions options;
+                  options.fixed_lights = collection({light});
+                  bool threw = false;
+                  try {
+                      (void)prepare_model_asset(asset, options);
+                  } catch (const std::invalid_argument&) {
+                      threw = true;
+                  }
+                  check(threw,
+                        "cross-type per-record directional shadow on a point record is rejected");
+              }
+
+              {
+                  FixedLight light = fixed_point(point({1.0F, 1.0F, 1.0F}, 2.0F));
+                  light.point_shadow = {
+                      true, point_map({0.0F, 0.0F, 3.0F}, 1.0F), 0.0F};
+                  ModelRenderOptions options;
+                  options.fixed_lights = collection({light});
+
+                  Framebuffer framebuffer(65U, 65U);
+                  framebuffer.clear({0.2F, 0.3F, 0.4F}, 0.9F, 17U);
+                  const auto before_rgb = framebuffer.rgb8();
+                  const float before_depth = framebuffer.depth_at(32U, 32U);
+                  const std::uint8_t before_stencil = framebuffer.stencil_at(32U, 32U);
+                  bool threw = false;
+                  try {
+                      draw_model_asset(
+                          framebuffer,
+                          asset,
+                          Mat4::identity(), Mat4::identity(), Mat4::identity(),
+                          options);
+                  } catch (const std::invalid_argument&) {
+                      threw = true;
+                  }
+                  check(threw,
+                        "per-record point shadow capture mismatch rejects direct submission");
+                  check(framebuffer.rgb8() == before_rgb,
+                        "capture mismatch rejects before any color mutation");
+                  check(framebuffer.depth_at(32U, 32U) == before_depth,
+                        "capture mismatch rejects before depth mutation");
+                  check(framebuffer.stencil_at(32U, 32U) == before_stencil,
+                        "capture mismatch rejects before stencil mutation");
+              }
+          }
+
+          void test_duplicate_legacy_and_per_record_binding_is_rejected() {
+              const PointLight light = point({1.0F, 1.0F, 1.0F});
+              const auto map = point_map(light.position, 1.0F);
+              FixedLight record = fixed_point(light);
+              record.point_shadow = {true, map, 0.0F};
+              ModelRenderOptions options;
+              options.fixed_lights = collection({record});
+              options.fixed_lights.shadowed_point_index = 0U;
+              options.point_shadow_state = {true, map, 0.0F};
+              bool threw = false;
+              try {
+                  (void)prepare_model_asset(model_from_triangle(), options);
+              } catch (const std::invalid_argument&) {
+                  threw = true;
+              }
+              check(threw,
+                    "one light cannot be double-bound by legacy and per-record point shadow state");
+          }
+
+          void test_prepared_ownership_and_list_equivalence() {
+              std::shared_ptr<const DepthCubemap> map = point_map({0.0F, 0.0F, 2.0F}, 1.0F);
+              std::weak_ptr<const DepthCubemap> weak = map;
+              FixedLight record = fixed_point(point({0.3F, 0.8F, 0.2F}));
+              record.point_shadow = {true, map, 0.0F};
+              ModelRenderOptions options;
+              options.fixed_lights = collection({record});
+              const PreparedModelSubmission prepared = prepare_model_asset(
+                  model_from_triangle(), options);
+              options.fixed_lights.lights[0].point_shadow.map.reset();
+              map.reset();
+              check(!weak.expired(),
+                    "prepared plan owns per-record point shadow resource lifetime");
+
+              Framebuffer single(65U, 65U);
+              draw_prepared_model(
+                  single,
+                  prepared,
+                  Mat4::identity(), Mat4::identity(), Mat4::identity());
+              Framebuffer listed(65U, 65U);
+              const PreparedModelListEntry entries[] = {{&prepared, Mat4::identity()}};
+              draw_prepared_model_list(
+                  listed, entries, Mat4::identity(), Mat4::identity());
+              check(listed.rgb8() == single.rgb8(),
+                    "prepared list is byte-equivalent with owned per-record shadow resources");
+              check(listed.fnv1a64() == single.fnv1a64(),
+                    "prepared list is hash-equivalent with owned per-record shadow resources");
+          }
+
+          }  // namespace
+
+          int main() {
+              test_two_directional_records_have_independent_shadows();
+              test_two_point_records_have_independent_shadows();
+              test_two_spot_records_have_independent_shadows();
+              test_legacy_singleton_migration_is_byte_equivalent();
+              test_invalid_binding_and_capture_fail_closed();
+              test_duplicate_legacy_and_per_record_binding_is_rejected();
+              test_prepared_ownership_and_list_equivalence();
+              if (failures != 0) {
+                  std::cerr << failures << " per-record shadow test(s) failed\n";
+                  return 1;
+              }
+              std::cout << "per-record shadow tests passed\n";
+              return 0;
+          }
+          '''
+          Path("tests/test_per_record_shadows.cpp").write_text(textwrap.dedent(test))
+
+          cmake_path = Path("CMakeLists.txt")
+          cmake = cmake_path.read_text()
+          if "tiny_renderer_per_record_shadow_tests" not in cmake:
+              target = """    add_executable(tiny_renderer_per_record_shadow_tests tests/test_per_record_shadows.cpp)
+              target_link_libraries(tiny_renderer_per_record_shadow_tests PRIVATE tiny_renderer)
+              add_test(NAME tiny_renderer_per_record_shadow_tests COMMAND tiny_renderer_per_record_shadow_tests)
+
+          """
+              pos = cmake.rfind("endif()")
+              if pos < 0:
+                  raise SystemExit("CMakeLists.txt: final endif() not found")
+              cmake_path.write_text(cmake[:pos] + target + cmake[pos:])
+
+          status = '''# tiny-renderer current status
+
+          This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains the detailed milestone record. A milestone is closed only after its exact `main` commit passes Linux, macOS, and ASan/UBSan CI.
+
+          ## Integrated architecture through Milestone 43
+
+          Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity/A2C, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–43 extend the same path with tangent-space normal mapping, Blinn-Phong specular lighting, point lights, caller-ordered fixed multi-light accumulation, point-light cubemap shadows, spotlight shading/shadows, and bounded per-light RGB color.
+
+          The current main line also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, and bounded 24-bit TGA texture import through the shared image dispatch path.
+
+          ## Milestone 44 — bounded per-record typed shadow bindings
+
+          The current integration candidate removes the one-shadow-per-light-type collection bottleneck without creating a second shading path.
+
+          Implemented acceptance surface:
+
+          - every bounded `FixedLight` record owns optional directional, point, and spotlight shadow state, with validation permitting only the binding matching that record's active type;
+          - multiple same-type records can own independent validated maps and biases while preserving exact caller-order light accumulation;
+          - directional per-record shadows project the existing perspective-correct world position per sample, avoiding new light-clip varying arrays; point and spotlight records reuse their existing world-position samplers;
+          - legacy singleton directional/point/spot associations remain supported and are byte/hash-equivalent to the matching per-record form, while double-binding one record is rejected deterministically;
+          - capture identity, resource presence, bias, cross-type state, and malformed direct submissions fail closed before framebuffer mutation;
+          - prepared plans retain per-record shared resource lifetime and heterogeneous list execution remains byte/hash-equivalent to prepared single submission;
+          - ambient remains unshadowed and only each bound record's colored direct contribution receives its own visibility scalar;
+          - no PCF/soft shadows, cascades, cookies/IES, automatic allocation, unbounded light state, GPU API, or performance claim is introduced.
+
+          ## Next frontier — Milestone 45
+
+          Promote hard binary visibility into an **explicit bounded shadow sampling policy**. The next slice should retain `Hard` as the exact default and add one deterministic fixed-kernel PCF mode across the existing typed per-record resources, with clearly documented projected-map and cubemap-face edge behavior, whole-list validation, prepared ownership, and regression evidence. It must not claim physically based penumbrae, cross-face cubemap seam filtering, cascades, stochastic sampling, or performance parity.
+          '''
+          Path("STATUS.md").write_text(textwrap.dedent(status))
+
+          roadmap_path = Path("ROADMAP.md")
+          roadmap = roadmap_path.read_text()
+          marker = "## Next frontier — Milestone 44\n"
+          if marker not in roadmap:
+              raise SystemExit("ROADMAP.md: M44 frontier marker not found")
+          prefix = roadmap.split(marker, 1)[0]
+          tail = '''### Milestone 44 — bounded per-record typed shadow bindings
+
+          - Each bounded `FixedLight` record can own one enabled shadow binding matching its active directional, point, or spotlight type; cross-type enabled state rejects during shared/static validation.
+          - Multiple same-type records retain independent shared shadow resources and non-negative biases while exact caller-order RGB light accumulation remains unchanged.
+          - Per-record directional shadows project the existing perspective-correct world-space fragment position through their own light view-projection matrix, avoiding a new array of raster varyings; point cubemap and spotlight resources reuse the established world-position sampling paths.
+          - Legacy singleton directional/point/spot associations remain source-compatible and render byte/hash-equivalently to the corresponding per-record binding. A record cannot be simultaneously bound by both forms.
+          - Resource presence, type, capture identity, finite transform/bias, and direct/model/prepared/list propagation remain fail-closed before framebuffer ownership; prepared plans retain every per-record shared resource lifetime.
+          - Visibility continues to modulate only the associated record's direct colored diffuse/specular contribution. Ambient and unrelated records remain independent, and no second shading loop is introduced.
+          - Regression coverage locks two independently shadowed records for each light type, legacy migration equivalence, capture/type/double-binding rejection, no-write failure semantics, and prepared-list ownership/equivalence.
+          - The milestone makes no PCF/soft-shadow, cascade, cookie/IES, automatic allocation, unbounded-scene, GPU, or performance claim.
+
+          ## Next frontier — Milestone 45
+
+          The next architectural promotion is an **explicit bounded shadow sampling policy** on the now-per-record typed shadow resources.
+
+          Acceptance for that slice should require:
+
+          - `Hard` remains the exact byte/hash-compatible default for all existing directional, point, and spotlight shadow paths;
+          - one deterministic fixed-kernel PCF policy averages a bounded set of comparison results without introducing random sampling or temporal state;
+          - projected directional/spot maps define exact texel-center and edge-clamp behavior, while cubemap filtering defines deterministic within-face addressing and explicitly makes no cross-face seam-filtering claim;
+          - the sampling policy is owned by each typed binding, validated before writes, retained by prepared plans, and propagated through direct/range/model/instance/list execution;
+          - ambient and unrelated light records remain unaffected; only the selected record's direct visibility scalar changes;
+          - focused analytic tests prove hard-mode compatibility, expected fractional visibility, same-type mixed policies, prepared ownership, and malformed-policy fail-closed behavior;
+          - no physically based penumbra, cascade, stochastic filter, receiver-plane bias, automatic kernel sizing, GPU API, or performance claim is added.
+
+          ## Deliberate later work
+
+          General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cascaded shadows, cubemap seam filtering, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+          '''
+          roadmap_path.write_text(prefix + textwrap.dedent(tail))
+          PY
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTINY_RENDERER_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Run full tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Seal verified implementation
+        shell: bash
+        run: |
+          rm -f .github/workflows/m44-construction.yml
+          git config user.name "LeiZ"
+          git config user.email "52287354+Lei-TzuY@users.noreply.github.com"
+          git add -A
+          git commit -m "Milestone 44: per-record typed shadow bindings"
+          git push origin HEAD:milestone-44-per-record-shadow-bindings
