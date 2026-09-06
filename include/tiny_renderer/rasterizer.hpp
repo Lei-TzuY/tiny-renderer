@@ -6,6 +6,7 @@
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/material.hpp"
 #include "tiny_renderer/mesh.hpp"
+#include "tiny_renderer/shadow.hpp"
 #include "tiny_renderer/texture.hpp"
 
 namespace tiny_renderer {
@@ -103,7 +104,8 @@ public:
         ViewportState viewport_state = {},
         StencilState stencil_state = {},
         BlendState blend_state = {},
-        AlphaToCoverageState alpha_to_coverage_state = {})
+        AlphaToCoverageState alpha_to_coverage_state = {},
+        ShadowState shadow_state = {})
         : framebuffer_(framebuffer),
           color_binding_(color_binding),
           texture_binding_(texture_binding),
@@ -116,7 +118,8 @@ public:
           viewport_state_(viewport_state),
           stencil_state_(stencil_state),
           blend_state_(blend_state),
-          alpha_to_coverage_state_(alpha_to_coverage_state) {}
+          alpha_to_coverage_state_(alpha_to_coverage_state),
+          shadow_state_(std::move(shadow_state)) {}
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
@@ -144,6 +147,7 @@ private:
     StencilState stencil_state_;
     BlendState blend_state_;
     AlphaToCoverageState alpha_to_coverage_state_;
+    ShadowState shadow_state_;
 };
 
 }  // namespace tiny_renderer
