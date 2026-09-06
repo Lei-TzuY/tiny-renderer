@@ -276,6 +276,14 @@ void validate_viewport_state_definition(const ViewportState& state) {
     }
 }
 
+void validate_alpha_to_coverage_target(
+    const Framebuffer& framebuffer,
+    const AlphaToCoverageState& state) {
+    if (state.enabled && framebuffer.sample_count() != SampleCount::Four) {
+        throw std::invalid_argument("alpha-to-coverage requires a 4x multisample framebuffer");
+    }
+}
+
 ResolvedViewportState resolve_viewport_state(
     const Framebuffer& framebuffer,
     const ViewportState& state) {
@@ -315,6 +323,7 @@ void preflight_mesh_range_submission(
     const ViewportState& viewport_state,
     const StencilState& stencil_state,
     const BlendState& blend_state,
+    const AlphaToCoverageState& alpha_to_coverage_state,
     const Mat4* model,
     bool mvp_only) {
     validate_draw_range(mesh, range);
@@ -327,6 +336,7 @@ void preflight_mesh_range_submission(
     validate_stencil_state(stencil_state);
     validate_blend_state(blend_state);
     validate_raster_target(framebuffer);
+    validate_alpha_to_coverage_target(framebuffer, alpha_to_coverage_state);
     (void)resolve_viewport_state(framebuffer, viewport_state);
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);

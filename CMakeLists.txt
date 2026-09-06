@@ -177,4 +177,8 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_opacity_texture_tests COMMAND tiny_renderer_opacity_texture_tests)
+
+    add_executable(tiny_renderer_alpha_to_coverage_tests tests/test_alpha_to_coverage.cpp)
+    target_link_libraries(tiny_renderer_alpha_to_coverage_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_alpha_to_coverage_tests COMMAND tiny_renderer_alpha_to_coverage_tests)
 endif()

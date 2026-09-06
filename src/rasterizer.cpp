@@ -89,6 +89,24 @@ SampleLocation sample_location(SampleCount count, std::size_t sample_index) {
     throw std::logic_error("raster target has an unsupported sample count");
 }
 
+std::size_t alpha_to_coverage_sample_count(float opacity) {
+    if (!std::isfinite(opacity) || opacity < 0.0F || opacity > 1.0F) {
+        throw std::logic_error("shaded fragment opacity must be finite and within [0, 1]");
+    }
+    const float rounded = std::floor(opacity * 4.0F + 0.5F);
+    return std::min<std::size_t>(4U, static_cast<std::size_t>(rounded));
+}
+
+bool alpha_to_coverage_accepts(
+    const AlphaToCoverageState& state,
+    float opacity,
+    std::size_t sample_index) {
+    if (!state.enabled) {
+        return true;
+    }
+    return sample_index < alpha_to_coverage_sample_count(opacity);
+}
+
 bool finite_vec3(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
@@ -647,6 +665,7 @@ void rasterize_screen_triangle(
     const DepthState& depth_state,
     const StencilState& stencil_state,
     const BlendState& blend_state,
+    const AlphaToCoverageState& alpha_to_coverage_state,
     const std::optional<RasterRect>& scissor) {
     std::array<FixedPoint2, 3> fixed{
         quantize_subpixel(v[0].position),
@@ -746,6 +765,12 @@ void rasterize_screen_triangle(
                     source,
                     light,
                     material);
+                if (!alpha_to_coverage_accepts(
+                        alpha_to_coverage_state,
+                        fragment.opacity,
+                        sample_index)) {
+                    continue;
+                }
                 framebuffer.test_and_write_sample(
                     static_cast<std::size_t>(x),
                     static_cast<std::size_t>(y),
@@ -809,6 +834,7 @@ void draw_triangle_impl(
     const DepthState& depth_state,
     const StencilState& stencil_state,
     const BlendState& blend_state,
+    const AlphaToCoverageState& alpha_to_coverage_state,
     const detail::ResolvedViewportState& viewport_state) {
     std::array<ClipVertex, 3> clip{};
     for (std::size_t i = 0; i < triangle.size(); ++i) {
@@ -847,6 +873,7 @@ void draw_triangle_impl(
             depth_state,
             stencil_state,
             blend_state,
+            alpha_to_coverage_state,
             viewport_state.scissor);
     }
 }
@@ -859,6 +886,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
+    detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -884,6 +912,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
         depth_state_,
         stencil_state_,
         blend_state_,
+        alpha_to_coverage_state_,
         viewport_state);
 }
 
@@ -896,6 +925,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
+    detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -916,6 +946,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
         depth_state_,
         stencil_state_,
         blend_state_,
+        alpha_to_coverage_state_,
         viewport_state);
 }
 
@@ -925,6 +956,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
+    detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -952,6 +984,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
             depth_state_,
             stencil_state_,
             blend_state_,
+            alpha_to_coverage_state_,
             viewport_state);
     }
 }
@@ -965,6 +998,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     validate_stencil_state(stencil_state_);
     validate_blend_state(blend_state_);
     validate_raster_target(framebuffer_);
+    detail::validate_alpha_to_coverage_target(framebuffer_, alpha_to_coverage_state_);
     const detail::ResolvedViewportState viewport_state =
         detail::resolve_viewport_state(framebuffer_, viewport_state_);
     const BaseColorSource source = prepare_base_color_source(base_color_source_, texture_binding_);
@@ -986,6 +1020,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
             depth_state_,
             stencil_state_,
             blend_state_,
+            alpha_to_coverage_state_,
             viewport_state);
     }
 }

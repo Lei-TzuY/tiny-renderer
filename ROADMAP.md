@@ -141,23 +141,35 @@ Milestones 1–16 established the CPU raster pipeline, indexed meshes, generaliz
 - Regression coverage locks rich/legacy MTL strictness, path rejection, cross-role/material texture deduplication, retained lifetime, the documented scalar rule, fail-closed invalid UV state, imported-versus-programmatic 1×/4× equivalence, and exact prepared-list sample storage on 4× targets.
 - The milestone does not add destination alpha, alpha test/discard, alpha-to-coverage, automatic transparency sorting, order-independent transparency, independent opacity UV transforms/samplers, new image formats, or physically based transmission.
 
-## Next frontier — Milestone 31
+### Milestone 31 — deterministic alpha-to-coverage
 
-The next architectural promotion is **deterministic alpha-to-coverage for the existing 4× multisample target**. M29 provides per-sample ownership and M30 provides spatially varying verified opacity; the next useful cross-layer step is to let that opacity suppress sample ownership before stencil/depth/blend mutation rather than only attenuating RGB through source-alpha blending.
+- `AlphaToCoverageState` is explicit raster/model state, disabled by default, and propagates through direct triangles/meshes, selected ranges, direct/prepared models, instance batches, and heterogeneous prepared lists without introducing a second raster path.
+- Enabling alpha-to-coverage requires the existing deterministic 4× framebuffer target; single-sample execution rejects during direct/shared preflight before RGB, depth, or stencil ownership can mutate.
+- Fragment opacity is quantized by the documented rule `floor(clamp(alpha, 0, 1) * 4 + 0.5)`, giving exact 1/2/3/4-sample transition thresholds at 0.125, 0.375, 0.625, and 0.875.
+- Surviving samples use the existing fixed sample-index order 0 → 1 → 2 → 3. Geometric top-left coverage, interpolation, depth calculation, and per-sample fragment shading occur first; alpha-rejected samples exit before `Framebuffer::test_and_write_sample`.
+- Rejected samples therefore cannot run stencil compare/update, depth test/write, blending, or RGB write-mask ownership, while accepted samples retain the original fragment opacity and may still use caller-selected source-alpha blending.
+- MTL `d` and `map_d` feed the same per-sample opacity calculation, so spatially varying opacity is evaluated at the existing multisample shading positions rather than after resolve.
+- Regression coverage locks all threshold boundaries, fixed sample ownership, disabled-state behavior, fail-closed 1× execution, depth/stencil immutability, explicit source-alpha composition, per-sample opacity-map variation, scissor/range propagation, exact prepared-list equivalence, and whole-list preflight of a later incompatible A2C entry.
+- The milestone does not add alpha test/discard, programmable sample masks/locations, temporal dithering, centroid interpolation, destination alpha, transparency sorting/OIT, or antialiasing quality/performance claims.
+
+## Next frontier — Milestone 32
+
+The next architectural promotion is **deterministic directional shadow mapping with an explicit reusable depth resource and a two-pass render workflow**. The renderer already has stable clipping, fixed-point coverage, depth ownership, prepared submission, lighting, and material sampling; shadows are the next useful step because they force geometry results from one pass to become validated input to a later shading pass rather than extending a single-pass state list.
 
 Acceptance for that slice should require:
 
-- an explicit alpha-to-coverage raster state that is disabled by default and propagates through direct triangles/meshes, selected ranges, direct/prepared model submission, instance batches, and heterogeneous prepared lists without a second raster path;
-- enabling alpha-to-coverage requires the existing deterministic 4× framebuffer target and rejects incompatible single-sample execution before framebuffer mutation rather than inventing an undocumented 1× threshold behavior;
-- after geometric top-left coverage, interpolation, and fragment shading produce a bounded opacity scalar, that opacity deterministically quantizes to an integer coverage count from zero through four using one documented rule and intersects the existing fixed sample order rather than changing sample locations;
-- samples rejected by the alpha-derived coverage mask must not run stencil compare/update, depth test/write, blending, or RGB write-mask ownership;
-- opacity zero rejects all samples and opacity one preserves every geometrically covered sample; threshold-boundary regressions lock the exact quantization rule and fixed sample ordering;
-- `map_d` opacity is evaluated at the existing per-sample shading positions, so textured alpha-to-coverage remains compatible with perspective interpolation, clipping, viewport/scissor, lighting, and the fixed 4× sample pattern;
-- alpha-to-coverage only gates sample ownership and does not silently rewrite caller blend state or fragment opacity, making its composition with source-alpha blending explicit and regression-covered rather than hidden;
-- deterministic regressions cover uniform opacity levels, opacity-texture variation, rejected-sample depth/stencil immutability, clipping/scissor interaction, prepared/list propagation, disabled-state byte/hash compatibility, and fail-closed 1× execution;
-- the slice does not add programmable sample masks/locations, alpha test/discard, temporal dithering, centroid interpolation, destination alpha, transparency sorting/OIT, or performance-quality claims;
-- no antialiasing-quality or performance claim is made without controlled evidence.
+- a first-class immutable single-sample depth texture/shadow-map resource with validated dimensions and normalized stored depth, plus an explicit capture path from a single-sample framebuffer depth attachment cleared to a finite far value; multisample depth capture must reject rather than silently choose sample zero;
+- shadow-map generation reuses the existing geometry/raster/depth path instead of adding a second triangle rasterizer; color writes can be disabled while the ordinary depth stage owns visibility in the light pass;
+- an explicit directional shadow binding carries owned shadow-map lifetime, the light view-projection transform, and a finite non-negative comparison bias; disabled shadow state preserves existing byte/hash output;
+- shadow-enabled drawing requires separate model/view/projection transforms so light-space coordinates can be derived from object-space positions; MVP-only entry points reject before framebuffer mutation rather than guessing a model transform;
+- camera-space homogeneous clipping must interpolate the generated light clip coordinate consistently with every clipped vertex, and screen interpolation must reconstruct the light-space projective coordinate correctly before the light perspective divide;
+- fragments outside the light clip volume are treated as unshadowed in the first bounded slice; in-range fragments compare normalized light-space depth against the captured map using one deterministic nearest-sample rule and the configured bias;
+- directional Lambert ambient remains unshadowed while only the diffuse contribution is multiplied by the binary visibility result; material RGB, opacity, source-alpha blending, alpha-to-coverage, depth, stencil, and scissor ownership remain on their existing paths;
+- direct triangles/meshes, selected ranges, direct/prepared models, instance batches, and heterogeneous prepared lists share the same shadow-aware raster path and fail-closed preflight; prepared ownership must retain the shadow resource if the source binding goes out of scope;
+- deterministic regressions cover depth-resource capture validation, a known occluder/receiver scene with lit and shadowed samples, bias behavior, camera clipping continuity, outside-light-frustum behavior, model/prepared/list equivalence, interaction with 4× main-pass rendering and alpha-to-coverage, and disabled-state compatibility;
+- the first shadow slice does not add percentage-closer filtering, cascaded shadow maps, cubemap/point-light shadows, soft shadows, variance/moment techniques, normal-offset bias, automatic light-frustum fitting, or performance/quality claims;
+- no visual-quality or performance claim is made without controlled evidence.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, alpha test/discard, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
+General/full OBJ and MTL syntax, polygon triangulation, relative OBJ indices, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, alpha test/discard, programmable sample locations, sample masks, centroid interpolation, temporal antialiasing, specular/PBR lighting, percentage-closer/cascaded/soft shadows, normal maps, programmable shaders, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value integration milestone justifies them.
