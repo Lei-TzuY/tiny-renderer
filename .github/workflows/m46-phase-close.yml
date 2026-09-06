@@ -1,0 +1,99 @@
+name: m46-phase-close
+
+on:
+  push:
+    branches:
+      - milestone-46-cascaded-directional-shadows
+
+permissions:
+  contents: write
+
+jobs:
+  close:
+    if: github.event.head_commit.message == 'Add M46 phase-close helper'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: milestone-46-cascaded-directional-shadows
+      - name: Close M46 and promote M47
+        shell: python
+        run: |
+          from pathlib import Path
+
+          roadmap = Path('ROADMAP.md')
+          text = roadmap.read_text()
+          marker = '## Next frontier — Milestone 46\n'
+          if text.count(marker) != 1:
+              raise SystemExit('expected one M46 frontier marker')
+          prefix, _ = text.split(marker, 1)
+          replacement = '''### Milestone 46 — bounded cascaded directional shadow mapping
+
+- One per-record directional shadow binding can own either the established single map or a fixed-capacity ordered `CascadedDirectionalShadowMap`; simultaneous single-map and cascade binding rejects before rendering.
+- Cascades carry explicit positive strictly increasing camera-view depth splits plus independent immutable depth textures, light view-projection matrices, non-negative biases, and the existing `ShadowSamplingMode`.
+- Selection is deterministic and half-open: each cascade owns `[previous_split, split)`, exact split equality advances to the following cascade, and depth at or beyond the final split is unshadowed rather than silently clamped to the last cascade.
+- Camera shading reuses the established perspective-correct world-space fragment position, transforms it through the cascade set's validated affine camera-view matrix, selects exactly one cascade, and feeds that record through the existing Hard/PCF projected-depth sampler.
+- `render_directional_shadow_cascades` prepares vertex-program geometry once, preflights the complete prepared list once, and reuses the established alpha-tested caster, clipping, culling, depth ownership, and depth capture path for every cascade rather than introducing a second rasterizer.
+- Existing single-map per-record directional shadows remain byte/hash compatible; mixed single-map and cascaded directional records retain independent caller-order lighting semantics.
+- Prepared plans retain cascade resource lifetime, and heterogeneous prepared lists preserve whole-list fail-closed validation so malformed later transforms cannot partially commit earlier color/depth/stencil state.
+- Regression coverage locks resource validation, half-open split boundaries, single-map compatibility, distinct near/far cascade visibility, mixed record forms, capture equivalence with independent directional shadow passes, prepared ownership/list equivalence, and no-write failure semantics.
+- This milestone does not add cascade blending, automatic split fitting, texel snapping/stabilization, variance/moment shadows, cross-cascade filtering, GPU APIs, or visual-quality/performance claims.
+
+## Next frontier — Milestone 47
+
+The next architectural promotion leaves the now-bounded shadow subsystem and advances **texture minification with deterministic mipmapped sampling and raster-derived LOD**. The renderer currently exposes nearest/bilinear filtering only within one texture level, so minified imported/material textures cannot express the next part of the sampling pipeline.
+
+Acceptance for that slice should require:
+
+- `Texture2D` (or one tightly integrated owned texture resource) can expose a deterministic complete mip chain while level-zero-only/default sampling remains byte/hash compatible with every existing texture/material path;
+- mip generation has one documented odd-dimension rule, overflow-safe storage validation, finite texel validation, and deterministic arithmetic averaging without claiming sRGB/colorimetric correctness;
+- sampler state gains explicit bounded mip behavior with a source-compatible disabled/default mode plus nearest-level and trilinear selection, with unknown modes rejected during direct/shared/prepared validation;
+- the rasterizer derives perspective-correct screen-space UV gradients from the same barycentric/interpolation terms used for shading and computes one documented isotropic LOD rule from texel-space footprint, avoiding finite-difference re-shading or a parallel texture-coordinate path;
+- diffuse, opacity, and normal texture roles that share the material UV binding consume the same validated gradients/LOD policy, while non-textured and mip-disabled draws preserve existing results exactly;
+- clipping, viewport/scissor, 1x/4x sample locations, alpha test/A2C, lighting/shadows, fragment-program ordering, model/prepared/list submission, and imported PPM/TGA assets remain on the established raster path;
+- deterministic regressions cover mip-chain contents including odd extents, minification level selection away from threshold ambiguity, trilinear interpolation, perspective-correct gradients, imported-vs-programmatic equivalence, prepared ownership, and malformed state failing before framebuffer mutation;
+- the slice does not add anisotropic filtering, LOD bias controls, explicit shader derivatives, sRGB-aware mip generation, compressed/general image formats, GPU APIs, or performance/image-quality claims.
+
+## Deliberate later work
+
+General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cubemap seam filtering, cascade blending/stabilization, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+'''
+          roadmap.write_text(prefix + replacement)
+
+          status = Path('STATUS.md')
+          status.write_text('''# tiny-renderer current status
+
+This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains the detailed milestone record. A milestone is closed only after its exact `main` commit passes Linux, macOS, and ASan/UBSan CI.
+
+## Integrated architecture through Milestone 46
+
+Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity/A2C, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–43 extend the same path with tangent-space normal mapping, Blinn-Phong specular lighting, point lights, caller-ordered fixed multi-light accumulation, point-light cubemap shadows, spotlight shading/shadows, and bounded per-light RGB color.
+
+Milestones 44–46 make shadow ownership and sampling composable: every bounded light record can own a typed shadow resource, Hard/3x3-PCF is explicit per binding, and directional records can own bounded ordered cascade sets selected deterministically from perspective-correct world position and camera-view depth.
+
+The current main line also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, and bounded PPM/TGA texture import through the shared image dispatch path.
+
+## Milestone 46 — bounded cascaded directional shadows
+
+Implemented acceptance surface:
+
+- 1–4 immutable directional cascades with finite strictly increasing view-depth splits, per-cascade light transform, bias, depth texture, and Hard/PCF policy;
+- half-open cascade ownership with exact boundary behavior and deterministic unshadowed handling beyond the final split;
+- camera shading selects one cascade from the established perspective-correct world position and reuses the existing projected shadow sampler;
+- cascade capture reuses prepared geometry, vertex programs, alpha-tested casters, clipping, culling, depth ownership, and depth capture;
+- legacy single-map directional records remain compatible and can coexist with cascaded records on different lights;
+- direct/model/prepared/list validation remains fail closed, and prepared plans retain cascade resources across source lifetime;
+- deterministic regressions cover resource/split validation, near/far visibility, single-map compatibility, capture parity, mixed bindings, prepared ownership, and whole-list no-write failure semantics.
+
+## Next frontier — Milestone 47
+
+Promote texture sampling to **deterministic mipmapped minification with raster-derived LOD**. Preserve the existing level-zero nearest/bilinear path exactly by default, then add a validated owned mip chain, bounded nearest-level/trilinear policy, and perspective-correct UV-gradient footprint calculation integrated into the existing diffuse/opacity/normal texture path. No anisotropic, sRGB, shader-derivative, GPU, performance, or image-quality claim belongs in the first slice.
+''')
+      - name: Commit phase closure
+        run: |
+          git config user.name "LeiZ"
+          git config user.email "52287354+Lei-TzuY@users.noreply.github.com"
+          git add ROADMAP.md STATUS.md
+          git diff --cached --check
+          git commit -m "Close M46 and promote mipmapped sampling"
+          git push origin HEAD:milestone-46-cascaded-directional-shadows
