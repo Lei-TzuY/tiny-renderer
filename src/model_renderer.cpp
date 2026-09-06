@@ -115,6 +115,9 @@ void validate_fragment_program_for_mesh(
 
 void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptions& options) {
     validate_model_structure(asset);
+    detail::validate_fixed_lighting_definition(
+        options.directional_light,
+        options.point_light);
     detail::validate_face_culling(options.cull_mode, options.front_face);
     validate_depth_state(options.depth_state);
     validate_stencil_state(options.stencil_state);
@@ -141,12 +144,10 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
             detail::validate_normal_texture(*draw.normal_texture);
         }
     }
-    if (options.directional_light.enabled
-        && !finite_vec3(options.directional_light.viewer_position)) {
-        throw std::invalid_argument("directional light viewer position must be finite");
-    }
-    if (normal_map_present && !options.directional_light.enabled) {
-        throw std::invalid_argument("normal mapping requires an enabled directional light");
+    if (normal_map_present
+        && !options.directional_light.enabled
+        && !options.point_light.enabled) {
+        throw std::invalid_argument("normal mapping requires an enabled fixed light");
     }
     if (sampler_needed) {
         validate_sampler(options.sampler);
@@ -185,6 +186,7 @@ void preflight_prepared_model_transform(
             {},
             texture_binding_for(draw, options),
             options.directional_light,
+            options.point_light,
             draw.material,
             base_color_source_for(draw),
             options.cull_mode,
@@ -215,6 +217,7 @@ void preflight_prepared_model_mvp(
             {},
             texture_binding_for(draw, options),
             options.directional_light,
+            options.point_light,
             draw.material,
             base_color_source_for(draw),
             options.cull_mode,
@@ -251,7 +254,8 @@ Rasterizer model_rasterizer(
         options.shadow_state,
         options.alpha_test_state,
         options.fragment_program,
-        {});
+        {},
+        options.point_light);
 }
 
 void execute_prepared_model_transform(
@@ -468,6 +472,7 @@ void draw_model_asset(
                 {},
                 texture_binding_for(draw, options),
                 options.directional_light,
+                options.point_light,
                 draw.material,
                 base_color_source_for(draw),
                 options.cull_mode,
@@ -509,6 +514,7 @@ void draw_model_asset(
                 {},
                 texture_binding_for(draw, options),
                 options.directional_light,
+                options.point_light,
                 draw.material,
                 base_color_source_for(draw),
                 options.cull_mode,
