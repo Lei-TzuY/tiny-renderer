@@ -21,6 +21,10 @@ struct TextureBinding {
     std::size_t u_channel{0U};
     std::size_t v_channel{1U};
     SamplerState sampler{};
+    // Optional opacity-map role sharing the same UV channels and sampler.
+    // This keeps texture-coordinate ownership singular while allowing an
+    // opacity texture even when RGB base color is not texture sourced.
+    const Texture2D* opacity_texture{nullptr};
 };
 
 enum class BaseColorSource {
