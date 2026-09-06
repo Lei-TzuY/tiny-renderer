@@ -2,74 +2,45 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains the detailed historical milestone record; this file records the currently integrated frontier and the next executable promotion. A milestone is closed only after its exact `main` commit passes Linux, macOS, and ASan/UBSan CI.
 
-## Completed architecture through Milestone 38
+## Integrated architecture through Milestone 39
 
-Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point top-left coverage, interpolation qualifiers, depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadow mapping, alpha-tested cutouts, bounded fragment programs, and bounded object-space vertex programs. All later capabilities continue to route through the same clipping, rasterization, interpolation, shading, and framebuffer ownership path rather than introducing parallel renderers.
+Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point top-left coverage, interpolation qualifiers, depth/stencil/blend ownership, viewport/scissor, 4× MSAA, material/texture import, opacity and alpha-to-coverage, directional shadow mapping, alpha-tested cutouts, bounded fragment programs, and bounded object-space vertex programs. Milestones 36–39 extend that same path with tangent-space normal mapping, Blinn-Phong specular lighting, point lights, and a fixed-capacity deterministic multi-light collection. None of these capabilities bypass the shared clipping, rasterization, interpolation, validation, or framebuffer ownership path.
 
-### Milestone 36 — bounded tangent-space normal mapping
+Milestone 39 is integrated on `main`. The current `main` head `a77f50bfe1bd7d911921ccc0b727ed76d0403153` also includes bounded signed OBJ relative face indices, bounded polygon triangulation, and smoothing groups with deterministic generated normals. Its Linux, macOS, and ASan/UBSan CI gates pass.
 
-- Material draws may own one optional normal-map texture imported through bounded rich-MTL `map_Bump`, sharing the existing UV/sampler and shared texture lifetime machinery.
-- Tangent frames derive from canonical object-space triangle positions, UVs, and geometric normals; required degenerate or unstable bases reject before framebuffer mutation.
-- Tangent/bitangent vectors use the model linear transform while geometric normals retain inverse-transpose normal transformation, including non-uniform scale.
-- Normal-map shading remains integrated with direct/range/model/prepared/list execution, fragment programs, alpha stages, depth/stencil/blend ownership, and directional shadows.
+## Milestone 40 — bounded point-light cubemap shadows
 
-Integrated on `main` as `e40276798506274d84fb293979184ed4fb40015d`; exact-main Linux, macOS, and ASan/UBSan CI passed.
-
-### Milestone 37 — view-dependent Blinn-Phong specular lighting
-
-- `MaterialState` carries bounded specular RGB and shininess with strict bounded MTL `Ks` / `Ns` import.
-- Directional fixed lighting has a finite world-space viewer position and perspective-correct world-space fragment position is carried only when required.
-- Fixed shading combines ambient/diffuse Lambert response with a Blinn-Phong half-vector specular term, using the same normal-mapped shading normal and directional shadow visibility.
-- Bounded vertex programs deform geometry before world-space lighting positions are derived; optional fragment programs still observe one completed fixed-shading result before discard/alpha/A2C/framebuffer ownership.
-
-Integrated on `main` as `12a75e631a1146b516ee1f3e8ed536572fd2c796`; exact-main Linux, macOS, and ASan/UBSan CI passed.
-
-### Milestone 38 — bounded point-light shading
-
-- `PointLight` adds finite world-space position/viewer state, bounded ambient/diffuse coefficients, and finite non-negative linear/quadratic attenuation.
-- Diffuse/specular attenuation is exactly `1 / (1 + linear*d + quadratic*d^2)` while ambient remains deliberately unattenuated.
-- Point lighting uses the established perspective-correct world-space fragment position, Blinn-Phong material state, tangent-space normal maps, shared preflight, and direct/range/model/prepared/list execution path.
-- MVP-only fixed lighting rejects before ownership; malformed later prepared-list transforms fail the complete batch before earlier writes.
-- The M38 first slice intentionally kept legacy directional and point lights mutually exclusive and did not add point-light shadows.
-
-Integrated on `main` as `37eb47fa2d65e8ead8671831605dc47aab56bc9c`; exact-main Linux, macOS, and ASan/UBSan CI passed.
-
-`main` then integrated bounded signed Wavefront OBJ relative face indices as `81875314bd6cf76a19251e1a7da4d3e0a4b33ba7`, preserving the same canonical legacy/rich OBJ parser and deterministic rejection of zero/out-of-range references.
-
-## Milestone 39 — bounded deterministic multi-light accumulation
-
-Current implementation PR: #47 (`milestone-39-bounded-multi-light`).
+Current implementation PR: #50 (`milestone-40-point-shadow-cubemap`).
 
 Implemented acceptance surface:
 
-- `FixedLightCollection` is a fixed-capacity, caller-ordered collection of at most four directional/point records; a non-empty collection is mutually exclusive with the source-compatible legacy single-light state.
-- Every active collection record is validated before framebuffer mutation. Selected payload state, finite direction/position/viewer values, bounded ambient/diffuse coefficients, non-negative point attenuation, supported light types, collection capacity, and one shared normal binding are fail-closed invariants.
-- World position and the geometric/normal-mapped shading normal are derived once per sample, then ambient + Lambert diffuse + Blinn-Phong specular contributions accumulate in exact caller order without silently clamping float framebuffer RGB.
-- A single existing directional shadow resource may be associated with exactly one directional record in the collection; point records remain unshadowed in this slice and invalid/missing associations reject before execution.
-- The optional fragment program runs exactly once after complete fixed-light accumulation, followed by the established discard -> alpha test -> alpha-to-coverage -> stencil/depth/blend/color ownership sequence.
-- Bounded object-space vertex programs execute before lighting world positions, so deformed geometry feeds point attenuation and specular evaluation consistently.
-- Direct triangles/meshes/ranges, direct models, prepared instances, and heterogeneous prepared lists propagate the collection through shared validation and the same raster path. A malformed later prepared-list transform rejects the whole list before earlier color/depth/stencil mutation.
-- Regression coverage proves one-record collection equivalence to legacy directional and point paths for both diffuse-only and non-zero Blinn-Phong specular materials, analytic two-point accumulation, directional-only shadow modulation in a mixed collection, fragment/vertex program ordering, prepared-list equivalence, and fail-closed validation.
+- `DepthCubemap` is an immutable six-face single-sample depth resource with equal non-zero face size, overflow-safe storage, finite normalized depth values, six finite face view-projection transforms, and deterministic dominant-axis face selection with X → Y → Z tie precedence.
+- Every cubemap owns the exact finite world-space point-light position used for capture. Binding the resource to a different point-light position is rejected during static/shared preflight before framebuffer mutation; face selection and stored face projections can therefore never silently use different origins.
+- `render_point_shadow_cubemap` renders six documented 90-degree canonical point-light views through the existing prepared-model, vertex-program, clipping, culling, alpha-test/opacity, and depth raster path. Programmed geometry is prepared once per entry and reused across the six faces.
+- `PointShadowState` and `FixedLightCollection::shadowed_point_index` associate at most one owned cubemap with one point-light record for this first slice. Missing maps, negative/non-finite bias, out-of-range indices, cross-type associations, capture-origin mismatches, and MVP-only execution reject fail-closed.
+- Camera shading uses the established perspective-correct world-space fragment position for point direction, attenuation, cubemap face selection, face projection, nearest depth comparison, and Blinn-Phong lighting.
+- Shadow visibility modulates only the associated point light's diffuse/specular response. Ambient remains unshadowed, all other fixed lights remain independent, and caller-order accumulation is unchanged.
+- Direct triangles/meshes/ranges, direct models, prepared plans, instance batches, and heterogeneous prepared lists propagate the same state. Prepared plans retain cubemap lifetime; a malformed later list entry cannot partially commit earlier color/depth/stencil ownership.
+- Regression coverage locks all six axial faces and tie precedence, capture depth, near/far validation, capture-origin ownership, non-finite origins, selective two-point-light shadowing, prepared lifetime/list equivalence, invalid associations, origin mismatch before mutation, and later-invalid-list fail-closed behavior.
 
-The pre-hardening head `e225169af5a233ae791afa198ecbe4325d4cc2f6` passed Linux, macOS, and ASan/UBSan PR CI. The final exact PR head after compatibility/status hardening must pass those gates again before integration; M39 is not considered closed until the resulting exact `main` commit passes the same post-merge gates.
+The corrected exact PR candidate must pass Linux, macOS, and ASan/UBSan CI again after this status/roadmap synchronization. M40 is not closed until the resulting exact `main` commit passes the same post-merge gates.
 
-Milestone 39 deliberately makes no PBR, energy-conservation, unlimited-light, spotlight, point-shadow, clustered/deferred, GPU, or performance claim.
+Milestone 40 deliberately makes no PCF/soft-shadow, seam filtering, multiple point-cubemap association, spotlight, distance-linear cubemap depth, GPU cubemap, automatic shadow allocation, physically based lighting, or performance-parity claim.
 
-## Next frontier — Milestone 40
+## Next frontier — Milestone 41
 
-The next architectural promotion is **bounded deterministic point-light cubemap shadow mapping**. This is higher-value than adding another light enum or cosmetic state because it introduces a new depth resource topology, six-view capture, light/resource association, and per-sample visibility integration while exercising the M39 collection and existing fail-closed ownership architecture end to end.
+The next architectural promotion is **bounded deterministic spotlight shading**. This is the highest-value next fixed-light extension now that directional and point lighting, multi-light accumulation, and both directional/point hard-shadow resource topologies are established. The slice should add executable cone-light behavior rather than an enum/API shell.
 
 Acceptance for the first slice should require:
 
-- one immutable bounded depth-cubemap resource with six equally sized faces, non-zero/overflow-safe storage, finite normalized depth values, deterministic face addressing, and no hidden allocation during sampling;
-- a deterministic helper that renders the same prepared/model geometry into the six canonical point-light view directions using one documented 90-degree projection convention and the existing depth-only raster path rather than a second rasterizer;
-- explicit association of at most one cubemap shadow resource with one point-light record in the bounded M39 collection for the first slice; directional shadow association continues to use the existing 2D depth map and unsupported cross-type bindings reject before writes;
-- point-shadow comparison performed from the same perspective-correct world-space fragment position already used for point direction/attenuation, with one finite non-negative bias rule and deterministic cubemap face/UV selection;
-- only the associated point light's diffuse/specular contribution is visibility-modulated; ambient remains unshadowed, other point/directional records remain independent, and caller-order accumulation is unchanged;
-- bounded vertex-program deformation, normal mapping, Blinn-Phong specular, fragment programs, alpha test/A2C, direct/range/model/prepared/list execution, and whole-batch preflight retain their established ordering and failure semantics;
-- deterministic regressions cover six face directions/seams under the documented addressing rule, imported/programmatic geometry capture equivalence, lit/occluded analytic scenes, attenuation plus cubemap visibility, prepared/list propagation, malformed cubemap/resource association rejection, and a later invalid list entry leaving earlier framebuffer ownership untouched;
-- the slice does not claim omnidirectional PCF/soft shadows, filtering across cubemap seams, multiple point-shadow maps, spotlights, physically based lighting, GPU cubemap APIs, or performance parity.
+- one `SpotLight` fixed-light record with finite world-space position, finite non-zero direction, shared normal binding, finite viewer position, bounded ambient/diffuse coefficients, and non-negative linear/quadratic distance attenuation;
+- explicit finite inner/outer cone state with a documented deterministic angular falloff and fail-closed ordering constraints; malformed or degenerate cone definitions reject before ownership rather than being silently clamped;
+- diffuse/specular spotlight contribution computed from the same perspective-correct world position and normal-mapped shading normal already used by point lights, with ambient semantics documented separately from cone/distance attenuation;
+- caller-ordered accumulation with directional/point records inside the existing fixed-capacity collection, preserving fragment-program ordering and the established discard → alpha test → A2C → stencil/depth/blend/color ownership sequence;
+- direct/range/model/prepared/list propagation, static/shared validation, vertex-program deformation, normal mapping, and whole-list fail-closed behavior without a parallel raster path;
+- deterministic analytic regressions for inside/transition/outside cone behavior, distance attenuation composition, Blinn-Phong specular, mixed-light caller order, program ordering, prepared/list equivalence, and invalid-state rejection before writes;
+- the first spotlight slice does not yet add spotlight shadow maps, cookie/projector textures, IES profiles, physically based photometry, unlimited lights, GPU execution, or performance claims.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, polygon triangulation, smoothing/generated normals, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations and masks, centroid interpolation, temporal antialiasing, percentage-closer/cascaded/soft shadows, multiple simultaneous point-shadow resources, spotlights, explicit light colors, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+General/full OBJ and MTL syntax, multiple material libraries, general image formats, mipmaps, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations and masks, centroid interpolation, temporal antialiasing, PCF/cascaded/soft shadows, cubemap seam filtering, multiple simultaneous point-shadow resources, spotlight shadows, explicit light colors, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the current bounded CPU teaching architecture until a higher-value executable milestone justifies them.
