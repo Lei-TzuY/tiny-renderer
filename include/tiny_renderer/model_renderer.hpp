@@ -27,6 +27,7 @@ struct ModelRenderOptions {
     VertexProgramPtr vertex_program{};
     PointLight point_light{};
     FixedLightCollection fixed_lights{};
+    PointShadowState point_shadow_state{};
 };
 
 class PreparedModelSubmission {
