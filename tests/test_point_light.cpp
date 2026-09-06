@@ -4,6 +4,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
@@ -204,10 +205,11 @@ void test_point_light_reuses_tangent_space_normal_mapping() {
     MaterialState material;
     material.albedo = {1.0F, 1.0F, 1.0F};
 
-    PointLight light = point_light({2.0F, 0.0F, 0.0F});
-    light.normal = {2U, 3U, 4U};
-    const float mapped = render_center_red(material, light, binding);
-    const float geometric = render_center_red(material, light);
+    PointLight mapped_light = point_light({2.0F, 0.0F, 0.0F});
+    mapped_light.normal = {2U, 3U, 4U};
+    const PointLight geometric_light = point_light({2.0F, 0.0F, 0.0F});
+    const float mapped = render_center_red(material, mapped_light, binding);
+    const float geometric = render_center_red(material, geometric_light);
 
     check(mapped > 0.98F,
           "tangent +X normal map aligns the center sample with a +X point light");
