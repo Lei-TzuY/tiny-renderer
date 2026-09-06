@@ -21,6 +21,9 @@ void validate_alpha_to_coverage_target(
 void validate_shadow_state_definition(
     const ShadowState& state,
     bool directional_light_enabled);
+void validate_fixed_lighting_definition(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light);
 
 inline void validate_alpha_test_state(const AlphaTestState& state) {
     if (!std::isfinite(state.threshold)
@@ -41,6 +44,7 @@ void preflight_mesh_range_submission(
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     const DirectionalLight& directional_light,
+    const PointLight& point_light,
     const MaterialState& material_state,
     BaseColorSource base_color_source,
     CullMode cull_mode,

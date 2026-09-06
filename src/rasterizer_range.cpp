@@ -44,6 +44,7 @@ void Rasterizer::draw_mesh_range(
         color_binding_,
         texture_binding_,
         directional_light_,
+        point_light_,
         material_state_,
         base_color_source_,
         cull_mode_,
@@ -75,7 +76,8 @@ void Rasterizer::draw_mesh_range(
         shadow_state_,
         alpha_test_state_,
         fragment_program_,
-        {});
+        {},
+        point_light_);
 
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {
@@ -100,6 +102,7 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         color_binding_,
         texture_binding_,
         directional_light_,
+        point_light_,
         material_state_,
         base_color_source_,
         cull_mode_,
@@ -131,7 +134,8 @@ void Rasterizer::draw_mesh_range(const Mesh& mesh, DrawRange range, const Mat4& 
         shadow_state_,
         alpha_test_state_,
         fragment_program_,
-        {});
+        {},
+        point_light_);
 
     const std::size_t end = range.first_triangle + range.triangle_count;
     for (std::size_t triangle_index = range.first_triangle; triangle_index < end; ++triangle_index) {

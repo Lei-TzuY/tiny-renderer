@@ -216,4 +216,8 @@ if(BUILD_TESTING)
         TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME tiny_renderer_specular_lighting_tests COMMAND tiny_renderer_specular_lighting_tests)
+
+    add_executable(tiny_renderer_point_light_tests tests/test_point_light.cpp)
+    target_link_libraries(tiny_renderer_point_light_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_point_light_tests COMMAND tiny_renderer_point_light_tests)
 endif()
