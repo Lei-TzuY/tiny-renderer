@@ -5,9 +5,16 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace tiny_renderer {
 namespace {
+
+bool finite_vec3(const Vec3& value) {
+    return std::isfinite(value.x)
+        && std::isfinite(value.y)
+        && std::isfinite(value.z);
+}
 
 bool finite_mat4(const Mat4& matrix) {
     for (std::size_t row = 0U; row < 4U; ++row) {
@@ -35,9 +42,7 @@ std::size_t face_index(CubemapFace face) {
 }  // namespace
 
 CubemapFace cubemap_face_for_direction(const Vec3& direction) {
-    if (!std::isfinite(direction.x)
-        || !std::isfinite(direction.y)
-        || !std::isfinite(direction.z)) {
+    if (!finite_vec3(direction)) {
         throw std::invalid_argument("cubemap direction must be finite");
     }
 
@@ -60,13 +65,18 @@ CubemapFace cubemap_face_for_direction(const Vec3& direction) {
 
 DepthCubemap::DepthCubemap(
     std::size_t size,
+    Vec3 light_position,
     std::array<Mat4, kCubemapFaceCount> face_view_projections,
     std::vector<float> depths)
     : size_(size),
+      light_position_(light_position),
       face_view_projections_(std::move(face_view_projections)),
       depths_(std::move(depths)) {
     if (size_ == 0U) {
         throw std::invalid_argument("depth cubemap face size must be non-zero");
+    }
+    if (!finite_vec3(light_position_)) {
+        throw std::invalid_argument("depth cubemap light position must be finite");
     }
     if (size_ > std::numeric_limits<std::size_t>::max() / size_) {
         throw std::overflow_error("depth cubemap face storage size overflows size_t");
