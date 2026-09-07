@@ -58,7 +58,8 @@ void read_exact(std::istream& input, unsigned char* data, std::size_t count, con
 
 }  // namespace
 
-Texture2D load_tga(std::istream& input) {
+Texture2D load_tga(std::istream& input, TextureTransferFunction transfer_function) {
+    validate_texture_transfer_function(transfer_function);
     std::array<unsigned char, kTgaHeaderBytes> header{};
     read_exact(input, header.data(), header.size(), "header");
 
@@ -126,15 +127,18 @@ Texture2D load_tga(std::istream& input) {
             };
         }
     }
-    return Texture2D(width, height, std::move(texels));
+    return Texture2D(width, height, std::move(texels), transfer_function);
 }
 
-Texture2D load_tga_file(const std::filesystem::path& path) {
+Texture2D load_tga_file(
+    const std::filesystem::path& path,
+    TextureTransferFunction transfer_function) {
+    validate_texture_transfer_function(transfer_function);
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("failed to open TGA file: " + path.string());
     }
-    return load_tga(input);
+    return load_tga(input, transfer_function);
 }
 
 }  // namespace tiny_renderer
