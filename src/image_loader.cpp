@@ -108,6 +108,20 @@ PfmByteOrder parse_pfm_byte_order(const std::string& token) {
     fail_pfm("only unit-magnitude scale markers -1.0 and 1.0 are supported");
 }
 
+void consume_pfm_raster_line_ending(std::istream& input) {
+    const int first = input.get();
+    if (first == '\n') {
+        return;
+    }
+    if (first == '\r') {
+        const int second = input.get();
+        if (second == '\n') {
+            return;
+        }
+    }
+    fail_pfm("scale marker must be followed by an LF or CRLF raster line ending");
+}
+
 std::size_t checked_pfm_raster_bytes(std::size_t width, std::size_t height) {
     if (width > std::numeric_limits<std::size_t>::max() / height) {
         fail_pfm("image dimensions overflow pixel count");
@@ -184,10 +198,7 @@ Texture2D load_pfm(std::istream& input) {
         read_pfm_header_token(input, "scale"));
     const std::size_t raster_bytes = checked_pfm_raster_bytes(width, height);
 
-    const int separator = input.get();
-    if (separator == std::char_traits<char>::eof() || !is_ascii_whitespace(separator)) {
-        fail_pfm("scale marker must be followed by an ASCII whitespace raster separator");
-    }
+    consume_pfm_raster_line_ending(input);
 
     std::vector<unsigned char> bytes(raster_bytes);
     input.read(
