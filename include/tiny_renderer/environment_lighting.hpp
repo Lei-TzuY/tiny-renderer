@@ -88,13 +88,56 @@ inline HemisphereBasis hemisphere_basis(const Vec3& input_normal) {
     return {tangent, normal, bitangent};
 }
 
-inline Vec3 checked_accumulated_component(double value) {
+inline float checked_irradiance_component(double sum) {
+    constexpr double weight = static_cast<double>(kPi) / 16.0;
+    const double value = sum * weight;
     const double max_float = static_cast<double>(std::numeric_limits<float>::max());
     if (!std::isfinite(value) || value < 0.0 || value > max_float) {
         throw std::overflow_error("environment diffuse irradiance exceeds finite float range");
     }
-    const float component = static_cast<float>(value);
-    return {component, component, component};
+    return static_cast<float>(value);
+}
+
+// Caller must have run validate_environment_diffuse_state before framebuffer
+// mutation. Runtime sample checks remain in place so a violated borrowed-lifetime
+// contract or impossible sampler regression cannot silently inject bad radiance.
+inline Vec3 diffuse_environment_irradiance_unchecked(
+    const EnvironmentDiffuseState& state,
+    const Vec3& world_normal) {
+    if (state.texture == nullptr) {
+        throw std::logic_error("validated environment diffuse state lost its texture");
+    }
+    const HemisphereBasis basis = hemisphere_basis(world_normal);
+
+    double sum_r = 0.0;
+    double sum_g = 0.0;
+    double sum_b = 0.0;
+    for (const Vec3& local : kCosineHemisphere16) {
+        const Vec3 direction = basis.tangent * local.x
+            + basis.normal * local.y
+            + basis.bitangent * local.z;
+        if (!environment_detail::finite_vec3(direction)) {
+            throw std::logic_error("environment diffuse quadrature produced a non-finite direction");
+        }
+        const Vec2 uv = equirectangular_uv(direction, state.yaw_radians);
+        const Vec3 sampled = state.texture->sample(uv, state.sampler);
+        const Vec3 radiance = environment_detail::checked_scaled_radiance(
+            sampled, state.intensity);
+        sum_r += static_cast<double>(radiance.x);
+        sum_g += static_cast<double>(radiance.y);
+        sum_b += static_cast<double>(radiance.z);
+    }
+    return {
+        checked_irradiance_component(sum_r),
+        checked_irradiance_component(sum_g),
+        checked_irradiance_component(sum_b),
+    };
+}
+
+inline Vec3 diffuse_environment_lambert_factor_unchecked(
+    const EnvironmentDiffuseState& state,
+    const Vec3& world_normal) {
+    return diffuse_environment_irradiance_unchecked(state, world_normal) * (1.0F / kPi);
 }
 
 }  // namespace environment_lighting_detail
@@ -139,38 +182,8 @@ inline Vec3 diffuse_environment_irradiance(
     const EnvironmentDiffuseState& state,
     const Vec3& world_normal) {
     validate_environment_diffuse_state(state);
-    const environment_lighting_detail::HemisphereBasis basis =
-        environment_lighting_detail::hemisphere_basis(world_normal);
-
-    double sum_r = 0.0;
-    double sum_g = 0.0;
-    double sum_b = 0.0;
-    for (const Vec3& local : environment_lighting_detail::kCosineHemisphere16) {
-        const Vec3 direction = basis.tangent * local.x
-            + basis.normal * local.y
-            + basis.bitangent * local.z;
-        if (!environment_detail::finite_vec3(direction)) {
-            throw std::logic_error("environment diffuse quadrature produced a non-finite direction");
-        }
-        const Vec2 uv = equirectangular_uv(direction, state.yaw_radians);
-        const Vec3 sampled = state.texture->sample(uv, state.sampler);
-        const Vec3 radiance = environment_detail::checked_scaled_radiance(
-            sampled, state.intensity);
-        sum_r += static_cast<double>(radiance.x);
-        sum_g += static_cast<double>(radiance.y);
-        sum_b += static_cast<double>(radiance.z);
-    }
-
-    constexpr double weight = static_cast<double>(kPi) / 16.0;
-    const auto checked = [](double sum) {
-        const double value = sum * weight;
-        const double max_float = static_cast<double>(std::numeric_limits<float>::max());
-        if (!std::isfinite(value) || value < 0.0 || value > max_float) {
-            throw std::overflow_error("environment diffuse irradiance exceeds finite float range");
-        }
-        return static_cast<float>(value);
-    };
-    return {checked(sum_r), checked(sum_g), checked(sum_b)};
+    return environment_lighting_detail::diffuse_environment_irradiance_unchecked(
+        state, world_normal);
 }
 
 // Lambert diffuse BRDF multiplies irradiance by 1/pi. Returning this factor
@@ -179,8 +192,9 @@ inline Vec3 diffuse_environment_irradiance(
 inline Vec3 diffuse_environment_lambert_factor(
     const EnvironmentDiffuseState& state,
     const Vec3& world_normal) {
-    const Vec3 irradiance = diffuse_environment_irradiance(state, world_normal);
-    return irradiance * (1.0F / kPi);
+    validate_environment_diffuse_state(state);
+    return environment_lighting_detail::diffuse_environment_lambert_factor_unchecked(
+        state, world_normal);
 }
 
 }  // namespace tiny_renderer
