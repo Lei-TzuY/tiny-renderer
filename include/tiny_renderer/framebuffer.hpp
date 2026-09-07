@@ -25,6 +25,22 @@ enum class OutputTransferFunction {
 
 void validate_output_transfer_function(OutputTransferFunction transfer_function);
 
+enum class ToneMapOperator {
+    Reinhard,
+};
+
+// Opt-in display mapping at the resolved output boundary. Exposure is a
+// non-negative linear multiplier. Reinhard maps each non-negative exposed
+// component as x / (1 + x); negative display-bound components are explicitly
+// mapped to zero before exposure. This state never affects framebuffer storage
+// or the data-preserving PFM path.
+struct DisplayMappingState {
+    float exposure{1.0F};
+    ToneMapOperator tone_map{ToneMapOperator::Reinhard};
+};
+
+void validate_display_mapping_state(const DisplayMappingState& state);
+
 enum class DepthCompare {
     Less,
     LessEqual,
@@ -194,6 +210,19 @@ public:
     [[nodiscard]] std::vector<std::uint8_t> rgb8(OutputTransferFunction transfer_function) const;
     [[nodiscard]] std::uint64_t fnv1a64(OutputTransferFunction transfer_function) const;
     void write_ppm(const std::string& path, OutputTransferFunction transfer_function) const;
+
+    // Opt-in display mapping is applied after multisample resolve and before
+    // output transfer/8-bit quantization. Existing overloads remain unchanged.
+    [[nodiscard]] std::vector<std::uint8_t> rgb8(
+        const DisplayMappingState& display_mapping,
+        OutputTransferFunction transfer_function = OutputTransferFunction::Linear) const;
+    [[nodiscard]] std::uint64_t fnv1a64(
+        const DisplayMappingState& display_mapping,
+        OutputTransferFunction transfer_function = OutputTransferFunction::Linear) const;
+    void write_ppm(
+        const std::string& path,
+        const DisplayMappingState& display_mapping,
+        OutputTransferFunction transfer_function = OutputTransferFunction::Linear) const;
 
 private:
     [[nodiscard]] std::size_t pixel_index(std::size_t x, std::size_t y) const;

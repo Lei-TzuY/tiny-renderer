@@ -27,9 +27,45 @@ float linear_channel_to_srgb(float linear) {
     return 1.055F * static_cast<float>(std::pow(clamped, 1.0F / 2.4F)) - 0.055F;
 }
 
+std::uint8_t linear_to_u8(float linear) {
+    const float clamped = std::clamp(linear, 0.0F, 1.0F);
+    return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
+}
+
 std::uint8_t srgb_to_u8(float linear) {
     const float encoded = std::clamp(linear_channel_to_srgb(linear), 0.0F, 1.0F);
     return static_cast<std::uint8_t>(std::lround(encoded * 255.0F));
+}
+
+float display_map_channel(float linear, const DisplayMappingState& state) {
+    if (!std::isfinite(linear)) {
+        throw std::invalid_argument("display mapping requires finite resolved framebuffer color");
+    }
+
+    // Display-bound negative linear values are explicitly mapped to zero
+    // before exposure. Use double for the exposure product so every finite
+    // float input/exposure pair remains representable before tone mapping.
+    const double non_negative = std::max(0.0, static_cast<double>(linear));
+    const double exposed = non_negative * static_cast<double>(state.exposure);
+    switch (state.tone_map) {
+        case ToneMapOperator::Reinhard:
+            return static_cast<float>(exposed / (1.0 + exposed));
+    }
+    throw std::logic_error("unreachable tone-map operator");
+}
+
+std::uint8_t display_channel_to_u8(
+    float linear,
+    const DisplayMappingState& state,
+    OutputTransferFunction transfer_function) {
+    const float mapped = display_map_channel(linear, state);
+    switch (transfer_function) {
+        case OutputTransferFunction::Linear:
+            return linear_to_u8(mapped);
+        case OutputTransferFunction::Srgb:
+            return srgb_to_u8(mapped);
+    }
+    throw std::logic_error("unreachable output transfer function");
 }
 
 void append_float_little_endian(std::vector<std::uint8_t>& bytes, float value) {
@@ -90,6 +126,17 @@ void validate_output_transfer_function(OutputTransferFunction transfer_function)
     throw std::invalid_argument("unsupported framebuffer output transfer function");
 }
 
+void validate_display_mapping_state(const DisplayMappingState& state) {
+    if (!std::isfinite(state.exposure) || state.exposure < 0.0F) {
+        throw std::invalid_argument("display mapping exposure must be finite and non-negative");
+    }
+    switch (state.tone_map) {
+        case ToneMapOperator::Reinhard:
+            return;
+    }
+    throw std::invalid_argument("unsupported tone-map operator");
+}
+
 std::vector<std::uint8_t> Framebuffer::rgb8(OutputTransferFunction transfer_function) const {
     validate_output_transfer_function(transfer_function);
     if (transfer_function == OutputTransferFunction::Linear) {
@@ -147,6 +194,57 @@ void Framebuffer::write_ppm(
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!out) {
         throw std::runtime_error("failed while writing PPM output: " + path);
+    }
+}
+
+std::vector<std::uint8_t> Framebuffer::rgb8(
+    const DisplayMappingState& display_mapping,
+    OutputTransferFunction transfer_function) const {
+    validate_display_mapping_state(display_mapping);
+    validate_output_transfer_function(transfer_function);
+
+    if (resolved_color_.size() > std::numeric_limits<std::size_t>::max() / 3U) {
+        throw std::overflow_error("display-mapped RGB8 output size overflows size_t");
+    }
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(resolved_color_.size() * 3U);
+    for (const Vec3& pixel : resolved_color_) {
+        bytes.push_back(display_channel_to_u8(pixel.x, display_mapping, transfer_function));
+        bytes.push_back(display_channel_to_u8(pixel.y, display_mapping, transfer_function));
+        bytes.push_back(display_channel_to_u8(pixel.z, display_mapping, transfer_function));
+    }
+    return bytes;
+}
+
+std::uint64_t Framebuffer::fnv1a64(
+    const DisplayMappingState& display_mapping,
+    OutputTransferFunction transfer_function) const {
+    constexpr std::uint64_t offset = 14695981039346656037ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::uint64_t hash = offset;
+    for (const std::uint8_t byte : rgb8(display_mapping, transfer_function)) {
+        hash ^= static_cast<std::uint64_t>(byte);
+        hash *= prime;
+    }
+    return hash;
+}
+
+void Framebuffer::write_ppm(
+    const std::string& path,
+    const DisplayMappingState& display_mapping,
+    OutputTransferFunction transfer_function) const {
+    // Complete mapping, validation, transfer encoding, and quantization before
+    // creating or truncating the destination file.
+    const std::vector<std::uint8_t> bytes = rgb8(display_mapping, transfer_function);
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        throw std::runtime_error("failed to open display-mapped PPM output: " + path);
+    }
+    out << "P6\n" << width_ << ' ' << height_ << "\n255\n";
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!out) {
+        throw std::runtime_error("failed while writing display-mapped PPM output: " + path);
     }
 }
 
