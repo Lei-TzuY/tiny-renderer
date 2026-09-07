@@ -298,21 +298,32 @@ After M42, bounded interop slices added multiple sibling OBJ material libraries 
 - Regression coverage locks resource validation, half-open split boundaries, single-map compatibility, distinct near/far cascade visibility, mixed record forms, capture equivalence with independent directional shadow passes, prepared ownership/list equivalence, and no-write failure semantics.
 - This milestone does not add cascade blending, automatic split fitting, texel snapping/stabilization, variance/moment shadows, cross-cascade filtering, GPU APIs, or visual-quality/performance claims.
 
-## Next frontier — Milestone 47
+### Milestone 47 — deterministic mipmapped minification
 
-The next architectural promotion leaves the now-bounded shadow subsystem and advances **texture minification with deterministic mipmapped sampling and raster-derived LOD**. The renderer currently exposes nearest/bilinear filtering only within one texture level, so minified imported/material textures cannot express the next part of the sampling pipeline.
+- `Texture2D` owns a deterministic complete mip chain while `MipFilterMode::Disabled` remains the source-compatible default and preserves the established level-zero nearest/bilinear result path.
+- Mip generation uses ceil-half extents for odd dimensions and averages only existing parent texels; storage dimensions/counts and all generated/source texels remain bounded and finite.
+- `MipFilterMode::{Disabled, Nearest, Linear}` provides explicit level-zero, nearest-level, and trilinear behavior; invalid modes are rejected both by sampling and framebuffer-independent model/prepared validation.
+- Rasterization derives screen-space barycentric derivatives once per projected triangle and applies the existing interpolation qualifier semantics, including the quotient rule for perspective-correct smooth UV derivatives.
+- Isotropic LOD uses the maximum texel-space magnitude of the shared U/V gradients, `max(log2(footprint), 0)`, with each texture role scaling normalized UV derivatives by its own dimensions.
+- Diffuse, opacity, and tangent-space normal texture roles consume the same validated raster-derived gradient footprint and sampler policy without parallel coordinate or finite-difference shading paths.
+- Clipping, viewport/scissor, deterministic 1x/4x sample positions, alpha test/A2C, fixed lighting/shadows, bounded fragment programs, direct/model/prepared/list submission, and imported texture ownership remain on the established raster path.
+- Regression coverage locks odd mip contents, explicit nearest/trilinear LOD, gradient-derived selection, disabled legacy behavior, raster-derived minification across diffuse/opacity/normal roles, and prepared invalid-policy rejection.
+- This milestone does not add anisotropic filtering, LOD bias controls, explicit shader derivatives, sRGB-aware mip generation, compressed/general image formats, GPU APIs, or performance/image-quality claims.
+
+## Next frontier — Milestone 48
+
+The next architectural promotion is **explicit texture transfer-function interpretation with opt-in sRGB diffuse decoding and linear data-texture semantics**. M47 established where filtering and mip generation occur; M48 should make the numeric meaning of texels explicit before those operations without changing the historical linear default.
 
 Acceptance for that slice should require:
 
-- `Texture2D` (or one tightly integrated owned texture resource) can expose a deterministic complete mip chain while level-zero-only/default sampling remains byte/hash compatible with every existing texture/material path;
-- mip generation has one documented odd-dimension rule, overflow-safe storage validation, finite texel validation, and deterministic arithmetic averaging without claiming sRGB/colorimetric correctness;
-- sampler state gains explicit bounded mip behavior with a source-compatible disabled/default mode plus nearest-level and trilinear selection, with unknown modes rejected during direct/shared/prepared validation;
-- the rasterizer derives perspective-correct screen-space UV gradients from the same barycentric/interpolation terms used for shading and computes one documented isotropic LOD rule from texel-space footprint, avoiding finite-difference re-shading or a parallel texture-coordinate path;
-- diffuse, opacity, and normal texture roles that share the material UV binding consume the same validated gradients/LOD policy, while non-textured and mip-disabled draws preserve existing results exactly;
-- clipping, viewport/scissor, 1x/4x sample locations, alpha test/A2C, lighting/shadows, fragment-program ordering, model/prepared/list submission, and imported PPM/TGA assets remain on the established raster path;
-- deterministic regressions cover mip-chain contents including odd extents, minification level selection away from threshold ambiguity, trilinear interpolation, perspective-correct gradients, imported-vs-programmatic equivalence, prepared ownership, and malformed state failing before framebuffer mutation;
-- the slice does not add anisotropic filtering, LOD bias controls, explicit shader derivatives, sRGB-aware mip generation, compressed/general image formats, GPU APIs, or performance/image-quality claims.
+- the existing programmatic `Texture2D` and file-import path remain linear by default and preserve established byte/hash behavior when no transfer interpretation is requested;
+- one bounded opt-in sRGB interpretation converts color texture samples into linear float texels before mip generation, bilinear/trilinear filtering, material multiplication, and fixed lighting; the transfer rule is documented and regression-locked rather than described vaguely as gamma correction;
+- opacity and tangent-space normal maps remain explicit linear/data textures and are never silently passed through sRGB decoding merely because their source file format is the same as a diffuse texture;
+- asset loading makes texture-cache identity include both canonical sibling path and transfer interpretation, so the same image referenced as diffuse and as opacity/normal cannot incorrectly share one decoded `Texture2D` when interpretations differ;
+- prepared model ownership and file-driven direct/prepared/list rendering retain the interpreted resources with fail-closed invalid interpretation state and no second sampler/raster path;
+- deterministic regressions cover known sRGB→linear values, mip generation after linearization rather than before it, same-file multi-role cache separation, legacy linear import compatibility, and programmatic-versus-imported equivalence under the same explicit interpretation;
+- the slice is input texture semantics only and does not add ICC profiles, arbitrary gamma, HDR transfer functions, output/display encoding, wide-gamut color management, spectral rendering, anisotropic filtering, GPU APIs, or performance/colorimetric conformance claims beyond the documented transfer formula.
 
 ## Deliberate later work
 
-General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, anisotropic filtering, sRGB handling, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cubemap seam filtering, cascade blending/stabilization, cookie/IES lighting, spectral/color-temperature lighting, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
+General/full OBJ and MTL syntax, general image formats beyond the bounded PPM/TGA path, anisotropic filtering, destination alpha, transparency sorting/OIT, programmable sample locations/masks, centroid interpolation, temporal antialiasing, cubemap seam filtering, cascade blending/stabilization, cookie/IES lighting, spectral/color-temperature lighting, output/display color transforms and wider color-management systems, physically based BRDFs/IBL, general bump/parallax/displacement mapping, full shader languages/derivatives/JIT, GPU acceleration, and a general scene graph remain outside the bounded CPU teaching architecture until a higher-value executable milestone justifies them.
