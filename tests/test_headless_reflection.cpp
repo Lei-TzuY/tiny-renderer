@@ -417,7 +417,8 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
     const std::filesystem::path glossy_mtl = root / "glossy.mtl";
     const std::filesystem::path zero_obj = root / "zero.obj";
     const std::filesystem::path zero_mtl = root / "zero.mtl";
-    const std::filesystem::path uv_only_obj = root / "uv_only.obj";
+    const std::filesystem::path generated_obj = root / "generated.obj";
+    const std::filesystem::path mixed_layout_obj = root / "mixed_layout.obj";
     const std::filesystem::path environment = root / "environment.pfm";
 
     write_text_file(
@@ -451,7 +452,15 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         "Ks 0 0 0\n"
         "Ns 32\n");
     write_text_file(
-        uv_only_obj,
+        generated_obj,
+        "mtllib glossy.mtl\n"
+        "v -1 -1 0\n"
+        "v 1 -1 0\n"
+        "v 0 1 0\n"
+        "usemtl glossy\n"
+        "f 1 2 3\n");
+    write_text_file(
+        mixed_layout_obj,
         "mtllib glossy.mtl\n"
         "v -1 -1 0\n"
         "v 1 -1 0\n"
@@ -459,8 +468,9 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         "vt 0 0\n"
         "vt 1 0\n"
         "vt 0.5 1\n"
+        "vn 0 0 1\n"
         "usemtl glossy\n"
-        "f 1/1 2/2 3/3\n");
+        "f 1/1/1 2/2 3/3/1\n");
     write_constant_pfm(environment);
 
     const std::vector<std::string> reflection_args{
@@ -494,6 +504,9 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
     check_repeated_cli_render(
         executable, root, glossy_obj,
         "combined_4x_pfm", "pfm", "4", combined_args);
+    check_repeated_cli_render(
+        executable, root, generated_obj,
+        "generated_normals_reflection", "ppm", "1", reflection_args);
 
     const std::filesystem::path glossy_baseline = root / "glossy_baseline.pfm";
     const std::filesystem::path glossy_reflection = root / "glossy_reflection.pfm";
@@ -562,8 +575,8 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         "missing_reflection_file",
         {"--environment-reflection", (root / "missing.pfm").string()});
     check_failed_without_output(
-        uv_only_obj,
-        "reflection_without_normal_varyings",
+        mixed_layout_obj,
+        "unsupported_mixed_normal_layout",
         {"--environment-reflection", environment.string()});
 
     std::filesystem::remove_all(root, ignored);
