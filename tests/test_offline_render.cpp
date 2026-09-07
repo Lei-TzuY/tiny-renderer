@@ -1,7 +1,11 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -486,9 +490,132 @@ void test_invalid_environment_requests_fail_before_mutation() {
     }
 }
 
+std::filesystem::path render_cli_path(const char* argv0) {
+    std::filesystem::path cli = std::filesystem::absolute(argv0).parent_path() / "tiny_renderer_render";
+#ifdef _WIN32
+    cli += ".exe";
+#endif
+    return cli;
+}
+
+std::string quote_path(const std::filesystem::path& path) {
+    return "\"" + path.string() + "\"";
+}
+
+std::vector<char> read_binary_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::vector<char>(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
+void write_cli_sampler_fixture(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    {
+        std::ofstream obj(root / "model.obj");
+        obj
+            << "mtllib model.mtl\n"
+            << "v -1 -1 0\n"
+            << "v 1 -1 0\n"
+            << "v 0 1 0\n"
+            << "vt 0 0\n"
+            << "vt 1 0\n"
+            << "vt 0.5 1\n"
+            << "usemtl stripes\n"
+            << "f 1/1 2/2 3/3\n";
+    }
+    {
+        std::ofstream mtl(root / "model.mtl");
+        mtl
+            << "newmtl stripes\n"
+            << "Kd 1 1 1\n"
+            << "map_Kd stripes.ppm\n";
+    }
+    {
+        std::ofstream ppm(root / "stripes.ppm", std::ios::binary);
+        ppm << "P6\n64 1\n255\n";
+        for (std::size_t x = 0U; x < 64U; ++x) {
+            const unsigned char value = static_cast<unsigned char>((x * 255U) / 63U);
+            const std::array<unsigned char, 3> pixel{value, value, value};
+            ppm.write(
+                reinterpret_cast<const char*>(pixel.data()),
+                static_cast<std::streamsize>(pixel.size()));
+        }
+    }
+}
+
+int run_render_cli(
+    const std::filesystem::path& cli,
+    const std::filesystem::path& input,
+    const std::filesystem::path& output,
+    const std::string& extra_arguments) {
+    std::string command = quote_path(cli)
+        + " " + quote_path(input)
+        + " " + quote_path(output)
+        + " 64 64 1";
+    if (!extra_arguments.empty()) {
+        command += " " + extra_arguments;
+    }
+    return std::system(command.c_str());
+}
+
+void test_headless_cli_texture_sampler_control(const char* argv0) {
+    const std::filesystem::path cli = render_cli_path(argv0);
+    check(std::filesystem::exists(cli), "headless sampler integration locates tiny_renderer_render sibling executable");
+    if (!std::filesystem::exists(cli)) {
+        return;
+    }
+
+    const std::filesystem::path root =
+        std::filesystem::current_path() / "tiny_renderer_cli_sampler_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    write_cli_sampler_fixture(root);
+    const std::filesystem::path input = root / "model.obj";
+
+    const std::filesystem::path legacy = root / "legacy.ppm";
+    const std::filesystem::path explicit_default = root / "explicit_default.ppm";
+    check(run_render_cli(cli, input, legacy, "") == 0,
+          "legacy headless model sampler invocation succeeds");
+    check(run_render_cli(
+              cli,
+              input,
+              explicit_default,
+              "--texture-mip base --texture-anisotropy 1") == 0,
+          "explicit default headless model sampler invocation succeeds");
+    check(
+        read_binary_file(legacy) == read_binary_file(explicit_default),
+        "explicit base/1x texture sampler state preserves legacy headless output byte-for-byte");
+
+    const std::filesystem::path anisotropic_a = root / "anisotropic_a.ppm";
+    const std::filesystem::path anisotropic_b = root / "anisotropic_b.ppm";
+    const std::string anisotropic_args = "--texture-mip linear --texture-anisotropy 4";
+    check(run_render_cli(cli, input, anisotropic_a, anisotropic_args) == 0,
+          "headless CLI accepts bounded 4x anisotropic model texture sampling with mip filtering");
+    check(run_render_cli(cli, input, anisotropic_b, anisotropic_args) == 0,
+          "repeated 4x anisotropic headless invocation succeeds");
+    check(
+        read_binary_file(anisotropic_a) == read_binary_file(anisotropic_b),
+        "4x anisotropic headless model texture output is deterministic across repeated invocations");
+
+    const std::filesystem::path missing_mip = root / "missing_mip.ppm";
+    check(run_render_cli(cli, input, missing_mip, "--texture-anisotropy 4") != 0,
+          "headless CLI rejects anisotropy greater than one without an enabled mip policy");
+    check(!std::filesystem::exists(missing_mip),
+          "invalid anisotropy/mip combination fails before creating the output image");
+
+    const std::filesystem::path invalid_level = root / "invalid_level.ppm";
+    check(run_render_cli(cli, input, invalid_level, "--texture-mip linear --texture-anisotropy 3") != 0,
+          "headless CLI rejects unsupported anisotropy levels deterministically");
+    check(!std::filesystem::exists(invalid_level),
+          "unsupported anisotropy level fails before creating the output image");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     test_deterministic_rendering();
     test_auto_fit_is_translation_and_uniform_scale_invariant();
     test_limiting_axis_framing();
@@ -498,6 +625,11 @@ int main() {
     test_pfm_and_programmatic_environment_equivalence();
     test_environment_geometry_and_display_mapping_integration();
     test_invalid_environment_requests_fail_before_mutation();
+    if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
+        test_headless_cli_texture_sampler_control(argv[0]);
+    } else {
+        check(false, "offline render test executable path is available for CLI integration coverage");
+    }
 
     if (failures != 0) {
         std::cerr << failures << " offline render/environment test(s) failed\n";
