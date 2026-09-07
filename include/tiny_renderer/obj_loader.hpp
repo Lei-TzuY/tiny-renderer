@@ -52,12 +52,17 @@ struct ObjModelSource {
     // semantic distinction between real OBJ texture coordinates and other
     // varying channels such as UV-free normals.
     bool face_has_texture_coordinates{false};
+    // Present when every OBJ position record carried bounded RGB. Colors are
+    // appended after the canonical UV/normal channels so established UV and
+    // normal bindings remain stable.
+    std::optional<VertexColorChannels> vertex_color_channels{};
 };
 
 struct MaterialBatch {
     Mesh mesh;
     std::string material_name;
     MaterialState material{};
+    std::optional<VertexColorChannels> vertex_color_channels{};
 };
 
 struct MaterialAssetBatch {
@@ -67,6 +72,7 @@ struct MaterialAssetBatch {
     std::shared_ptr<const Texture2D> diffuse_texture;
     std::shared_ptr<const Texture2D> opacity_texture;
     std::shared_ptr<const Texture2D> normal_texture;
+    std::optional<VertexColorChannels> vertex_color_channels{};
 };
 
 // Texture-transfer interpretation for material asset import. Only the diffuse
