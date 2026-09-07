@@ -60,6 +60,19 @@ tiny_renderer::SampleCount parse_sample_count(std::string_view text) {
     throw std::invalid_argument("sample count must be 1 or 4");
 }
 
+tiny_renderer::MipFilterMode parse_environment_mip(std::string_view text) {
+    if (text == "base") {
+        return tiny_renderer::MipFilterMode::Disabled;
+    }
+    if (text == "nearest") {
+        return tiny_renderer::MipFilterMode::Nearest;
+    }
+    if (text == "linear") {
+        return tiny_renderer::MipFilterMode::Linear;
+    }
+    throw std::invalid_argument("environment mip mode must be base, nearest, or linear");
+}
+
 std::string lowercase_extension(const std::filesystem::path& path) {
     std::string extension = path.extension().string();
     std::transform(
@@ -104,6 +117,7 @@ struct ParsedArguments {
     std::optional<std::filesystem::path> environment_path{};
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
+    std::optional<tiny_renderer::MipFilterMode> environment_mip{};
 };
 
 ParsedArguments parse_arguments(int argc, char** argv) {
@@ -112,6 +126,7 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_environment = false;
     bool saw_intensity = false;
     bool saw_yaw = false;
+    bool saw_mip = false;
 
     for (int index = 3; index < argc; ++index) {
         const std::string_view token = argv[index];
@@ -148,6 +163,12 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             parsed.environment_yaw = parse_finite_float(
                 require_value("--environment-yaw"),
                 "environment yaw");
+        } else if (token == "--environment-mip") {
+            if (saw_mip) {
+                throw std::invalid_argument("--environment-mip may be specified at most once");
+            }
+            saw_mip = true;
+            parsed.environment_mip = parse_environment_mip(require_value("--environment-mip"));
         } else if (token.starts_with("--")) {
             throw std::invalid_argument("unknown option: " + std::string(token));
         } else {
@@ -165,8 +186,9 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     if (positional.size() == 3U) {
         parsed.settings.sample_count = parse_sample_count(positional[2]);
     }
-    if ((parsed.environment_intensity || parsed.environment_yaw) && !parsed.environment_path) {
-        throw std::invalid_argument("environment intensity/yaw requires --environment");
+    if ((parsed.environment_intensity || parsed.environment_yaw || parsed.environment_mip)
+        && !parsed.environment_path) {
+        throw std::invalid_argument("environment intensity/yaw/mip requires --environment");
     }
     return parsed;
 }
@@ -174,8 +196,10 @@ ParsedArguments parse_arguments(int argc, char** argv) {
 void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.obj OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
-           " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]\n"
-        << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 environment-intensity=1 environment-yaw=0\n";
+           " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
+           " [--environment-mip base|nearest|linear]\n"
+        << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 environment-intensity=1"
+           " environment-yaw=0 environment-mip=base\n";
 }
 
 }  // namespace
@@ -207,6 +231,12 @@ int main(int argc, char** argv) {
             }
             if (parsed.environment_yaw) {
                 environment.yaw_radians = *parsed.environment_yaw;
+            }
+            if (parsed.environment_mip) {
+                environment.sampler.mip_filter = *parsed.environment_mip;
+                environment.mip_policy = *parsed.environment_mip == tiny_renderer::MipFilterMode::Disabled
+                    ? tiny_renderer::EnvironmentMipPolicy::BaseLevel
+                    : tiny_renderer::EnvironmentMipPolicy::RayFootprint;
             }
             tiny_renderer::validate_environment_background_state(environment);
             parsed.settings.environment = environment;

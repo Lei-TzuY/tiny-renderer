@@ -25,10 +25,17 @@ struct PerspectiveCameraState {
     float aspect{1.0F};
 };
 
+enum class EnvironmentMipPolicy {
+    BaseLevel,
+    RayFootprint,
+};
+
 // A borrowed linear-HDR equirectangular environment. The texture remains owned
 // by the caller. U defaults to repeat across the longitude seam while V clamps
-// at the poles. This first slice intentionally requires base-level sampling;
-// it does not invent ray differentials or implicit environment mip selection.
+// at the poles. BaseLevel preserves the historical M53/M54 behavior and
+// requires disabled mip filtering. RayFootprint derives screen-space camera-ray
+// UV gradients and delegates mip selection to Texture2D::sample_grad using the
+// existing nearest-level or trilinear mip policy.
 struct EnvironmentBackgroundState {
     const Texture2D* texture{nullptr};
     SamplerState sampler{
@@ -39,6 +46,7 @@ struct EnvironmentBackgroundState {
     };
     float intensity{1.0F};
     float yaw_radians{0.0F};
+    EnvironmentMipPolicy mip_policy{EnvironmentMipPolicy::BaseLevel};
 };
 
 namespace environment_detail {
@@ -68,6 +76,23 @@ inline float wrap_longitude(float longitude) {
         wrapped += two_pi;
     }
     return wrapped - kPi;
+}
+
+inline float shortest_wrapped_u_delta(float from, float to) {
+    float delta = to - from;
+    if (delta > 0.5F) {
+        delta -= 1.0F;
+    } else if (delta < -0.5F) {
+        delta += 1.0F;
+    }
+    return delta;
+}
+
+inline Vec2 uv_delta(const Vec2& from, const Vec2& to) {
+    return {
+        shortest_wrapped_u_delta(from.x, to.x),
+        to.y - from.y,
+    };
 }
 
 inline Vec2 sample_offset(SampleCount sample_count, std::size_t sample_index) {
@@ -151,6 +176,51 @@ inline Vec3 checked_scaled_radiance(const Vec3& sampled, float intensity) {
     };
 }
 
+inline std::size_t sample_storage_index(
+    std::size_t framebuffer_width,
+    std::size_t samples_per_pixel,
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index) {
+    return (y * framebuffer_width + x) * samples_per_pixel + sample_index;
+}
+
+inline TextureGradients ray_footprint_gradients(
+    const std::vector<Vec2>& uv_samples,
+    std::size_t framebuffer_width,
+    std::size_t framebuffer_height,
+    std::size_t samples_per_pixel,
+    std::size_t x,
+    std::size_t y,
+    std::size_t sample_index) {
+    const auto uv_at = [&](std::size_t px, std::size_t py) -> const Vec2& {
+        return uv_samples[sample_storage_index(
+            framebuffer_width,
+            samples_per_pixel,
+            px,
+            py,
+            sample_index)];
+    };
+
+    const Vec2& center = uv_at(x, y);
+    TextureGradients gradients{};
+    if (framebuffer_width > 1U) {
+        gradients.dx = x + 1U < framebuffer_width
+            ? uv_delta(center, uv_at(x + 1U, y))
+            : uv_delta(uv_at(x - 1U, y), center);
+    }
+    if (framebuffer_height > 1U) {
+        gradients.dy = y + 1U < framebuffer_height
+            ? uv_delta(center, uv_at(x, y + 1U))
+            : uv_delta(uv_at(x, y - 1U), center);
+    }
+    if (!std::isfinite(gradients.dx.x) || !std::isfinite(gradients.dx.y)
+        || !std::isfinite(gradients.dy.x) || !std::isfinite(gradients.dy.y)) {
+        throw std::logic_error("finite environment rays produced non-finite texture gradients");
+    }
+    return gradients;
+}
+
 }  // namespace environment_detail
 
 inline void validate_environment_background_state(const EnvironmentBackgroundState& environment) {
@@ -161,8 +231,19 @@ inline void validate_environment_background_state(const EnvironmentBackgroundSta
         throw std::invalid_argument("environment background texture must be in the linear texture domain");
     }
     validate_sampler_state(environment.sampler);
-    if (environment.sampler.mip_filter != MipFilterMode::Disabled) {
-        throw std::invalid_argument("environment background requires disabled mip filtering without ray differentials");
+    switch (environment.mip_policy) {
+        case EnvironmentMipPolicy::BaseLevel:
+            if (environment.sampler.mip_filter != MipFilterMode::Disabled) {
+                throw std::invalid_argument("base-level environment sampling requires disabled mip filtering");
+            }
+            break;
+        case EnvironmentMipPolicy::RayFootprint:
+            if (environment.sampler.mip_filter == MipFilterMode::Disabled) {
+                throw std::invalid_argument("ray-footprint environment sampling requires nearest or linear mip filtering");
+            }
+            break;
+        default:
+            throw std::invalid_argument("unknown environment mip policy");
     }
     if (!std::isfinite(environment.intensity)
         || environment.intensity < 0.0F
@@ -247,8 +328,9 @@ inline Vec3 perspective_sample_direction(
 // state is replacement. Geometry submitted afterward therefore occludes the
 // background through the renderer's unchanged depth/stencil/raster path.
 //
-// All rays and scaled radiance are computed into temporary storage first, so
-// invalid camera/environment/radiance state rejects before framebuffer mutation.
+// All rays, UVs, ray-footprint gradients, mip samples, and scaled radiance are
+// computed into temporary storage first, so invalid camera/environment/radiance
+// state rejects before framebuffer mutation.
 inline void draw_environment_background(
     Framebuffer& framebuffer,
     const PerspectiveCameraState& camera,
@@ -264,7 +346,9 @@ inline void draw_environment_background(
     if (pixel_count > std::numeric_limits<std::size_t>::max() / samples_per_pixel) {
         throw std::overflow_error("environment background sample count overflows size_t");
     }
-    std::vector<Vec3> radiance(pixel_count * samples_per_pixel);
+    const std::size_t sample_count = pixel_count * samples_per_pixel;
+    std::vector<Vec2> uv_samples(sample_count);
+    std::vector<Vec3> radiance(sample_count);
 
     for (std::size_t y = 0U; y < framebuffer.height(); ++y) {
         for (std::size_t x = 0U; x < framebuffer.width(); ++x) {
@@ -277,10 +361,43 @@ inline void draw_environment_background(
                     x,
                     y,
                     sample_index);
-                const Vec2 uv = equirectangular_uv(direction, environment.yaw_radians);
-                const Vec3 sampled = environment.texture->sample(uv, environment.sampler);
-                radiance[(y * framebuffer.width() + x) * samples_per_pixel + sample_index] =
-                    environment_detail::checked_scaled_radiance(sampled, environment.intensity);
+                uv_samples[environment_detail::sample_storage_index(
+                    framebuffer.width(),
+                    samples_per_pixel,
+                    x,
+                    y,
+                    sample_index)] = equirectangular_uv(direction, environment.yaw_radians);
+            }
+        }
+    }
+
+    for (std::size_t y = 0U; y < framebuffer.height(); ++y) {
+        for (std::size_t x = 0U; x < framebuffer.width(); ++x) {
+            for (std::size_t sample_index = 0U; sample_index < samples_per_pixel; ++sample_index) {
+                const std::size_t index = environment_detail::sample_storage_index(
+                    framebuffer.width(),
+                    samples_per_pixel,
+                    x,
+                    y,
+                    sample_index);
+                const Vec2& uv = uv_samples[index];
+                Vec3 sampled{};
+                if (environment.mip_policy == EnvironmentMipPolicy::BaseLevel) {
+                    sampled = environment.texture->sample(uv, environment.sampler);
+                } else {
+                    const TextureGradients gradients = environment_detail::ray_footprint_gradients(
+                        uv_samples,
+                        framebuffer.width(),
+                        framebuffer.height(),
+                        samples_per_pixel,
+                        x,
+                        y,
+                        sample_index);
+                    sampled = environment.texture->sample_grad(uv, gradients, environment.sampler);
+                }
+                radiance[index] = environment_detail::checked_scaled_radiance(
+                    sampled,
+                    environment.intensity);
             }
         }
     }
@@ -289,8 +406,12 @@ inline void draw_environment_background(
     for (std::size_t y = 0U; y < framebuffer.height(); ++y) {
         for (std::size_t x = 0U; x < framebuffer.width(); ++x) {
             for (std::size_t sample_index = 0U; sample_index < samples_per_pixel; ++sample_index) {
-                const Vec3& color = radiance[
-                    (y * framebuffer.width() + x) * samples_per_pixel + sample_index];
+                const Vec3& color = radiance[environment_detail::sample_storage_index(
+                    framebuffer.width(),
+                    samples_per_pixel,
+                    x,
+                    y,
+                    sample_index)];
                 const bool wrote = framebuffer.test_and_write_sample(
                     x,
                     y,
