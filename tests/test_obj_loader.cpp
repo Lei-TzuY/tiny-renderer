@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -12,6 +13,8 @@
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
 #include "tiny_renderer/mesh.hpp"
+#include "tiny_renderer/model_fingerprint.hpp"
+#include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/obj_loader.hpp"
 #include "tiny_renderer/ppm_loader.hpp"
 #include "tiny_renderer/rasterizer.hpp"
@@ -35,9 +38,20 @@ void check_near(float actual, float expected, const std::string& message, float 
           message + " (actual=" + std::to_string(actual) + ", expected=" + std::to_string(expected) + ")");
 }
 
+void check_vec3_near(const Vec3& actual, const Vec3& expected, const std::string& message) {
+    check_near(actual.x, expected.x, message + " red");
+    check_near(actual.y, expected.y, message + " green");
+    check_near(actual.z, expected.z, message + " blue");
+}
+
 Mesh parse_text(std::string_view text) {
     std::istringstream input{std::string(text)};
     return load_obj(input);
+}
+
+ObjModelSource parse_model_source_text(std::string_view text) {
+    std::istringstream input{std::string(text)};
+    return load_obj_model_source(input);
 }
 
 Vertex uv_vertex(const Vec3& position, float u, float v) {
@@ -153,6 +167,88 @@ void expect_parse_error(std::string_view text, const std::string& message) {
         threw = true;
     }
     check(threw, message);
+}
+
+void test_vertex_color_layout_and_validation() {
+    const Mesh position_color = parse_text(
+        "v -0.8 -0.8 0 1 0 0\n"
+        "v 0.8 -0.8 0 0 1 0\n"
+        "v 0 0.8 0 0 0 1\n"
+        "f 1 2 3\n");
+    check(position_color.vertices.size() == 3U, "position RGB records become canonical vertices");
+    for (const Vertex& vertex : position_color.vertices) {
+        check(vertex.varyings.count == 3U,
+              "legacy position-only colored OBJ exposes exactly RGB varying channels");
+    }
+    if (position_color.vertices.size() == 3U) {
+        check_near(position_color.vertices[0].varyings[0], 1.0F, "position color red channel");
+        check_near(position_color.vertices[1].varyings[1], 1.0F, "position color green channel");
+        check_near(position_color.vertices[2].varyings[2], 1.0F, "position color blue channel");
+    }
+
+    const ObjModelSource generated = parse_model_source_text(
+        "v -0.8 -0.8 0 1 0 0\n"
+        "v 0.8 -0.8 0 0 1 0\n"
+        "v 0 0.8 0 0 0 1\n"
+        "f 1 2 3\n");
+    check(generated.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{3U, 4U, 5U}},
+          "generated-normal rich OBJ records canonical RGB channels after normals");
+    for (const Vertex& vertex : generated.mesh.vertices) {
+        check(vertex.varyings.count == 6U,
+              "generated-normal colored vertices own normal plus RGB channels");
+        if (vertex.varyings.count == 6U) {
+            check_near(vertex.varyings[0], 0.0F, "generated colored normal x");
+            check_near(vertex.varyings[1], 0.0F, "generated colored normal y");
+            check_near(vertex.varyings[2], 1.0F, "generated colored normal z");
+        }
+    }
+
+    const ObjModelSource generated_uv = parse_model_source_text(
+        "v -0.8 -0.8 0 1 0 0\n"
+        "v 0.8 -0.8 0 0 1 0\n"
+        "v 0 0.8 0 0 0 1\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "vt 0.5 1\n"
+        "f 1/1 2/2 3/3\n");
+    check(generated_uv.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{5U, 6U, 7U}},
+          "generated-normal v/vt RGB metadata follows UV plus generated-normal channels");
+    for (const Vertex& vertex : generated_uv.mesh.vertices) {
+        check(vertex.varyings.count == 8U,
+              "generated-normal v/vt RGB vertices exactly fill the fixed eight-varying capacity");
+        if (vertex.varyings.count == 8U) {
+            check_near(vertex.varyings[2], 0.0F, "generated UV colored normal x");
+            check_near(vertex.varyings[3], 0.0F, "generated UV colored normal y");
+            check_near(vertex.varyings[4], 1.0F, "generated UV colored normal z");
+        }
+    }
+
+    const ObjModelSource uvn = parse_model_source_text(
+        "v -0.8 -0.8 0 1 0 0\n"
+        "v 0.8 -0.8 0 0 1 0\n"
+        "v 0 0.8 0 0 0 1\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "vt 0.5 1\n"
+        "vn 0 0 1\n"
+        "f 1/1/1 2/2/1 3/3/1\n");
+    check(uvn.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{5U, 6U, 7U}},
+          "v/vt/vn RGB metadata appends colors after established UV/normal channels");
+    for (const Vertex& vertex : uvn.mesh.vertices) {
+        check(vertex.varyings.count == 8U,
+              "v/vt/vn plus RGB exactly fits the fixed eight-varying capacity");
+    }
+
+    expect_parse_error(
+        "v 0 0 0 1 0 0\n"
+        "v 1 0 0\n"
+        "v 0 1 0 0 0 1\n"
+        "f 1 2 3\n",
+        "mixed colored and uncolored OBJ vertex records are rejected");
+    expect_parse_error("v 0 0 0 1\n", "four-component OBJ vertex records remain outside the bounded RGB contract");
+    expect_parse_error("v 0 0 0 -0.1 0 0\n", "negative OBJ vertex color components are rejected");
+    expect_parse_error("v 0 0 0 1.1 0 0\n", "OBJ vertex color components above one are rejected");
+    expect_parse_error("v 0 0 0 nan 0 0\n", "non-finite OBJ vertex color components are rejected");
 }
 
 void test_uv_optional_layouts_and_invalid_input() {
@@ -307,6 +403,109 @@ void test_normal_fixture_drives_file_textured_lambert_path() {
           "file-imported normal mesh preserves the manual textured Lambert framebuffer hash");
 }
 
+void test_vertex_color_model_asset_execution() {
+#ifndef TINY_RENDERER_SOURCE_DIR
+#error TINY_RENDERER_SOURCE_DIR must be provided for OBJ fixture tests
+#endif
+    const std::filesystem::path root = TINY_RENDERER_SOURCE_DIR;
+    const ModelAsset asset = load_obj_model_asset_file(
+        root / "tests" / "fixtures" / "vertex_color_material.obj");
+    check(asset.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{3U, 4U, 5U}},
+          "model asset preserves generated-normal RGB channel metadata");
+    check(asset.draws.size() == 1U, "vertex-color fixture produces one material draw");
+    if (asset.draws.size() == 1U) {
+        check_near(asset.draws[0].material.albedo.x, 1.0F, "vertex-color fixture imports Kd red");
+        check_near(asset.draws[0].material.albedo.y, 0.5F, "vertex-color fixture imports Kd green");
+        check_near(asset.draws[0].material.albedo.z, 0.25F, "vertex-color fixture imports Kd blue");
+    }
+
+    Framebuffer direct(65U, 65U, SampleCount::Four);
+    draw_model_asset(
+        direct,
+        asset,
+        Mat4::identity(), Mat4::identity(), Mat4::identity());
+    check(count_non_black(direct) > 0U,
+          "file-driven vertex-color ModelAsset produces visible fragments");
+
+    Framebuffer reference(65U, 65U, SampleCount::Four);
+    Rasterizer reference_rasterizer(
+        reference,
+        {3U, 4U, 5U},
+        {},
+        {},
+        asset.draws.front().material,
+        BaseColorSource::VaryingColor);
+    reference_rasterizer.draw_mesh_range(
+        asset.mesh,
+        asset.draws.front().range,
+        Mat4::identity());
+    check(direct.rgb8() == reference.rgb8(),
+          "model submission vertex RGB times imported Kd is byte-equivalent to explicit VaryingColor execution");
+    for (std::size_t sample = 0U; sample < 4U; ++sample) {
+        check_vec3_near(
+            direct.sample_color_at(32U, 32U, sample),
+            reference.sample_color_at(32U, 32U, sample),
+            "model vertex-color path preserves exact per-sample 4x shading");
+    }
+
+    const PreparedModelSubmission prepared = prepare_model_asset(asset);
+    Framebuffer listed(65U, 65U, SampleCount::Four);
+    const PreparedModelListEntry entries[] = {{&prepared, Mat4::identity()}};
+    draw_prepared_model_list(listed, entries, Mat4::identity(), Mat4::identity());
+    check(listed.rgb8() == direct.rgb8(),
+          "prepared-list vertex-color execution is byte-identical to direct ModelAsset submission");
+
+    ModelAsset semantics_removed = asset;
+    semantics_removed.vertex_color_channels.reset();
+    check(model_asset_fnv1a64(asset) != model_asset_fnv1a64(semantics_removed),
+          "model fingerprint distinguishes active vertex-color semantics from identical raw varyings");
+
+    ModelAsset duplicate = asset;
+    duplicate.vertex_color_channels = VertexColorChannels{3U, 3U, 5U};
+    bool duplicate_threw = false;
+    try {
+        (void)prepare_model_asset(duplicate);
+    } catch (const std::invalid_argument&) {
+        duplicate_threw = true;
+    }
+    check(duplicate_threw,
+          "prepared-model construction rejects duplicate vertex-color channels before execution");
+
+    ModelAsset out_of_range = asset;
+    out_of_range.vertex_color_channels = VertexColorChannels{6U, 7U, 8U};
+    bool range_threw = false;
+    try {
+        (void)prepare_model_asset(out_of_range);
+    } catch (const std::out_of_range&) {
+        range_threw = true;
+    }
+    check(range_threw,
+          "prepared-model construction rejects out-of-range vertex-color channels before execution");
+
+    ModelAsset textured;
+    textured.mesh.vertices = {
+        Vertex::with_varyings({-0.8F, -0.8F, 0.0F}, VaryingPack{0.0F, 0.0F, 1.0F, 0.0F, 0.0F}),
+        Vertex::with_varyings({0.8F, -0.8F, 0.0F}, VaryingPack{1.0F, 0.0F, 0.0F, 1.0F, 0.0F}),
+        Vertex::with_varyings({0.0F, 0.8F, 0.0F}, VaryingPack{0.5F, 1.0F, 0.0F, 0.0F, 1.0F}),
+    };
+    textured.mesh.triangles = {{0U, 1U, 2U}};
+    textured.vertex_color_channels = VertexColorChannels{2U, 3U, 4U};
+    MaterialDraw textured_draw;
+    textured_draw.range = {0U, 1U};
+    textured_draw.diffuse_texture = std::make_shared<const Texture2D>(
+        1U, 1U, std::vector<Vec3>{{0.25F, 0.5F, 0.75F}});
+    textured.draws.push_back(textured_draw);
+
+    ModelAsset uncolored_textured = textured;
+    uncolored_textured.vertex_color_channels.reset();
+    Framebuffer textured_colored(65U, 65U);
+    Framebuffer textured_uncolored(65U, 65U);
+    draw_model_asset(textured_colored, textured, Mat4::identity());
+    draw_model_asset(textured_uncolored, uncolored_textured, Mat4::identity());
+    check(textured_colored.rgb8() == textured_uncolored.rgb8(),
+          "diffuse texture remains authoritative over vertex RGB when both are present");
+}
+
 void test_parse_error_reports_source_line() {
     bool checked = false;
     try {
@@ -328,9 +527,11 @@ int main() {
     try {
         test_pair_normalization_and_first_seen_order();
         test_triple_normalization_and_normal_channels();
+        test_vertex_color_layout_and_validation();
         test_uv_optional_layouts_and_invalid_input();
         test_file_fixture_renders_identically_to_manual_mesh();
         test_normal_fixture_drives_file_textured_lambert_path();
+        test_vertex_color_model_asset_execution();
         test_parse_error_reports_source_line();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';

@@ -46,7 +46,30 @@ void validate_material(const MaterialState& material) {
     }
 }
 
+void validate_vertex_color_channels(const ModelAsset& asset) {
+    if (!asset.vertex_color_channels) {
+        return;
+    }
+    if (asset.mesh.vertices.empty()) {
+        throw std::invalid_argument("model vertex color channels require at least one vertex");
+    }
+    const VertexColorChannels channels = *asset.vertex_color_channels;
+    if (channels.red == channels.green
+        || channels.red == channels.blue
+        || channels.green == channels.blue) {
+        throw std::invalid_argument("model vertex color channels must be distinct");
+    }
+    for (const Vertex& vertex : asset.mesh.vertices) {
+        if (channels.red >= vertex.varyings.count
+            || channels.green >= vertex.varyings.count
+            || channels.blue >= vertex.varyings.count) {
+            throw std::out_of_range("model vertex color channel references unavailable varying");
+        }
+    }
+}
+
 void validate_model_structure(const ModelAsset& asset) {
+    validate_vertex_color_channels(asset);
     const std::size_t triangle_count = asset.mesh.triangles.size();
     if (triangle_count == 0U) {
         if (!asset.draws.empty()) {
@@ -157,8 +180,21 @@ TextureBinding texture_binding_for(const MaterialDraw& draw, const ModelRenderOp
     return binding;
 }
 
-BaseColorSource base_color_source_for(const MaterialDraw& draw) {
-    return draw.diffuse_texture ? BaseColorSource::Texture : BaseColorSource::ConstantWhite;
+ColorBinding color_binding_for(const ModelAsset& asset) {
+    if (!asset.vertex_color_channels) {
+        return {};
+    }
+    const VertexColorChannels channels = *asset.vertex_color_channels;
+    return {channels.red, channels.green, channels.blue};
+}
+
+BaseColorSource base_color_source_for(const ModelAsset& asset, const MaterialDraw& draw) {
+    if (draw.diffuse_texture) {
+        return BaseColorSource::Texture;
+    }
+    return asset.vertex_color_channels
+        ? BaseColorSource::VaryingColor
+        : BaseColorSource::ConstantWhite;
 }
 
 void preflight_prepared_model_transform(
@@ -174,13 +210,13 @@ void preflight_prepared_model_transform(
             framebuffer,
             mesh,
             draw.range,
-            {},
+            color_binding_for(asset),
             texture_binding_for(draw, options),
             options.directional_light,
             options.point_light,
             options.fixed_lights,
             draw.material,
-            base_color_source_for(draw),
+            base_color_source_for(asset, draw),
             options.cull_mode,
             options.front_face,
             options.depth_state,
@@ -207,13 +243,13 @@ void preflight_prepared_model_mvp(
             framebuffer,
             mesh,
             draw.range,
-            {},
+            color_binding_for(asset),
             texture_binding_for(draw, options),
             options.directional_light,
             options.point_light,
             options.fixed_lights,
             draw.material,
-            base_color_source_for(draw),
+            base_color_source_for(asset, draw),
             options.cull_mode,
             options.front_face,
             options.depth_state,
@@ -230,15 +266,16 @@ void preflight_prepared_model_mvp(
 
 Rasterizer model_rasterizer(
     Framebuffer& framebuffer,
+    const ModelAsset& asset,
     const MaterialDraw& draw,
     const ModelRenderOptions& options) {
     return Rasterizer(
         framebuffer,
-        {},
+        color_binding_for(asset),
         texture_binding_for(draw, options),
         options.directional_light,
         draw.material,
-        base_color_source_for(draw),
+        base_color_source_for(asset, draw),
         options.cull_mode,
         options.front_face,
         options.depth_state,
@@ -265,7 +302,7 @@ void execute_prepared_model_transform(
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
     for (const MaterialDraw& draw : asset.draws) {
-        Rasterizer rasterizer = model_rasterizer(framebuffer, draw, options);
+        Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, options);
         rasterizer.draw_mesh_range(mesh, draw.range, model, view, projection);
     }
 }
@@ -278,7 +315,7 @@ void execute_prepared_model_mvp(
     const ModelAsset& asset = prepared.asset();
     const ModelRenderOptions& options = prepared.options();
     for (const MaterialDraw& draw : asset.draws) {
-        Rasterizer rasterizer = model_rasterizer(framebuffer, draw, options);
+        Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, options);
         rasterizer.draw_mesh_range(mesh, draw.range, mvp);
     }
 }
@@ -301,7 +338,7 @@ void draw_validated_model_impl(
     }
 
     for (const MaterialDraw& draw : asset.draws) {
-        Rasterizer rasterizer = model_rasterizer(framebuffer, draw, options);
+        Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, options);
         submit_range(rasterizer, mesh, draw.range);
     }
 }
@@ -466,13 +503,13 @@ void draw_model_asset(
                 framebuffer,
                 mesh,
                 draw.range,
-                {},
+                color_binding_for(asset),
                 texture_binding_for(draw, options),
                 options.directional_light,
                 options.point_light,
                 options.fixed_lights,
                 draw.material,
-                base_color_source_for(draw),
+                base_color_source_for(asset, draw),
                 options.cull_mode,
                 options.front_face,
                 options.depth_state,
@@ -510,13 +547,13 @@ void draw_model_asset(
                 framebuffer,
                 mesh,
                 draw.range,
-                {},
+                color_binding_for(asset),
                 texture_binding_for(draw, options),
                 options.directional_light,
                 options.point_light,
                 options.fixed_lights,
                 draw.material,
-                base_color_source_for(draw),
+                base_color_source_for(asset, draw),
                 options.cull_mode,
                 options.front_face,
                 options.depth_state,

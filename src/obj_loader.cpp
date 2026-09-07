@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -99,6 +100,14 @@ float parse_float(const std::string& token, std::size_t line, const char* field)
     return value;
 }
 
+float parse_color_component(const std::string& token, std::size_t line, const char* field) {
+    const float value = parse_float(token, line, field);
+    if (value < 0.0F || value > 1.0F) {
+        fail(line, std::string(field) + " must be within [0, 1]");
+    }
+    return value;
+}
+
 std::int64_t parse_index(std::string_view token, std::size_t line, const char* field) {
     std::int64_t value{};
     const char* const begin = token.data();
@@ -121,6 +130,36 @@ bool layout_has_texcoord(FaceLayout layout) {
 bool layout_has_normal(FaceLayout layout) {
     return layout == FaceLayout::PositionNormal
         || layout == FaceLayout::PositionTexcoordNormal;
+}
+
+VertexColorChannels vertex_color_channels_for(FaceLayout layout) {
+    switch (layout) {
+        case FaceLayout::Position:
+            return {0U, 1U, 2U};
+        case FaceLayout::PositionTexcoord:
+            return {2U, 3U, 4U};
+        case FaceLayout::PositionNormal:
+            return {3U, 4U, 5U};
+        case FaceLayout::PositionTexcoordNormal:
+            return {5U, 6U, 7U};
+        case FaceLayout::Unknown:
+            break;
+    }
+    throw std::logic_error("OBJ vertex color channels require a resolved face layout");
+}
+
+VaryingPack append_vertex_color(VaryingPack pack, const std::optional<Vec3>& color) {
+    if (!color) {
+        return pack;
+    }
+    if (pack.count > kMaxVaryings - 3U) {
+        throw std::logic_error("canonical OBJ vertex color layout exceeds varying capacity");
+    }
+    pack.values[pack.count] = color->x;
+    pack.values[pack.count + 1U] = color->y;
+    pack.values[pack.count + 2U] = color->z;
+    pack.count += 3U;
+    return pack;
 }
 
 FaceReference parse_face_reference(const std::string& token, std::size_t line) {
@@ -329,12 +368,13 @@ void finalize_generated_normals(
         const Vec3 normal = normalized_generated_normal(accumulation->second);
         VaryingPack& varyings = mesh.vertices[vertex_index].varyings;
         std::size_t normal_offset{};
-        if (varyings.count == 3U) {
+        if (varyings.count == 3U || varyings.count == 6U) {
             normal_offset = 0U;
-        } else if (varyings.count == 5U) {
+        } else if (varyings.count == 5U || varyings.count == 8U) {
             normal_offset = 2U;
         } else {
-            throw std::logic_error("generated OBJ normal vertex must own normal or UV-plus-normal varyings");
+            throw std::logic_error(
+                "generated OBJ normal vertex must own normal[/color] or UV-plus-normal[/color] varyings");
         }
         varyings.values[normal_offset] = normal.x;
         varyings.values[normal_offset + 1U] = normal.y;
@@ -347,6 +387,8 @@ ObjModelSource parse_obj(
     MaterialMetadataMode material_mode,
     MissingNormalMode missing_normal_mode) {
     std::vector<Vec3> positions;
+    std::vector<std::optional<Vec3>> position_colors;
+    std::optional<bool> position_records_have_colors;
     std::vector<Vec2> texcoords;
     std::vector<Vec3> normals;
     std::map<UnifiedVertexKey, std::uint32_t> unified_indices;
@@ -437,18 +479,35 @@ ObjModelSource parse_obj(
         }
 
         if (directive == "v") {
-            std::string x_token;
-            std::string y_token;
-            std::string z_token;
-            std::string extra;
-            if (!(line >> x_token >> y_token >> z_token) || (line >> extra)) {
-                fail(line_number, "vertex record must contain exactly three coordinates");
+            std::vector<std::string> fields;
+            std::string field;
+            while (line >> field) {
+                fields.push_back(std::move(field));
             }
+            if (fields.size() != 3U && fields.size() != 6U) {
+                fail(line_number, "vertex record must contain xyz or xyz plus normalized rgb");
+            }
+            const bool has_color = fields.size() == 6U;
+            if (!position_records_have_colors) {
+                position_records_have_colors = has_color;
+            } else if (*position_records_have_colors != has_color) {
+                fail(line_number, "all OBJ vertex records must consistently include or omit rgb");
+            }
+
             positions.push_back({
-                parse_float(x_token, line_number, "vertex x"),
-                parse_float(y_token, line_number, "vertex y"),
-                parse_float(z_token, line_number, "vertex z"),
+                parse_float(fields[0], line_number, "vertex x"),
+                parse_float(fields[1], line_number, "vertex y"),
+                parse_float(fields[2], line_number, "vertex z"),
             });
+            if (has_color) {
+                position_colors.push_back(Vec3{
+                    parse_color_component(fields[3], line_number, "vertex red"),
+                    parse_color_component(fields[4], line_number, "vertex green"),
+                    parse_color_component(fields[5], line_number, "vertex blue"),
+                });
+            } else {
+                position_colors.push_back(std::nullopt);
+            }
             continue;
         }
 
@@ -512,6 +571,16 @@ ObjModelSource parse_obj(
             if (mesh_layout == FaceLayout::Unknown) {
                 mesh_layout = face_layout;
                 result.face_has_texture_coordinates = layout_has_texcoord(face_layout);
+                if (position_records_have_colors.value_or(false)) {
+                    FaceLayout canonical_color_layout = face_layout;
+                    if (missing_normal_mode == MissingNormalMode::Generate
+                        && !layout_has_normal(canonical_color_layout)) {
+                        canonical_color_layout = layout_has_texcoord(canonical_color_layout)
+                            ? FaceLayout::PositionTexcoordNormal
+                            : FaceLayout::PositionNormal;
+                    }
+                    result.vertex_color_channels = vertex_color_channels_for(canonical_color_layout);
+                }
             } else if (mesh_layout != face_layout) {
                 fail(line_number, "mixing OBJ face index layouts in one canonical mesh is not supported");
             }
@@ -605,50 +674,43 @@ ObjModelSource parse_obj(
                     }
                     unified_index = static_cast<std::uint32_t>(result.mesh.vertices.size());
                     const Vec3& position = positions[reference.position];
+                    const std::optional<Vec3>& color = position_colors[reference.position];
                     const bool has_uv = layout_has_texcoord(face_layout);
                     const bool has_explicit_normal = layout_has_normal(face_layout);
+                    VaryingPack varyings;
+                    std::optional<GeneratedNormalKey> generated_key;
                     if (has_uv && has_explicit_normal) {
                         const Vec2& uv = texcoords[reference.texcoord];
                         const Vec3& normal = normals[reference.normal];
-                        result.mesh.vertices.push_back(Vertex::with_varyings(
-                            position,
-                            VaryingPack{uv.x, uv.y, normal.x, normal.y, normal.z}));
-                        vertex_generated_normal_keys.push_back(std::nullopt);
+                        varyings = VaryingPack{uv.x, uv.y, normal.x, normal.y, normal.z};
                     } else if (has_uv && generated) {
                         const Vec2& uv = texcoords[reference.texcoord];
-                        result.mesh.vertices.push_back(Vertex::with_varyings(
-                            position,
-                            VaryingPack{uv.x, uv.y, 0.0F, 0.0F, 0.0F}));
-                        vertex_generated_normal_keys.push_back(GeneratedNormalKey{
+                        varyings = VaryingPack{uv.x, uv.y, 0.0F, 0.0F, 0.0F};
+                        generated_key = GeneratedNormalKey{
                             reference.position,
                             generated_domain->flat,
                             generated_domain->id,
-                        });
+                        };
                     } else if (has_uv) {
                         const Vec2& uv = texcoords[reference.texcoord];
-                        result.mesh.vertices.push_back(Vertex::with_varyings(
-                            position,
-                            VaryingPack{uv.x, uv.y}));
-                        vertex_generated_normal_keys.push_back(std::nullopt);
+                        varyings = VaryingPack{uv.x, uv.y};
                     } else if (has_explicit_normal) {
                         const Vec3& normal = normals[reference.normal];
-                        result.mesh.vertices.push_back(Vertex::with_varyings(
-                            position,
-                            VaryingPack{normal.x, normal.y, normal.z}));
-                        vertex_generated_normal_keys.push_back(std::nullopt);
+                        varyings = VaryingPack{normal.x, normal.y, normal.z};
                     } else if (generated) {
-                        result.mesh.vertices.push_back(Vertex::with_varyings(
-                            position,
-                            VaryingPack{0.0F, 0.0F, 0.0F}));
-                        vertex_generated_normal_keys.push_back(GeneratedNormalKey{
+                        varyings = VaryingPack{0.0F, 0.0F, 0.0F};
+                        generated_key = GeneratedNormalKey{
                             reference.position,
                             generated_domain->flat,
                             generated_domain->id,
-                        });
+                        };
                     } else {
-                        result.mesh.vertices.push_back(Vertex::with_varyings(position, VaryingPack{}));
-                        vertex_generated_normal_keys.push_back(std::nullopt);
+                        varyings = VaryingPack{};
                     }
+                    result.mesh.vertices.push_back(Vertex::with_varyings(
+                        position,
+                        append_vertex_color(varyings, color)));
+                    vertex_generated_normal_keys.push_back(generated_key);
                     unified_indices.emplace(key, unified_index);
                 }
 
@@ -723,7 +785,10 @@ std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem:
         if (geometry.triangles.empty()) {
             return {};
         }
-        return {MaterialBatch{geometry, std::string{}, MaterialState{}}};
+        MaterialBatch batch;
+        batch.mesh = geometry;
+        batch.vertex_color_channels = source.vertex_color_channels;
+        return {std::move(batch)};
     }
 
     const MaterialLibrary library = detail::load_obj_material_library_set<MaterialState>(
@@ -750,6 +815,7 @@ std::vector<MaterialBatch> load_obj_material_batches_file(const std::filesystem:
             batch.mesh.vertices = geometry.vertices;
             batch.material_name = material_name;
             batch.material = material;
+            batch.vertex_color_channels = source.vertex_color_channels;
             batches.push_back(std::move(batch));
         }
         batches.back().mesh.triangles.push_back(geometry.triangles[face]);

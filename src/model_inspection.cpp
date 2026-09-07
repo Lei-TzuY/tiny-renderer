@@ -33,6 +33,12 @@ std::string inspect_model_asset(const ModelAsset& asset) {
     output << "vertices=" << asset.mesh.vertices.size() << '\n';
     output << "triangles=" << asset.mesh.triangles.size() << '\n';
     output << "draws=" << asset.draws.size() << '\n';
+    if (asset.vertex_color_channels) {
+        output << "vertex_color_channels="
+               << asset.vertex_color_channels->red << ','
+               << asset.vertex_color_channels->green << ','
+               << asset.vertex_color_channels->blue << '\n';
+    }
 
     for (std::size_t index = 0U; index < asset.draws.size(); ++index) {
         const MaterialDraw& draw = asset.draws[index];
