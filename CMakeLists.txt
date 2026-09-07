@@ -14,6 +14,7 @@ add_library(tiny_renderer
     src/material_asset_loader.cpp
     src/model_inspection.cpp
     src/model_renderer.cpp
+    src/offline_render.cpp
     src/mtl_loader.cpp
     src/obj_loader.cpp
     src/point_shadow.cpp
@@ -45,6 +46,9 @@ target_link_libraries(tiny_renderer_sample PRIVATE tiny_renderer)
 
 add_executable(tiny_renderer_asset_inspect src/asset_inspect_main.cpp)
 target_link_libraries(tiny_renderer_asset_inspect PRIVATE tiny_renderer)
+
+add_executable(tiny_renderer_render src/render_main.cpp)
+target_link_libraries(tiny_renderer_render PRIVATE tiny_renderer)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -228,6 +232,33 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_display_mapping_tests tests/test_display_mapping.cpp)
     target_link_libraries(tiny_renderer_display_mapping_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_display_mapping_tests COMMAND tiny_renderer_display_mapping_tests)
+
+    add_executable(tiny_renderer_offline_render_tests tests/test_offline_render.cpp)
+    target_link_libraries(tiny_renderer_offline_render_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_offline_render_tests COMMAND tiny_renderer_offline_render_tests)
+
+    add_test(
+        NAME tiny_renderer_render_cli_ppm
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_cli.ppm"
+            64 48 1
+    )
+    set_tests_properties(tiny_renderer_render_cli_ppm PROPERTIES
+        PASS_REGULAR_EXPRESSION "rendered format=ppm width=64 height=48 samples=1"
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_pfm
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_cli.pfm"
+            48 64 4
+    )
+    set_tests_properties(tiny_renderer_render_cli_pfm PROPERTIES
+        PASS_REGULAR_EXPRESSION "rendered format=pfm width=48 height=64 samples=4"
+    )
+    add_test(NAME tiny_renderer_render_usage COMMAND tiny_renderer_render)
+    set_tests_properties(tiny_renderer_render_usage PROPERTIES WILL_FAIL TRUE)
 
     add_executable(tiny_renderer_opacity_texture_tests tests/test_opacity_texture.cpp)
     target_link_libraries(tiny_renderer_opacity_texture_tests PRIVATE tiny_renderer)
