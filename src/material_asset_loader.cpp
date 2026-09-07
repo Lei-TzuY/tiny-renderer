@@ -66,12 +66,14 @@ struct LoadedMaterialAssetDefinition {
     std::shared_ptr<const Texture2D> diffuse_texture;
     std::shared_ptr<const Texture2D> opacity_texture;
     std::shared_ptr<const Texture2D> normal_texture;
+    std::shared_ptr<const Texture2D> specular_texture;
 };
 
 bool requires_texture_coordinates(const MaterialAssetDefinition& definition) {
     return definition.diffuse_map_filename.has_value()
         || definition.opacity_map_filename.has_value()
-        || definition.normal_map_filename.has_value();
+        || definition.normal_map_filename.has_value()
+        || definition.specular_map_filename.has_value();
 }
 
 }  // namespace
@@ -149,6 +151,11 @@ ModelAsset load_obj_model_asset_file(
             resolved.definition.normal_map_filename,
             TextureTransferFunction::Linear,
             texture_cache);
+        loaded.specular_texture = load_owned_texture(
+            resolved.library_directory,
+            resolved.definition.specular_map_filename,
+            TextureTransferFunction::Linear,
+            texture_cache);
         materials.emplace(name, std::move(loaded));
     }
 
@@ -163,6 +170,7 @@ ModelAsset load_obj_model_asset_file(
             draw.diffuse_texture = definition.diffuse_texture;
             draw.opacity_texture = definition.opacity_texture;
             draw.normal_texture = definition.normal_texture;
+            draw.specular_texture = definition.specular_texture;
             asset.draws.push_back(std::move(draw));
         }
         ++asset.draws.back().range.triangle_count;
@@ -192,6 +200,7 @@ std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(
         batch.opacity_texture = draw.opacity_texture;
         batch.normal_texture = draw.normal_texture;
         batch.vertex_color_channels = asset.vertex_color_channels;
+        batch.specular_texture = draw.specular_texture;
         batches.push_back(std::move(batch));
     }
 
