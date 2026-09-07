@@ -25,6 +25,31 @@ bool within_unit_range(const Vec3& value) {
         && value.z >= 0.0F && value.z <= 1.0F;
 }
 
+float srgb_channel_to_linear(float encoded) {
+    if (encoded <= 0.04045F) {
+        return encoded / 12.92F;
+    }
+    return static_cast<float>(std::pow((encoded + 0.055F) / 1.055F, 2.4F));
+}
+
+Vec3 decode_source_texel(Vec3 value, TextureTransferFunction transfer_function) {
+    switch (transfer_function) {
+        case TextureTransferFunction::Linear:
+            return value;
+        case TextureTransferFunction::Srgb:
+            if (!within_unit_range(value)) {
+                throw std::invalid_argument(
+                    "sRGB source texels must be finite normalized values within [0, 1]");
+            }
+            return {
+                srgb_channel_to_linear(value.x),
+                srgb_channel_to_linear(value.y),
+                srgb_channel_to_linear(value.z),
+            };
+    }
+    throw std::invalid_argument("unsupported texture transfer function");
+}
+
 std::size_t checked_texel_count(std::size_t width, std::size_t height) {
     if (width == 0U || height == 0U) {
         throw std::invalid_argument("texture dimensions must be non-zero");
@@ -115,15 +140,31 @@ void validate_sampler_state(const SamplerState& sampler) {
     throw std::invalid_argument("unsupported texture mip filter mode");
 }
 
-Texture2D::Texture2D(std::size_t width, std::size_t height, std::vector<Vec3> texels) {
+void validate_texture_transfer_function(TextureTransferFunction transfer_function) {
+    switch (transfer_function) {
+        case TextureTransferFunction::Linear:
+        case TextureTransferFunction::Srgb:
+            return;
+    }
+    throw std::invalid_argument("unsupported texture transfer function");
+}
+
+Texture2D::Texture2D(
+    std::size_t width,
+    std::size_t height,
+    std::vector<Vec3> texels,
+    TextureTransferFunction transfer_function)
+    : source_transfer_function_(transfer_function) {
+    validate_texture_transfer_function(transfer_function);
     const std::size_t base_count = checked_texel_count(width, height);
     if (texels.size() != base_count) {
         throw std::invalid_argument("texture texel count does not match dimensions");
     }
-    for (const Vec3& value : texels) {
+    for (Vec3& value : texels) {
         if (!finite(value)) {
             throw std::invalid_argument("texture texels must be finite");
         }
+        value = decode_source_texel(value, transfer_function);
         texels_within_unit_range_ = texels_within_unit_range_ && within_unit_range(value);
     }
 

@@ -22,23 +22,29 @@ namespace {
     throw ObjParseError(line, message);
 }
 
+using TextureCacheKey = std::pair<std::string, TextureTransferFunction>;
+using TextureCache = std::map<TextureCacheKey, std::shared_ptr<const Texture2D>>;
+
 std::shared_ptr<const Texture2D> load_owned_texture(
     const std::filesystem::path& library_directory,
     const std::optional<std::string>& filename,
-    std::map<std::string, std::shared_ptr<const Texture2D>>& texture_cache) {
+    TextureTransferFunction transfer_function,
+    TextureCache& texture_cache) {
     if (!filename) {
         return {};
     }
+    validate_texture_transfer_function(transfer_function);
 
     const std::filesystem::path texture_path =
         (library_directory / *filename).lexically_normal();
-    const std::string cache_key = texture_path.string();
+    const TextureCacheKey cache_key{texture_path.string(), transfer_function};
     const auto existing = texture_cache.find(cache_key);
     if (existing != texture_cache.end()) {
         return existing->second;
     }
 
-    auto texture = std::make_shared<const Texture2D>(load_texture_image_file(texture_path));
+    auto texture = std::make_shared<const Texture2D>(
+        load_texture_image_file(texture_path, transfer_function));
     texture_cache.emplace(cache_key, texture);
     return texture;
 }
@@ -70,7 +76,10 @@ bool requires_texture_coordinates(const MaterialAssetDefinition& definition) {
 
 }  // namespace
 
-ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
+ModelAsset load_obj_model_asset_file(
+    const std::filesystem::path& path,
+    ModelAssetLoadOptions options) {
+    validate_texture_transfer_function(options.diffuse_transfer);
     ObjModelSource source = load_obj_model_source_file(path);
     ModelAsset asset;
     asset.mesh = std::move(source.mesh);
@@ -119,7 +128,7 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
         }
     }
 
-    std::map<std::string, std::shared_ptr<const Texture2D>> texture_cache;
+    TextureCache texture_cache;
     std::map<std::string, LoadedMaterialAssetDefinition> materials;
     for (const auto& [name, resolved] : library) {
         LoadedMaterialAssetDefinition loaded;
@@ -127,14 +136,17 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
         loaded.diffuse_texture = load_owned_texture(
             resolved.library_directory,
             resolved.definition.diffuse_map_filename,
+            options.diffuse_transfer,
             texture_cache);
         loaded.opacity_texture = load_owned_texture(
             resolved.library_directory,
             resolved.definition.opacity_map_filename,
+            TextureTransferFunction::Linear,
             texture_cache);
         loaded.normal_texture = load_owned_texture(
             resolved.library_directory,
             resolved.definition.normal_map_filename,
+            TextureTransferFunction::Linear,
             texture_cache);
         materials.emplace(name, std::move(loaded));
     }
@@ -158,8 +170,10 @@ ModelAsset load_obj_model_asset_file(const std::filesystem::path& path) {
     return asset;
 }
 
-std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(const std::filesystem::path& path) {
-    const ModelAsset asset = load_obj_model_asset_file(path);
+std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(
+    const std::filesystem::path& path,
+    ModelAssetLoadOptions options) {
+    const ModelAsset asset = load_obj_model_asset_file(path, options);
     std::vector<MaterialAssetBatch> batches;
     batches.reserve(asset.draws.size());
 

@@ -109,7 +109,8 @@ std::size_t checked_raster_bytes(std::size_t width, std::size_t height) {
 
 }  // namespace
 
-Texture2D load_ppm(std::istream& input) {
+Texture2D load_ppm(std::istream& input, TextureTransferFunction transfer_function) {
+    validate_texture_transfer_function(transfer_function);
     const std::string magic = read_header_token(input, "magic");
     if (magic != "P6") {
         fail("only binary P6 images are supported");
@@ -148,15 +149,18 @@ Texture2D load_ppm(std::istream& input) {
             static_cast<float>(bytes[offset + 2U]) * scale,
         });
     }
-    return Texture2D(width, height, std::move(texels));
+    return Texture2D(width, height, std::move(texels), transfer_function);
 }
 
-Texture2D load_ppm_file(const std::filesystem::path& path) {
+Texture2D load_ppm_file(
+    const std::filesystem::path& path,
+    TextureTransferFunction transfer_function) {
+    validate_texture_transfer_function(transfer_function);
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("failed to open PPM file: " + path.string());
     }
-    return load_ppm(input);
+    return load_ppm(input, transfer_function);
 }
 
 }  // namespace tiny_renderer

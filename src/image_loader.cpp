@@ -25,13 +25,16 @@ std::string lowercase_extension(const std::filesystem::path& path) {
 
 }  // namespace
 
-Texture2D load_texture_image_file(const std::filesystem::path& path) {
+Texture2D load_texture_image_file(
+    const std::filesystem::path& path,
+    TextureTransferFunction transfer_function) {
+    validate_texture_transfer_function(transfer_function);
     const std::string extension = lowercase_extension(path);
     if (extension == ".ppm") {
-        return load_ppm_file(path);
+        return load_ppm_file(path, transfer_function);
     }
     if (extension == ".tga") {
-        return load_tga_file(path);
+        return load_tga_file(path, transfer_function);
     }
     throw std::invalid_argument(
         "unsupported texture image extension '" + extension + "' for file: " + path.string());

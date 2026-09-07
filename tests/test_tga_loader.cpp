@@ -58,9 +58,11 @@ std::string make_tga(
     return bytes;
 }
 
-Texture2D parse_tga(const std::string& bytes) {
+Texture2D parse_tga(
+    const std::string& bytes,
+    TextureTransferFunction transfer_function = TextureTransferFunction::Linear) {
     std::istringstream input(bytes, std::ios::in | std::ios::binary);
-    return load_tga(input);
+    return load_tga(input, transfer_function);
 }
 
 void expect_tga_error(const std::string& bytes, const std::string& message) {
@@ -112,9 +114,29 @@ void test_bgr_decode_and_vertical_origin_normalization() {
     one_pixel.push_back(static_cast<char>(20U));
     one_pixel.push_back(static_cast<char>(10U));
     const Texture2D with_id = parse_tga(make_tga(1U, 1U, 0x20U, one_pixel, "bounded-id"));
+    check(with_id.source_transfer_function() == TextureTransferFunction::Linear,
+          "legacy TGA decode defaults to explicit linear source interpretation");
     check_near(with_id.texel(0U, 0U).x, 10.0F / 255.0F, "image ID is skipped before BGR raster");
     check_near(with_id.texel(0U, 0U).y, 20.0F / 255.0F, "BGR green decodes after image ID");
     check_near(with_id.texel(0U, 0U).z, 30.0F / 255.0F, "BGR blue decodes after image ID");
+}
+
+void test_srgb_transfer_decode_for_tga() {
+    std::string pixel;
+    pixel.push_back(static_cast<char>(128U));
+    pixel.push_back(static_cast<char>(128U));
+    pixel.push_back(static_cast<char>(128U));
+    const std::string encoded = make_tga(1U, 1U, 0x20U, pixel);
+    const Texture2D linear = parse_tga(encoded);
+    const Texture2D srgb = parse_tga(encoded, TextureTransferFunction::Srgb);
+    check(linear.source_transfer_function() == TextureTransferFunction::Linear,
+          "TGA default source interpretation remains linear");
+    check(srgb.source_transfer_function() == TextureTransferFunction::Srgb,
+          "TGA decoder propagates explicit sRGB source interpretation");
+    check_near(linear.texel(0U, 0U).x, 128.0F / 255.0F,
+               "linear TGA keeps normalized encoded byte value");
+    check_near(srgb.texel(0U, 0U).x, 0.2158605F,
+               "sRGB TGA decodes normalized byte before texture storage", 2.0e-6F);
 }
 
 void test_unsupported_headers_and_payloads_fail_closed() {
@@ -252,7 +274,21 @@ void test_extension_dispatch_and_material_asset_integration() {
         check(static_cast<bool>(draw.opacity_texture), "map_d loads TGA through shared image dispatch");
         check(static_cast<bool>(draw.normal_texture), "map_Bump loads TGA through shared image dispatch");
         check(draw.diffuse_texture == draw.opacity_texture && draw.diffuse_texture == draw.normal_texture,
-              "all material roles referencing one normalized TGA path share one owned texture resource");
+              "all material roles referencing one normalized TGA path share one owned linear texture resource");
+    }
+
+    ModelAssetLoadOptions srgb_options;
+    srgb_options.diffuse_transfer = TextureTransferFunction::Srgb;
+    const ModelAsset interpreted = load_obj_model_asset_file(temp.path / "roles.obj", srgb_options);
+    check(interpreted.draws.size() == 1U, "sRGB TGA-backed material produces one canonical draw");
+    if (interpreted.draws.size() == 1U) {
+        const MaterialDraw& draw = interpreted.draws.front();
+        check(draw.diffuse_texture && draw.opacity_texture && draw.normal_texture,
+              "sRGB TGA-backed material retains all texture roles");
+        check(draw.diffuse_texture != draw.opacity_texture,
+              "TGA cache identity separates sRGB diffuse from linear data interpretation");
+        check(draw.opacity_texture == draw.normal_texture,
+              "TGA opacity and normal roles still share one linear data resource");
     }
 
     write_text(
@@ -283,6 +319,7 @@ void test_extension_dispatch_and_material_asset_integration() {
 int main() {
     try {
         test_bgr_decode_and_vertical_origin_normalization();
+        test_srgb_transfer_decode_for_tga();
         test_unsupported_headers_and_payloads_fail_closed();
         test_extension_dispatch_and_material_asset_integration();
     } catch (const std::exception& error) {
