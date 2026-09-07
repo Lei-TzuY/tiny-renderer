@@ -221,6 +221,10 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_output_transfer_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_output_transfer_tests COMMAND tiny_renderer_output_transfer_tests)
 
+    add_executable(tiny_renderer_pfm_header_boundary_tests tests/test_pfm_header_boundary.cpp)
+    target_link_libraries(tiny_renderer_pfm_header_boundary_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_pfm_header_boundary_tests COMMAND tiny_renderer_pfm_header_boundary_tests)
+
     add_executable(tiny_renderer_opacity_texture_tests tests/test_opacity_texture.cpp)
     target_link_libraries(tiny_renderer_opacity_texture_tests PRIVATE tiny_renderer)
     target_compile_definitions(tiny_renderer_opacity_texture_tests PRIVATE
