@@ -134,6 +134,17 @@ inline void model_fingerprint_texture(
         detail::model_fingerprint_texture(hash, draw.normal_texture);
     }
 
+    // Preserve every historical uncolored v1 fingerprint exactly. Colored
+    // assets append an explicit semantic tag and channel binding because the
+    // same raw varying bytes render differently when they are selected as the
+    // model base-color source.
+    if (asset.vertex_color_channels) {
+        detail::model_fingerprint_string(hash, "vertex-color-channels");
+        detail::model_fingerprint_size(hash, asset.vertex_color_channels->red);
+        detail::model_fingerprint_size(hash, asset.vertex_color_channels->green);
+        detail::model_fingerprint_size(hash, asset.vertex_color_channels->blue);
+    }
+
     return hash;
 }
 
