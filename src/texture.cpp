@@ -437,10 +437,10 @@ Vec3 Texture2D::sample_grad(
     if (!std::isfinite(ratio)) {
         throw std::logic_error("finite texture gradients produced a non-finite anisotropy ratio");
     }
-    const std::size_t requested_taps = ratio > 1.0
-        ? static_cast<std::size_t>(std::ceil(ratio))
-        : 1U;
-    const std::size_t tap_count = std::min(requested_taps, sampler.max_anisotropy);
+    const double bounded_ratio = std::min(
+        std::max(ratio, 1.0),
+        static_cast<double>(sampler.max_anisotropy));
+    const std::size_t tap_count = static_cast<std::size_t>(std::ceil(bounded_ratio));
     if (tap_count <= 1U) {
         return sample_lod(uv, static_cast<float>(isotropic_lod), sampler);
     }
