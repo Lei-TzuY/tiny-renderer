@@ -241,6 +241,10 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_headless_environment_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_headless_environment_tests COMMAND tiny_renderer_headless_environment_tests)
 
+    add_executable(tiny_renderer_environment_mip_tests tests/test_environment_mips.cpp)
+    target_link_libraries(tiny_renderer_environment_mip_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_environment_mip_tests COMMAND tiny_renderer_environment_mip_tests)
+
     add_test(
         NAME tiny_renderer_render_cli_ppm
         COMMAND tiny_renderer_render
@@ -329,6 +333,41 @@ if(BUILD_TESTING)
     )
 
     add_test(
+        NAME tiny_renderer_render_cli_environment_mip_linear_a
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_mip_a.pfm"
+            40 30 4
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-intensity 1.25
+            --environment-yaw 0.3
+            --environment-mip linear
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_mip_linear_a PROPERTIES
+        PASS_REGULAR_EXPRESSION "rendered format=pfm width=40 height=30 samples=4"
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_environment_mip_linear_b
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_mip_b.pfm"
+            40 30 4
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-intensity 1.25
+            --environment-yaw 0.3
+            --environment-mip linear
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_environment_mip_compare
+        COMMAND ${CMAKE_COMMAND} -E compare_files
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_mip_a.pfm"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_mip_b.pfm"
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_mip_compare PROPERTIES
+        DEPENDS "tiny_renderer_render_cli_environment_mip_linear_a;tiny_renderer_render_cli_environment_mip_linear_b"
+    )
+
+    add_test(
         NAME tiny_renderer_render_cli_environment_duplicate
         COMMAND tiny_renderer_render
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
@@ -345,6 +384,23 @@ if(BUILD_TESTING)
             --environment-intensity 2.0
     )
     set_tests_properties(tiny_renderer_render_cli_environment_orphan_intensity PROPERTIES WILL_FAIL TRUE)
+    add_test(
+        NAME tiny_renderer_render_cli_environment_mip_orphan
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_mip_orphan.ppm"
+            --environment-mip linear
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_mip_orphan PROPERTIES WILL_FAIL TRUE)
+    add_test(
+        NAME tiny_renderer_render_cli_environment_mip_invalid
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_mip_invalid.ppm"
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-mip anisotropic
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_mip_invalid PROPERTIES WILL_FAIL TRUE)
     add_test(
         NAME tiny_renderer_render_cli_environment_missing_file
         COMMAND tiny_renderer_render
