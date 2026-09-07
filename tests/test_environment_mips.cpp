@@ -1,8 +1,10 @@
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tiny_renderer/environment.hpp"
