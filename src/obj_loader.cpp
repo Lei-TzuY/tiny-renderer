@@ -572,7 +572,14 @@ ObjModelSource parse_obj(
                 mesh_layout = face_layout;
                 result.face_has_texture_coordinates = layout_has_texcoord(face_layout);
                 if (position_records_have_colors.value_or(false)) {
-                    result.vertex_color_channels = vertex_color_channels_for(face_layout);
+                    FaceLayout canonical_color_layout = face_layout;
+                    if (missing_normal_mode == MissingNormalMode::Generate
+                        && !layout_has_normal(canonical_color_layout)) {
+                        canonical_color_layout = layout_has_texcoord(canonical_color_layout)
+                            ? FaceLayout::PositionTexcoordNormal
+                            : FaceLayout::PositionNormal;
+                    }
+                    result.vertex_color_channels = vertex_color_channels_for(canonical_color_layout);
                 }
             } else if (mesh_layout != face_layout) {
                 fail(line_number, "mixing OBJ face index layouts in one canonical mesh is not supported");
