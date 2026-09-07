@@ -2,13 +2,13 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains the detailed milestone record. A milestone is closed only after its exact `main` commit passes Linux, macOS, and ASan/UBSan CI.
 
-## Integrated architecture through Milestone 50
+## Integrated architecture through Milestone 51
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity/A2C, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–43 extend the same path with tangent-space normal mapping, Blinn-Phong specular lighting, point lights, caller-ordered fixed multi-light accumulation, point-light cubemap shadows, spotlight shading/shadows, and bounded per-light RGB color.
 
-Milestones 44–46 make shadow ownership and sampling composable: every bounded light record can own a typed shadow resource, Hard/3x3-PCF is explicit per binding, and directional records can own bounded ordered cascade sets selected deterministically from perspective-correct world position and camera-view depth. Milestone 47 promotes texture minification onto the same path with owned mip chains, explicit nearest-level/trilinear policy, and raster-derived perspective-correct UV gradients shared by diffuse, opacity, and normal texture roles. Milestone 48 makes source texture interpretation explicit: historical/default imports remain linear, while opted-in diffuse color textures are sRGB-decoded to linear floats before mip construction and data-texture roles remain linear. Milestone 49 makes the opposite 8-bit boundary explicit: framebuffer storage and all rendering remain linear, while callers may opt into standard sRGB encoding only when resolved RGB becomes export bytes. Milestone 50 adds a separate data-preserving HDR boundary: resolved linear framebuffer RGB can be exported directly as deterministic 32-bit-float RGB PFM without transfer encoding, clamping, exposure, or tone mapping.
+Milestones 44–46 make shadow ownership and sampling composable: every bounded light record can own a typed shadow resource, Hard/3x3-PCF is explicit per binding, and directional records can own bounded ordered cascade sets selected deterministically from perspective-correct world position and camera-view depth. Milestone 47 promotes texture minification onto the same path with owned mip chains, explicit nearest-level/trilinear policy, and raster-derived perspective-correct UV gradients shared by diffuse, opacity, and normal texture roles. Milestone 48 makes source texture interpretation explicit: historical/default imports remain linear, while opted-in diffuse color textures are sRGB-decoded to linear floats before mip construction and data-texture roles remain linear. Milestone 49 makes the opposite 8-bit boundary explicit: framebuffer storage and all rendering remain linear, while callers may opt into standard sRGB encoding only when resolved RGB becomes export bytes. Milestone 50 adds a data-preserving HDR output boundary with deterministic float RGB PFM, and Milestone 51 closes the loop by importing bounded RGB PFM back into the same linear `Texture2D`/mipmap/shared-dispatch domain.
 
-The current main line also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, and bounded PPM/TGA texture import through the shared image dispatch path.
+The current main line also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, and bounded PPM/TGA/PFM texture import through the shared image dispatch path.
 
 ## Milestone 48 — explicit texture transfer semantics
 
@@ -49,16 +49,29 @@ Implemented acceptance surface:
 - deterministic regressions lock the exact header, endian marker, row order, representative IEEE-754 payload bits, a small little-endian round-trip reader, fail-closed NaN/Inf behavior, and independence from all existing linear/sRGB 8-bit bytes and hashes;
 - the milestone adds no tone mapping, exposure control, ICC/wide-gamut management, PQ/HLG or other HDR transfer function, compression, HDR texture import, GPU path, or performance/image-quality claim.
 
-## Next frontier — Milestone 51
+## Milestone 51 — bounded linear PFM texture import
 
-Promote the new HDR boundary into a **bounded linear PFM texture import + shared image-dispatch path**. The renderer's existing `Texture2D` linear source domain already accepts finite negative and greater-than-one values and builds mip levels in linear float, so M51 can add HDR round-trip/interoperability without changing the sampler or raster core.
+Implemented acceptance surface:
+
+- `load_pfm` / `load_pfm_file` accept bounded RGB `PF` images with positive non-zero dimensions and a strict 64 MiB decoded raster ceiling;
+- the first interoperable endian slice accepts exactly unit-magnitude scale markers: `-1.0` means little-endian and `1.0` means big-endian 32-bit IEEE-754 RGB payloads; arbitrary scale magnitude is rejected rather than silently interpreted as exposure;
+- PFM bottom-to-top file rows are converted into the renderer's established top-to-bottom texture texel order while every finite negative/fractional/>1 RGB float is preserved numerically;
+- NaN/Inf samples, unsupported magic/scale, invalid dimensions, oversized rasters, truncated payloads, and trailing payload bytes reject deterministically before a usable texture is returned;
+- every imported PFM constructs `Texture2D` with `TextureTransferFunction::Linear`; case-insensitive `.pfm` joins the same PPM/TGA extension dispatcher, while an explicit sRGB interpretation rejects instead of decoding or clamping HDR data;
+- imported HDR texels immediately reuse the existing `Texture2D` mip generation, filtering, material image-dispatch, and cache ownership infrastructure; no parallel sampler, material, mipmap, or raster path is introduced;
+- deterministic regressions lock M50 framebuffer→PFM→M51 texture round-trip values and row orientation, big-endian decoding, linear mip arithmetic over signed/high-range texels, shared-dispatch metadata, sRGB rejection, bounds, non-finite, truncation, and trailing-data failures;
+- the milestone adds no grayscale PFM, arbitrary scale/exposure semantics, tone mapping, environment lighting, ICC/wide-gamut management, PQ/HLG transfer, compression, GPU API, or performance/image-quality claim.
+
+## Next frontier — Milestone 52
+
+Promote the now-complete linear HDR I/O loop into an **explicit bounded HDR display-mapping stage at the resolved output boundary**. M49 already separates output transfer encoding from the linear framebuffer, while M50/M51 preserve HDR data losslessly; M52 should add an opt-in display mapping without changing any rendering/storage defaults.
 
 Acceptance should require:
 
-- a bounded RGB PFM loader accepts the canonical `PF` 32-bit-float layout, positive non-zero dimensions, a supported explicit endian marker, and a strictly bounded raster payload with deterministic malformed/truncated/trailing-data diagnostics;
-- imported rows are converted from PFM bottom-to-top file order into the renderer's existing top-to-bottom texture texel order, while every RGB float remains finite and numerically unchanged;
-- the loader explicitly produces `TextureTransferFunction::Linear` data and never applies sRGB decoding, normalization, clamping, exposure, or tone mapping; attempts to route a PFM through shared image dispatch with an incompatible sRGB interpretation reject rather than silently reinterpret HDR data;
-- `.pfm` joins the existing PPM/TGA extension dispatcher without creating a second texture cache, sampler, material, or mipmap path, so diffuse/opacity/normal ownership continues through existing `Texture2D` and model-asset infrastructure;
-- a deterministic framebuffer → M50 PFM → M51 texture round trip preserves representative negative/fractional/>1 texels and verifies mip generation remains the existing linear arithmetic over HDR values;
-- regressions lock byte order, row order, exact float payload interpretation, safety bounds, non-finite rejection, truncated/trailing payload rejection, shared-dispatch behavior, and material/cache integration where applicable;
-- the slice does not add grayscale PFM, arbitrary HDR transfer functions, tone mapping, exposure controls, environment lighting, compression, GPU APIs, or performance/image-quality claims.
+- a first-class output mapping state with finite non-negative exposure and an explicit bounded tone-map operator, while all existing no-argument and transfer-only RGB8/hash/PPM exports remain byte/hash-identical by default;
+- the first operator is a documented deterministic component-wise Reinhard mapping applied to non-negative exposed linear RGB, with negative display-bound values handled by one explicit rule rather than accidental clamp ordering;
+- stage ordering is fixed as resolved linear framebuffer → explicit exposure → tone mapping → existing `OutputTransferFunction::{Linear,Srgb}` → existing 8-bit clamp/rounding; multisample resolve therefore always occurs before display mapping;
+- invalid exposure/operator state and non-finite resolved input reject before destination file creation/truncation, preserving the established fail-closed output contract;
+- `write_pfm()` remains a data-preserving linear HDR path and is never affected by display-mapping state, so callers can independently choose archival/interchange HDR output or display-referred 8-bit output;
+- deterministic regressions lock default compatibility, exposure math, Reinhard reference values, negative/high-range handling, tone-map-before-sRGB ordering, 1x/4x resolve equivalence, hash/PPM bytes, fail-closed invalid state, and PFM independence;
+- the slice does not claim photographic/filmic quality, ACES conformance, automatic exposure, histogram adaptation, local tone mapping, ICC/display calibration, PQ/HLG, GPU execution, or performance/image-quality parity.
