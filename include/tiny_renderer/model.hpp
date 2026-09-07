@@ -27,6 +27,9 @@ struct MaterialDraw {
     std::shared_ptr<const Texture2D> diffuse_texture;
     std::shared_ptr<const Texture2D> opacity_texture;
     std::shared_ptr<const Texture2D> normal_texture;
+    // Optional per-fragment specular-reflectance multiplier. It shares the
+    // material UV/sampler path and owned texture lifetime with other roles.
+    std::shared_ptr<const Texture2D> specular_texture;
 };
 
 struct ModelAsset {
