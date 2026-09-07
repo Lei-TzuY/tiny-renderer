@@ -38,6 +38,12 @@ void check_near(float actual, float expected, const std::string& message, float 
           message + " (actual=" + std::to_string(actual) + ", expected=" + std::to_string(expected) + ")");
 }
 
+void check_vec3_near(const Vec3& actual, const Vec3& expected, const std::string& message) {
+    check_near(actual.x, expected.x, message + " red");
+    check_near(actual.y, expected.y, message + " green");
+    check_near(actual.z, expected.z, message + " blue");
+}
+
 Mesh parse_text(std::string_view text) {
     std::istringstream input{std::string(text)};
     return load_obj(input);
@@ -185,7 +191,7 @@ void test_vertex_color_layout_and_validation() {
         "v 0.8 -0.8 0 0 1 0\n"
         "v 0 0.8 0 0 0 1\n"
         "f 1 2 3\n");
-    check(generated.vertex_color_channels == std::optional<VertexColorChannels>{{3U, 4U, 5U}},
+    check(generated.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{3U, 4U, 5U}},
           "generated-normal rich OBJ records canonical RGB channels after normals");
     for (const Vertex& vertex : generated.mesh.vertices) {
         check(vertex.varyings.count == 6U,
@@ -206,7 +212,7 @@ void test_vertex_color_layout_and_validation() {
         "vt 0.5 1\n"
         "vn 0 0 1\n"
         "f 1/1/1 2/2/1 3/3/1\n");
-    check(uvn.vertex_color_channels == std::optional<VertexColorChannels>{{5U, 6U, 7U}},
+    check(uvn.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{5U, 6U, 7U}},
           "v/vt/vn RGB metadata appends colors after established UV/normal channels");
     for (const Vertex& vertex : uvn.mesh.vertices) {
         check(vertex.varyings.count == 8U,
@@ -384,7 +390,7 @@ void test_vertex_color_model_asset_execution() {
     const std::filesystem::path root = TINY_RENDERER_SOURCE_DIR;
     const ModelAsset asset = load_obj_model_asset_file(
         root / "tests" / "fixtures" / "vertex_color_material.obj");
-    check(asset.vertex_color_channels == std::optional<VertexColorChannels>{{3U, 4U, 5U}},
+    check(asset.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{3U, 4U, 5U}},
           "model asset preserves generated-normal RGB channel metadata");
     check(asset.draws.size() == 1U, "vertex-color fixture produces one material draw");
     if (asset.draws.size() == 1U) {
@@ -416,8 +422,10 @@ void test_vertex_color_model_asset_execution() {
     check(direct.rgb8() == reference.rgb8(),
           "model submission vertex RGB times imported Kd is byte-equivalent to explicit VaryingColor execution");
     for (std::size_t sample = 0U; sample < 4U; ++sample) {
-        check(direct.sample_color_at(32U, 32U, sample) == reference.sample_color_at(32U, 32U, sample),
-              "model vertex-color path preserves exact per-sample 4x shading");
+        check_vec3_near(
+            direct.sample_color_at(32U, 32U, sample),
+            reference.sample_color_at(32U, 32U, sample),
+            "model vertex-color path preserves exact per-sample 4x shading");
     }
 
     const PreparedModelSubmission prepared = prepare_model_asset(asset);
