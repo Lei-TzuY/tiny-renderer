@@ -40,9 +40,9 @@ void check_throws(Function&& function, const std::string& message) {
 std::vector<std::uint8_t> read_binary_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     check(static_cast<bool>(input), "test output file opens for reading");
-    const std::vector<char> raw(
+    const std::vector<char> raw{
         std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>());
+        std::istreambuf_iterator<char>()};
     std::vector<std::uint8_t> bytes;
     bytes.reserve(raw.size());
     for (const char value : raw) {
