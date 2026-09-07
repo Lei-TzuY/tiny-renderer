@@ -196,7 +196,13 @@ inline Vec2 equirectangular_uv(const Vec3& world_direction, float yaw_radians = 
     const float horizontal_squared = direction.x * direction.x + direction.z * direction.z;
     float longitude = 0.0F;
     if (horizontal_squared > kEpsilon * kEpsilon) {
-        longitude = std::atan2(direction.x, -direction.z);
+        // atan2(+/-0, -1) may return a platform-libm value on either side of
+        // the representable pi boundary. Canonicalize the exact +Z seam before
+        // wrapping so signed zero and libm rounding cannot move seam ownership
+        // between u=0 and u=1 across supported platforms.
+        longitude = direction.x == 0.0F && direction.z > 0.0F
+            ? -kPi
+            : std::atan2(direction.x, -direction.z);
     }
     longitude = environment_detail::wrap_longitude(longitude + yaw_radians);
     const float u = longitude / (2.0F * kPi) + 0.5F;
