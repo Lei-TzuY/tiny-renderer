@@ -44,6 +44,13 @@ void validate_material(const MaterialState& material) {
         || material.shininess < 1.0F || material.shininess > 1000.0F) {
         throw std::invalid_argument("model material shininess must be finite and within [1, 1000]");
     }
+    const Vec3& emissive = material.emissive;
+    if (!finite_vec3(emissive)
+        || emissive.x < 0.0F || emissive.x > 1.0F
+        || emissive.y < 0.0F || emissive.y > 1.0F
+        || emissive.z < 0.0F || emissive.z > 1.0F) {
+        throw std::invalid_argument("model material emissive components must be finite and within [0, 1]");
+    }
 }
 
 void validate_vertex_color_channels(const ModelAsset& asset) {

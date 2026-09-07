@@ -20,6 +20,7 @@ struct PendingMaterial {
     MaterialAssetDefinition asset{};
     bool has_kd{false};
     bool has_ks{false};
+    bool has_ke{false};
     bool has_ns{false};
     bool has_map_kd{false};
     bool has_d{false};
@@ -162,6 +163,29 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
                 parse_unit_float(b_token, line_number, "Ks blue"),
             };
             pending->has_ks = true;
+            continue;
+        }
+
+        if (directive == "Ke") {
+            if (!pending) {
+                fail(line_number, "Ke requires a preceding newmtl");
+            }
+            if (pending->has_ke) {
+                fail(line_number, "material '" + pending->name + "' defines Ke more than once");
+            }
+            std::string r_token;
+            std::string g_token;
+            std::string b_token;
+            std::string extra;
+            if (!(line >> r_token >> g_token >> b_token) || (line >> extra)) {
+                fail(line_number, "Ke must contain exactly three components");
+            }
+            pending->asset.material.emissive = {
+                parse_unit_float(r_token, line_number, "Ke red"),
+                parse_unit_float(g_token, line_number, "Ke green"),
+                parse_unit_float(b_token, line_number, "Ke blue"),
+            };
+            pending->has_ke = true;
             continue;
         }
 

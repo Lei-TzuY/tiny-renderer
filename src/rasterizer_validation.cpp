@@ -387,6 +387,12 @@ void validate_material_state(const MaterialState& material) {
         || material.shininess < 1.0F || material.shininess > 1000.0F) {
         throw std::invalid_argument("material shininess must be finite and within [1, 1000]");
     }
+    if (!finite_vec3(material.emissive)
+        || material.emissive.x < 0.0F || material.emissive.x > 1.0F
+        || material.emissive.y < 0.0F || material.emissive.y > 1.0F
+        || material.emissive.z < 0.0F || material.emissive.z > 1.0F) {
+        throw std::invalid_argument("material emissive components must be finite and within [0, 1]");
+    }
 }
 
 void validate_pack(const VaryingPack& pack) {
