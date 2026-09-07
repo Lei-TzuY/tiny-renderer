@@ -83,6 +83,7 @@ ModelAsset load_obj_model_asset_file(
     ObjModelSource source = load_obj_model_source_file(path);
     ModelAsset asset;
     asset.mesh = std::move(source.mesh);
+    asset.vertex_color_channels = source.vertex_color_channels;
 
     if (source.material_libraries.empty()) {
         if (!asset.mesh.triangles.empty()) {
@@ -190,6 +191,7 @@ std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(
         batch.diffuse_texture = draw.diffuse_texture;
         batch.opacity_texture = draw.opacity_texture;
         batch.normal_texture = draw.normal_texture;
+        batch.vertex_color_channels = asset.vertex_color_channels;
         batches.push_back(std::move(batch));
     }
 
