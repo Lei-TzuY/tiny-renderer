@@ -492,4 +492,11 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_cascaded_shadow_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_cascaded_shadow_tests COMMAND tiny_renderer_cascaded_shadow_tests)
 
+    add_executable(tiny_renderer_environment_diffuse_tests tests/test_environment_diffuse.cpp)
+    target_link_libraries(tiny_renderer_environment_diffuse_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_environment_diffuse_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_environment_diffuse_tests COMMAND tiny_renderer_environment_diffuse_tests)
+
 endif()
