@@ -484,9 +484,10 @@ ObjModelSource parse_obj(
             while (line >> field) {
                 fields.push_back(std::move(field));
             }
-            if (fields.size() != 3U && fields.size() != 6U) {
-                fail(line_number, "vertex record must contain xyz or xyz plus normalized rgb");
+            if (fields.size() != 3U && fields.size() != 4U && fields.size() != 6U) {
+                fail(line_number, "vertex record must contain xyz, xyzw, or xyz plus normalized rgb");
             }
+            const bool has_weight = fields.size() == 4U;
             const bool has_color = fields.size() == 6U;
             if (!position_records_have_colors) {
                 position_records_have_colors = has_color;
@@ -499,6 +500,12 @@ ObjModelSource parse_obj(
                 parse_float(fields[1], line_number, "vertex y"),
                 parse_float(fields[2], line_number, "vertex z"),
             });
+            if (has_weight) {
+                const float weight = parse_float(fields[3], line_number, "vertex weight");
+                if (weight <= 0.0F) {
+                    fail(line_number, "vertex weight must be positive");
+                }
+            }
             if (has_color) {
                 position_colors.push_back(Vec3{
                     parse_color_component(fields[3], line_number, "vertex red"),
