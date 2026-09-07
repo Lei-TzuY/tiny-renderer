@@ -28,6 +28,22 @@ struct EnvironmentDiffuseState {
     float yaw_radians{0.0F};
 };
 
+// Bounded perfect-mirror environment reflection. This intentionally has no
+// roughness-to-mip mapping: the first slice samples one deterministic reflected
+// direction from the base level and leaves MaterialState::shininess to local
+// Blinn-Phong lighting only.
+struct EnvironmentReflectionState {
+    const Texture2D* texture{nullptr};
+    SamplerState sampler{
+        AddressMode::Repeat,
+        AddressMode::Clamp,
+        FilterMode::Bilinear,
+        MipFilterMode::Disabled,
+    };
+    float intensity{1.0F};
+    float yaw_radians{0.0F};
+};
+
 namespace environment_lighting_detail {
 
 // Sixteen fixed cosine-distributed local hemisphere directions. They are the
@@ -140,6 +156,25 @@ inline Vec3 diffuse_environment_lambert_factor_unchecked(
     return diffuse_environment_irradiance_unchecked(state, world_normal) * (1.0F / kPi);
 }
 
+inline Vec3 reflection_environment_radiance_unchecked(
+    const EnvironmentReflectionState& state,
+    const Vec3& reflection_direction) {
+    if (state.texture == nullptr) {
+        throw std::logic_error("validated environment reflection state lost its texture");
+    }
+    if (!environment_detail::finite_vec3(reflection_direction)) {
+        throw std::logic_error("environment reflection direction became non-finite");
+    }
+    const float direction_length = length(reflection_direction);
+    if (!std::isfinite(direction_length) || direction_length <= kEpsilon) {
+        throw std::logic_error("environment reflection direction became degenerate");
+    }
+    const Vec3 direction = reflection_direction / direction_length;
+    const Vec2 uv = equirectangular_uv(direction, state.yaw_radians);
+    return environment_detail::checked_scaled_radiance(
+        state.texture->sample(uv, state.sampler), state.intensity);
+}
+
 }  // namespace environment_lighting_detail
 
 inline void validate_environment_diffuse_state(const EnvironmentDiffuseState& state) {
@@ -175,6 +210,35 @@ inline void validate_environment_diffuse_state(const EnvironmentDiffuseState& st
     }
 }
 
+inline void validate_environment_reflection_state(const EnvironmentReflectionState& state) {
+    if (state.texture == nullptr) {
+        throw std::invalid_argument("environment reflection requires a texture");
+    }
+    if (state.texture->source_transfer_function() != TextureTransferFunction::Linear) {
+        throw std::invalid_argument("environment reflection texture must be in the linear texture domain");
+    }
+    validate_sampler_state(state.sampler);
+    if (state.sampler.mip_filter != MipFilterMode::Disabled) {
+        throw std::invalid_argument("perfect-mirror environment reflection requires disabled mip filtering");
+    }
+    if (!std::isfinite(state.intensity)
+        || state.intensity < 0.0F
+        || state.intensity > environment_detail::kMaxEnvironmentIntensity) {
+        throw std::invalid_argument("environment reflection intensity must be finite and within [0, 1e6]");
+    }
+    if (!std::isfinite(state.yaw_radians)
+        || state.yaw_radians < -kPi
+        || state.yaw_radians > kPi) {
+        throw std::invalid_argument("environment reflection yaw must be finite and within [-pi, pi]");
+    }
+    for (std::size_t y = 0U; y < state.texture->height(); ++y) {
+        for (std::size_t x = 0U; x < state.texture->width(); ++x) {
+            (void)environment_detail::checked_scaled_radiance(
+                state.texture->texel(x, y), state.intensity);
+        }
+    }
+}
+
 // Returns diffuse irradiance E(n) ~= pi/N sum L(w_i) using the fixed
 // cosine-weighted 16-direction quadrature above. This is a deterministic bounded
 // teaching rule, not an importance-sampling convergence or PBR conformance claim.
@@ -195,6 +259,14 @@ inline Vec3 diffuse_environment_lambert_factor(
     validate_environment_diffuse_state(state);
     return environment_lighting_detail::diffuse_environment_lambert_factor_unchecked(
         state, world_normal);
+}
+
+inline Vec3 reflection_environment_radiance(
+    const EnvironmentReflectionState& state,
+    const Vec3& reflection_direction) {
+    validate_environment_reflection_state(state);
+    return environment_lighting_detail::reflection_environment_radiance_unchecked(
+        state, reflection_direction);
 }
 
 }  // namespace tiny_renderer

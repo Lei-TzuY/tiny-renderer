@@ -1233,6 +1233,42 @@ Vec3 environment_diffuse_contribution(
     return modulate_rgb(base, factor);
 }
 
+Vec3 environment_reflection_contribution(
+    const Vec3& normal,
+    const Vec3& world_position,
+    const MaterialState& material,
+    const FixedLightCollection& fixed_lights) {
+    if (!fixed_lights.environment_reflection || !material_has_specular(material)) {
+        return {};
+    }
+    const EnvironmentReflectionLight& reflection = *fixed_lights.environment_reflection;
+    const Vec3 to_viewer = reflection.viewer_position - world_position;
+    const float view_length = length(to_viewer);
+    if (!finite_vec3(to_viewer) || !std::isfinite(view_length) || view_length <= kEpsilon) {
+        return {};
+    }
+    const Vec3 view_direction = to_viewer / view_length;
+    const Vec3 incident = view_direction * -1.0F;
+    const Vec3 reflected = incident - normal * (2.0F * dot(incident, normal));
+    const Vec3 radiance = environment_lighting_detail::reflection_environment_radiance_unchecked(
+        reflection.environment,
+        reflected);
+    return modulate_rgb(material.specular, radiance);
+}
+
+bool reflection_is_only_zero_contribution(
+    const DirectionalLight& directional_light,
+    const PointLight& point_light,
+    const FixedLightCollection& fixed_lights,
+    const MaterialState& material) {
+    return fixed_lights.environment_reflection.has_value()
+        && !material_has_specular(material)
+        && !directional_light.enabled
+        && !point_light.enabled
+        && fixed_lights.count == 0U
+        && !fixed_lights.environment_diffuse.has_value();
+}
+
 ShadedFragment shade_fragment(
     const VaryingPack& varyings,
     const TextureGradients& gradients,
@@ -1256,6 +1292,10 @@ ShadedFragment shade_fragment(
         source_color.z * material.albedo.z,
     };
     const float opacity = fragment_opacity(varyings, gradients, texture_binding, material);
+    if (reflection_is_only_zero_contribution(
+            directional_light, point_light, fixed_lights, material)) {
+        return {base, opacity, false};
+    }
     const NormalBinding* normal_binding = detail::active_normal_binding(
         directional_light, point_light, fixed_lights);
     if (normal_binding == nullptr) {
@@ -1295,6 +1335,8 @@ ShadedFragment shade_fragment(
                 base, normal, material, nullptr, &point_light, nullptr, 1.0F, world_position);
         }
         shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
+        shaded = shaded + environment_reflection_contribution(
+            normal, world_position, material, fixed_lights);
         return {shaded, opacity, false};
     }
 
@@ -1385,6 +1427,8 @@ ShadedFragment shade_fragment(
         }
     }
     shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
+    shaded = shaded + environment_reflection_contribution(
+        normal, world_position, material, fixed_lights);
     return {shaded, opacity, false};
 }
 
