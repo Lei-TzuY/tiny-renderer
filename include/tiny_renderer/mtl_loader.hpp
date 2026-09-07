@@ -19,6 +19,9 @@ struct MaterialAssetDefinition {
     std::optional<std::string> diffuse_map_filename;
     std::optional<std::string> opacity_map_filename;
     std::optional<std::string> normal_map_filename;
+    // Bounded rich-MTL specular reflectance texture. It is interpreted as
+    // linear RGB data and modulates MaterialState::specular per fragment.
+    std::optional<std::string> specular_map_filename;
 };
 
 using MaterialAssetLibrary = std::map<std::string, MaterialAssetDefinition>;
