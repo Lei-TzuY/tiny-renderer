@@ -2,13 +2,13 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains the earlier detailed milestone record. A milestone is closed only after its exact `main` commit passes Linux, macOS, and ASan/UBSan CI.
 
-## Integrated architecture through Milestone 56
+## Integrated architecture through Milestone 57
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–43 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point lights, caller-ordered fixed multi-light accumulation, point-light cubemap shadows, spotlight shading/shadows, and bounded per-light RGB color.
 
 Milestones 44–47 make shadow and minification state composable: bounded light records own typed shadow resources, hard/3x3-PCF sampling is explicit, directional lights may own deterministic cascade sets, and `Texture2D` owns mip chains plus nearest-level/trilinear sampling driven by raster-derived perspective-correct UV gradients. Milestones 48–52 make color/HDR boundaries explicit: opted-in sRGB source decoding happens before mip generation, output sRGB encoding happens only at the 8-bit boundary, deterministic RGB PFM preserves resolved linear floats, PFM imports into the same linear texture/mipmap domain, and bounded Reinhard display mapping remains a read-only export view.
 
-Milestones 53–56 promote linear HDR environment textures into an executable rendering and lighting subsystem without creating a second sampler or framebuffer path. M53 adds deterministic equirectangular camera backgrounds with per-sample 1x/4x rays and fail-closed precomputation; M54 connects the environment to the existing auto-fit headless OBJ preview/CLI transaction; M55 adds explicit camera-ray-footprint environment mip selection by deriving seam-aware equirectangular UV gradients and delegating LOD/filtering to the existing M47 `Texture2D::sample_grad` path; M56 adds a separate bounded diffuse environment-light contribution using deterministic hemispherical quadrature through the established fixed-light/material shading path.
+Milestones 53–57 promote linear HDR environment textures into an executable rendering and lighting subsystem without creating a second sampler, framebuffer, or model-shading path. M53 adds deterministic equirectangular camera backgrounds with per-sample 1x/4x rays and fail-closed precomputation; M54 connects the environment to the existing auto-fit headless OBJ preview/CLI transaction; M55 adds explicit camera-ray-footprint environment mip selection by deriving seam-aware equirectangular UV gradients and delegating LOD/filtering to the existing M47 `Texture2D::sample_grad` path; M56 adds a separate bounded diffuse environment-light contribution using deterministic hemispherical quadrature through the established fixed-light/material shading path; M57 exposes that diffuse lighting independently through the headless preview/CLI transaction while safely sharing one decoded HDR texture when background and lighting name the same image.
 
 The current main line also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, bounded PPM/TGA/PFM texture import through the shared image dispatcher, and bounded headless OBJ preview/render tooling.
 
@@ -67,16 +67,32 @@ Implemented acceptance surface:
 - the registered CTest target executes as part of the normal Linux/macOS/sanitizer test suite rather than existing as an unexecuted test source;
 - the milestone makes no specular IBL, importance-sampling, prefiltered reflection-probe, BRDF-LUT, energy-conserving PBR, Monte Carlo convergence, anisotropic, GPU, or performance-parity claim.
 
-## Next frontier — Milestone 57
+## Milestone 57 — environment-lit headless rendering
 
-Promote M56 from a library-level lighting capability into **environment-lit headless rendering** so a real OBJ + HDR environment can exercise background visibility and diffuse environment lighting independently through the existing offline render transaction and CLI.
+Implemented acceptance surface:
+
+- `OfflineRenderSettings` carries optional borrowed diffuse environment-light state independently from its optional environment background state; the absent path preserves historical clear/background-only output;
+- `render_model_preview` injects that state into the existing `ModelRenderOptions.fixed_lights.environment_diffuse` path rather than introducing a headless-only shader, and explicitly rejects duplicate environment-light ownership instead of silently overwriting caller state;
+- `tiny_renderer_render` adds independent `--environment-light`, `--environment-light-intensity`, and `--environment-light-yaw` controls with deterministic duplicate, orphan, malformed, and missing-file rejection; background visibility does not imply lighting and lighting does not require a visible background;
+- CLI environment lighting accepts the canonical normal-bearing OBJ layouts already produced by the loader: normal-only `v//vn` uses channels 0/1/2 and UV+normal `v/vt/vn` uses 2/3/4; unsupported/no-normal layouts fail closed when lighting is requested;
+- when background and diffuse lighting name the same lexically normalized image path, one decoded linear HDR `Texture2D` is retained for the complete CLI transaction and borrowed by both states; different paths remain independently loaded without adding an implicit cache layer;
+- the existing auto-fit model transform, preview camera, view/projection matrices, material state, fixed-light accumulator, normal transformation/mapping, raster path, 1x/4x framebuffer ownership, Reinhard+sRGB PPM export, and resolved-linear PFM export remain authoritative;
+- the registered headless-environment CTest now exercises lighting-only, background-only, and combined API rendering on 1x/4x targets, including deterministic repeats and an analytic constant-environment Lambert result;
+- the same CTest creates a real normal-bearing OBJ/MTL plus linear HDR PFM fixture, launches the built `tiny_renderer_render` executable, and verifies byte-for-byte repeated 1x PPM and 4x PFM output for background-only, lighting-only, and combined modes;
+- malformed CLI regressions verify orphan light options, duplicate light specification, and missing light files fail before output creation;
+- the milestone makes no specular IBL, reflection-probe, BRDF-LUT, PBR, automatic-exposure, photographic-quality, GPU, or performance claim.
+
+## Next frontier — Milestone 58
+
+Promote the environment subsystem from diffuse-only material lighting to **bounded view-dependent HDR environment reflection**. The goal is to add a real specular environment capability while deliberately stopping short of pretending to implement a full physically based IBL pipeline.
 
 Acceptance should require:
 
-- `OfflineRenderSettings` can carry diffuse environment-light state independently from its optional environment background state, preserving the historical clear/background-only path when lighting is absent;
-- the headless CLI exposes bounded explicit environment-light controls with deterministic duplicate, malformed, orphan, and missing-file rejection; enabling background must not implicitly enable lighting and enabling lighting must not require a visible background;
-- when background and diffuse lighting intentionally reference the same image/configuration, the CLI transaction owns one decoded linear HDR texture for the full render and safely shares that lifetime rather than reopening or duplicating an implicit cache path;
-- the same auto-fit model/view/projection and existing normal/material/fixed-light execution path are used; no scene graph or second shading path is introduced;
-- configuration, environment loading, model loading, environment-light validation, and render preflight complete before output creation or framebuffer mutation where the existing transaction permits it;
-- real OBJ + HDR PFM regressions cover lighting-only, background-only, combined background+lighting, 1x/4x, deterministic repeated PPM/PFM output, and malformed-state fail-closed behavior;
-- output display mapping and HDR serialization retain M49–M52 semantics and the slice makes no PBR/specular-IBL, automatic exposure, photographic-quality, GPU, or performance claim.
+- a first-class environment-reflection state remains independent from background visibility and diffuse environment lighting, borrows an existing validated linear HDR `Texture2D`, and reuses the M53 equirectangular direction/yaw convention and existing sampler implementation;
+- reflection direction is derived deterministically from the perspective-correct world-space fragment position, finite viewer position, and the same prepared world-space normal used by fixed lighting/normal mapping; no screen-space approximation or second varying path is introduced;
+- the sampled linear HDR radiance is modulated by the existing bounded material specular RGB and added through the established lighting accumulator without multiplying diffuse albedo; zero material specular preserves the current M57 output exactly;
+- this first reflection slice is explicitly a perfect-mirror teaching contract: material `shininess` continues to govern local Blinn-Phong lights but does not masquerade as roughness or an unverified mip/BRDF mapping for environment reflection;
+- static/shared preflight rejects invalid texture domain, sampler, intensity/yaw, viewer position, normal binding, world-position requirements, and non-finite source radiance before framebuffer mutation; MVP-only submissions remain rejected whenever the required world-space state cannot be defined correctly;
+- direct model, prepared plans, 1x/4x rendering, tangent-space normal mapping, heterogeneous prepared lists, opacity/alpha stages, depth/stencil/blend, HDR PFM output, and display mapping continue through the same execution path;
+- deterministic regressions cover analytic constant environments, view/normal/yaw-dependent reflection lookup, zero-specular compatibility, additive composition with diffuse environment and fixed lights, imported-PFM/programmatic-HDR equivalence, prepared/list equivalence, 1x/4x behavior, and invalid-state no-write rejection;
+- the slice makes no roughness-prefilter, importance-sampling, Fresnel, BRDF-LUT, energy-conserving PBR, Monte Carlo convergence, anisotropic, photographic-quality, GPU, or performance claim. Those require separate implementation and evidence.

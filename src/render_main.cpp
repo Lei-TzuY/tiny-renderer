@@ -92,6 +92,21 @@ bool has_normal_texture(const tiny_renderer::ModelAsset& asset) {
         });
 }
 
+tiny_renderer::NormalBinding preview_normal_binding(const tiny_renderer::ModelAsset& asset) {
+    if (asset.mesh.vertices.empty()) {
+        throw std::invalid_argument("environment-lit preview requires a non-empty normal-bearing model");
+    }
+    const std::size_t varying_count = asset.mesh.vertices.front().varyings.count;
+    if (varying_count == 3U) {
+        return {0U, 1U, 2U};
+    }
+    if (varying_count == 5U) {
+        return {2U, 3U, 4U};
+    }
+    throw std::invalid_argument(
+        "environment-lit preview requires canonical OBJ normals (v//vn or v/vt/vn)");
+}
+
 tiny_renderer::ModelRenderOptions preview_options(const tiny_renderer::ModelAsset& asset) {
     tiny_renderer::ModelRenderOptions options{};
     if (!has_normal_texture(asset)) {
@@ -118,6 +133,9 @@ struct ParsedArguments {
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
     std::optional<tiny_renderer::MipFilterMode> environment_mip{};
+    std::optional<std::filesystem::path> environment_light_path{};
+    std::optional<float> environment_light_intensity{};
+    std::optional<float> environment_light_yaw{};
 };
 
 ParsedArguments parse_arguments(int argc, char** argv) {
@@ -127,6 +145,9 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_intensity = false;
     bool saw_yaw = false;
     bool saw_mip = false;
+    bool saw_environment_light = false;
+    bool saw_light_intensity = false;
+    bool saw_light_yaw = false;
 
     for (int index = 3; index < argc; ++index) {
         const std::string_view token = argv[index];
@@ -169,6 +190,31 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             }
             saw_mip = true;
             parsed.environment_mip = parse_environment_mip(require_value("--environment-mip"));
+        } else if (token == "--environment-light") {
+            if (saw_environment_light) {
+                throw std::invalid_argument("--environment-light may be specified at most once");
+            }
+            saw_environment_light = true;
+            parsed.environment_light_path = std::filesystem::path(require_value("--environment-light"));
+            if (parsed.environment_light_path->empty()) {
+                throw std::invalid_argument("--environment-light requires a non-empty path");
+            }
+        } else if (token == "--environment-light-intensity") {
+            if (saw_light_intensity) {
+                throw std::invalid_argument("--environment-light-intensity may be specified at most once");
+            }
+            saw_light_intensity = true;
+            parsed.environment_light_intensity = parse_finite_float(
+                require_value("--environment-light-intensity"),
+                "environment light intensity");
+        } else if (token == "--environment-light-yaw") {
+            if (saw_light_yaw) {
+                throw std::invalid_argument("--environment-light-yaw may be specified at most once");
+            }
+            saw_light_yaw = true;
+            parsed.environment_light_yaw = parse_finite_float(
+                require_value("--environment-light-yaw"),
+                "environment light yaw");
         } else if (token.starts_with("--")) {
             throw std::invalid_argument("unknown option: " + std::string(token));
         } else {
@@ -190,6 +236,11 @@ ParsedArguments parse_arguments(int argc, char** argv) {
         && !parsed.environment_path) {
         throw std::invalid_argument("environment intensity/yaw/mip requires --environment");
     }
+    if ((parsed.environment_light_intensity || parsed.environment_light_yaw)
+        && !parsed.environment_light_path) {
+        throw std::invalid_argument(
+            "environment light intensity/yaw requires --environment-light");
+    }
     return parsed;
 }
 
@@ -197,9 +248,12 @@ void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.obj OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
-           " [--environment-mip base|nearest|linear]\n"
+           " [--environment-mip base|nearest|linear]"
+           " [--environment-light IMAGE] [--environment-light-intensity VALUE]"
+           " [--environment-light-yaw RADIANS]\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 environment-intensity=1"
-           " environment-yaw=0 environment-mip=base\n";
+           " environment-yaw=0 environment-mip=base environment-light-intensity=1"
+           " environment-light-yaw=0\n";
 }
 
 }  // namespace
@@ -220,12 +274,18 @@ int main(int argc, char** argv) {
 
         ParsedArguments parsed = parse_arguments(argc, argv);
         std::optional<tiny_renderer::Texture2D> environment_texture;
+        std::optional<tiny_renderer::Texture2D> environment_light_texture;
+        const tiny_renderer::Texture2D* background_texture = nullptr;
+        const tiny_renderer::Texture2D* light_texture = nullptr;
+
         if (parsed.environment_path) {
             environment_texture.emplace(tiny_renderer::load_texture_image_file(
                 *parsed.environment_path,
                 tiny_renderer::TextureTransferFunction::Linear));
+            background_texture = &*environment_texture;
+
             tiny_renderer::EnvironmentBackgroundState environment;
-            environment.texture = &*environment_texture;
+            environment.texture = background_texture;
             if (parsed.environment_intensity) {
                 environment.intensity = *parsed.environment_intensity;
             }
@@ -242,11 +302,44 @@ int main(int argc, char** argv) {
             parsed.settings.environment = environment;
         }
 
+        std::optional<tiny_renderer::EnvironmentDiffuseState> diffuse_environment;
+        if (parsed.environment_light_path) {
+            if (parsed.environment_path
+                && parsed.environment_path->lexically_normal()
+                    == parsed.environment_light_path->lexically_normal()) {
+                light_texture = background_texture;
+            } else {
+                environment_light_texture.emplace(tiny_renderer::load_texture_image_file(
+                    *parsed.environment_light_path,
+                    tiny_renderer::TextureTransferFunction::Linear));
+                light_texture = &*environment_light_texture;
+            }
+
+            tiny_renderer::EnvironmentDiffuseState environment_light;
+            environment_light.texture = light_texture;
+            if (parsed.environment_light_intensity) {
+                environment_light.intensity = *parsed.environment_light_intensity;
+            }
+            if (parsed.environment_light_yaw) {
+                environment_light.yaw_radians = *parsed.environment_light_yaw;
+            }
+            tiny_renderer::validate_environment_diffuse_state(environment_light);
+            diffuse_environment = environment_light;
+        }
+
         const tiny_renderer::ModelAsset asset = tiny_renderer::load_obj_model_asset_file(input_path);
+        tiny_renderer::ModelRenderOptions options = preview_options(asset);
+        if (diffuse_environment) {
+            tiny_renderer::EnvironmentDiffuseLight light;
+            light.normal = preview_normal_binding(asset);
+            light.environment = *diffuse_environment;
+            parsed.settings.environment_lighting = light;
+        }
+
         const tiny_renderer::Framebuffer framebuffer = tiny_renderer::render_model_preview(
             asset,
             parsed.settings,
-            preview_options(asset));
+            options);
 
         if (extension == ".ppm") {
             const tiny_renderer::DisplayMappingState display_mapping{};
