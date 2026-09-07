@@ -31,15 +31,17 @@ struct EnvironmentDiffuseState {
 enum class EnvironmentReflectionMipPolicy {
     BaseLevel,
     AngularFootprint,
+    MaterialShininess,
 };
 
-// Bounded perfect-mirror environment reflection. BaseLevel preserves the
-// original M58/M59 behavior exactly. AngularFootprint keeps the actual
-// view-dependent mirror direction as the lookup center, constructs two
-// deterministic neighboring rays at a caller-bounded angular radius, and
-// delegates the resulting seam-aware equirectangular UV footprint to the
-// existing Texture2D gradient sampler. This is a finite teaching footprint,
-// not a roughness model or a claim of screen-space derivative equivalence.
+// Bounded environment reflection. BaseLevel preserves the original M58/M59
+// perfect-mirror behavior exactly. AngularFootprint keeps the actual
+// view-dependent mirror direction as the lookup center and uses one fixed
+// caller-bounded angular radius. MaterialShininess treats that same radius as
+// the maximum footprint at shininess 1 and resolves each material to
+// max_footprint / shininess before delegating to the existing Texture2D
+// gradient sampler. These are deterministic teaching-space rules, not a
+// microfacet/PBR model or a claim of screen-space derivative equivalence.
 struct EnvironmentReflectionState {
     const Texture2D* texture{nullptr};
     SamplerState sampler{
@@ -235,6 +237,9 @@ inline Vec3 reflection_environment_radiance_unchecked(
             sampled = state.texture->sample_grad(uv, gradients, state.sampler);
             break;
         }
+        case EnvironmentReflectionMipPolicy::MaterialShininess:
+            throw std::logic_error(
+                "material-shininess reflection must be resolved before sampling");
         default:
             throw std::logic_error("validated environment reflection state lost its mip policy");
     }
@@ -296,9 +301,10 @@ inline void validate_environment_reflection_state(const EnvironmentReflectionSta
             }
             break;
         case EnvironmentReflectionMipPolicy::AngularFootprint:
+        case EnvironmentReflectionMipPolicy::MaterialShininess:
             if (state.sampler.mip_filter == MipFilterMode::Disabled) {
                 throw std::invalid_argument(
-                    "angular-footprint environment reflection requires nearest or linear mip filtering");
+                    "filtered environment reflection requires nearest or linear mip filtering");
             }
             if (!std::isfinite(state.angular_footprint_radians)
                 || state.angular_footprint_radians <= 0.0F
@@ -328,6 +334,31 @@ inline void validate_environment_reflection_state(const EnvironmentReflectionSta
     }
 }
 
+namespace environment_lighting_detail {
+
+inline EnvironmentReflectionState resolve_material_reflection_state(
+    const EnvironmentReflectionState& state,
+    float material_shininess) {
+    validate_environment_reflection_state(state);
+    if (state.mip_policy != EnvironmentReflectionMipPolicy::MaterialShininess) {
+        return state;
+    }
+    if (!std::isfinite(material_shininess)
+        || material_shininess < 1.0F
+        || material_shininess > 1000.0F) {
+        throw std::invalid_argument(
+            "material-coupled environment reflection requires shininess within [1, 1000]");
+    }
+
+    EnvironmentReflectionState resolved = state;
+    resolved.mip_policy = EnvironmentReflectionMipPolicy::AngularFootprint;
+    resolved.angular_footprint_radians =
+        state.angular_footprint_radians / material_shininess;
+    return resolved;
+}
+
+}  // namespace environment_lighting_detail
+
 // Returns diffuse irradiance E(n) ~= pi/N sum L(w_i) using the fixed
 // cosine-weighted 16-direction quadrature above. This is a deterministic bounded
 // teaching rule, not an importance-sampling convergence or PBR conformance claim.
@@ -354,8 +385,23 @@ inline Vec3 reflection_environment_radiance(
     const EnvironmentReflectionState& state,
     const Vec3& reflection_direction) {
     validate_environment_reflection_state(state);
+    if (state.mip_policy == EnvironmentReflectionMipPolicy::MaterialShininess) {
+        throw std::invalid_argument(
+            "material-shininess environment reflection requires material shininess");
+    }
     return environment_lighting_detail::reflection_environment_radiance_unchecked(
         state, reflection_direction);
+}
+
+inline Vec3 reflection_environment_radiance(
+    const EnvironmentReflectionState& state,
+    const Vec3& reflection_direction,
+    float material_shininess) {
+    const EnvironmentReflectionState resolved =
+        environment_lighting_detail::resolve_material_reflection_state(
+            state, material_shininess);
+    return environment_lighting_detail::reflection_environment_radiance_unchecked(
+        resolved, reflection_direction);
 }
 
 }  // namespace tiny_renderer
