@@ -73,10 +73,10 @@ tiny_renderer::MipFilterMode parse_mip_filter(std::string_view text, const char*
     throw std::invalid_argument(std::string(label) + " must be base, nearest, or linear");
 }
 
-std::size_t parse_texture_anisotropy(std::string_view text) {
-    const std::size_t value = parse_positive_size(text, "texture anisotropy");
+std::size_t parse_anisotropy(std::string_view text, const char* label) {
+    const std::size_t value = parse_positive_size(text, label);
     if (value != 1U && value != 2U && value != 4U) {
-        throw std::invalid_argument("texture anisotropy must be 1, 2, or 4");
+        throw std::invalid_argument(std::string(label) + " must be 1, 2, or 4");
     }
     return value;
 }
@@ -149,6 +149,10 @@ struct ParsedArguments {
     std::optional<std::filesystem::path> environment_reflection_path{};
     std::optional<float> environment_reflection_intensity{};
     std::optional<float> environment_reflection_yaw{};
+    std::optional<tiny_renderer::MipFilterMode> environment_reflection_mip{};
+    std::optional<std::size_t> environment_reflection_anisotropy{};
+    std::optional<float> environment_reflection_footprint{};
+    bool environment_reflection_material_shininess{false};
 };
 
 ParsedArguments parse_arguments(int argc, char** argv) {
@@ -166,6 +170,10 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_environment_reflection = false;
     bool saw_reflection_intensity = false;
     bool saw_reflection_yaw = false;
+    bool saw_reflection_mip = false;
+    bool saw_reflection_anisotropy = false;
+    bool saw_reflection_footprint = false;
+    bool saw_reflection_material_shininess = false;
 
     for (int index = 3; index < argc; ++index) {
         const std::string_view token = argv[index];
@@ -188,7 +196,9 @@ ParsedArguments parse_arguments(int argc, char** argv) {
                 throw std::invalid_argument("--texture-anisotropy may be specified at most once");
             }
             saw_texture_anisotropy = true;
-            parsed.texture_anisotropy = parse_texture_anisotropy(require_value("--texture-anisotropy"));
+            parsed.texture_anisotropy = parse_anisotropy(
+                require_value("--texture-anisotropy"),
+                "texture anisotropy");
         } else if (token == "--environment") {
             if (saw_environment) {
                 throw std::invalid_argument("--environment may be specified at most once");
@@ -273,6 +283,40 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             parsed.environment_reflection_yaw = parse_finite_float(
                 require_value("--environment-reflection-yaw"),
                 "environment reflection yaw");
+        } else if (token == "--environment-reflection-mip") {
+            if (saw_reflection_mip) {
+                throw std::invalid_argument(
+                    "--environment-reflection-mip may be specified at most once");
+            }
+            saw_reflection_mip = true;
+            parsed.environment_reflection_mip = parse_mip_filter(
+                require_value("--environment-reflection-mip"),
+                "environment reflection mip mode");
+        } else if (token == "--environment-reflection-anisotropy") {
+            if (saw_reflection_anisotropy) {
+                throw std::invalid_argument(
+                    "--environment-reflection-anisotropy may be specified at most once");
+            }
+            saw_reflection_anisotropy = true;
+            parsed.environment_reflection_anisotropy = parse_anisotropy(
+                require_value("--environment-reflection-anisotropy"),
+                "environment reflection anisotropy");
+        } else if (token == "--environment-reflection-footprint") {
+            if (saw_reflection_footprint) {
+                throw std::invalid_argument(
+                    "--environment-reflection-footprint may be specified at most once");
+            }
+            saw_reflection_footprint = true;
+            parsed.environment_reflection_footprint = parse_finite_float(
+                require_value("--environment-reflection-footprint"),
+                "environment reflection angular footprint");
+        } else if (token == "--environment-reflection-material-shininess") {
+            if (saw_reflection_material_shininess) {
+                throw std::invalid_argument(
+                    "--environment-reflection-material-shininess may be specified at most once");
+            }
+            saw_reflection_material_shininess = true;
+            parsed.environment_reflection_material_shininess = true;
         } else if (token.starts_with("--")) {
             throw std::invalid_argument("unknown option: " + std::string(token));
         } else {
@@ -299,10 +343,15 @@ ParsedArguments parse_arguments(int argc, char** argv) {
         throw std::invalid_argument(
             "environment light intensity/yaw requires --environment-light");
     }
-    if ((parsed.environment_reflection_intensity || parsed.environment_reflection_yaw)
+    if ((parsed.environment_reflection_intensity
+         || parsed.environment_reflection_yaw
+         || parsed.environment_reflection_mip
+         || parsed.environment_reflection_anisotropy
+         || parsed.environment_reflection_footprint
+         || parsed.environment_reflection_material_shininess)
         && !parsed.environment_reflection_path) {
         throw std::invalid_argument(
-            "environment reflection intensity/yaw requires --environment-reflection");
+            "environment reflection controls require --environment-reflection");
     }
     return parsed;
 }
@@ -316,11 +365,17 @@ void print_usage() {
            " [--environment-light IMAGE] [--environment-light-intensity VALUE]"
            " [--environment-light-yaw RADIANS]"
            " [--environment-reflection IMAGE] [--environment-reflection-intensity VALUE]"
-           " [--environment-reflection-yaw RADIANS]\n"
+           " [--environment-reflection-yaw RADIANS]"
+           " [--environment-reflection-mip base|nearest|linear]"
+           " [--environment-reflection-anisotropy 1|2|4]"
+           " [--environment-reflection-footprint RADIANS]"
+           " [--environment-reflection-material-shininess]\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
            " environment-intensity=1 environment-yaw=0 environment-mip=base"
            " environment-light-intensity=1 environment-light-yaw=0"
-           " environment-reflection-intensity=1 environment-reflection-yaw=0\n";
+           " environment-reflection-intensity=1 environment-reflection-yaw=0"
+           " environment-reflection-mip=base environment-reflection-anisotropy=1"
+           " environment-reflection-footprint=0 reflection-policy=base\n";
 }
 
 }  // namespace
@@ -421,6 +476,31 @@ int main(int argc, char** argv) {
             if (parsed.environment_reflection_yaw) {
                 environment_reflection.yaw_radians = *parsed.environment_reflection_yaw;
             }
+            if (parsed.environment_reflection_mip) {
+                environment_reflection.sampler.mip_filter = *parsed.environment_reflection_mip;
+            }
+            if (parsed.environment_reflection_anisotropy) {
+                environment_reflection.sampler.max_anisotropy =
+                    *parsed.environment_reflection_anisotropy;
+            }
+            if (parsed.environment_reflection_footprint) {
+                environment_reflection.angular_footprint_radians =
+                    *parsed.environment_reflection_footprint;
+            }
+
+            if (parsed.environment_reflection_material_shininess) {
+                environment_reflection.mip_policy =
+                    tiny_renderer::EnvironmentReflectionMipPolicy::MaterialShininess;
+            } else if (parsed.environment_reflection_footprint
+                       || (parsed.environment_reflection_mip
+                           && *parsed.environment_reflection_mip
+                               != tiny_renderer::MipFilterMode::Disabled)
+                       || (parsed.environment_reflection_anisotropy
+                           && *parsed.environment_reflection_anisotropy > 1U)) {
+                environment_reflection.mip_policy =
+                    tiny_renderer::EnvironmentReflectionMipPolicy::AngularFootprint;
+            }
+
             tiny_renderer::validate_environment_reflection_state(environment_reflection);
             reflection_environment = environment_reflection;
         }
