@@ -3,13 +3,16 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
 #include "tiny_renderer/mesh.hpp"
+#include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/rasterizer.hpp"
 #include "tiny_renderer/texture.hpp"
 
@@ -60,6 +63,52 @@ Mat4 projective_w_from_z() {
 
 Vertex uv_vertex(const Vec3& position, float u, float v) {
     return Vertex::with_varyings(position, VaryingPack{u, v});
+}
+
+Vertex uv_normal_vertex(const Vec3& position, float u, float v) {
+    return Vertex::with_varyings(position, VaryingPack{u, v, 0.0F, 0.0F, 1.0F});
+}
+
+Mesh minification_mesh() {
+    Mesh mesh;
+    mesh.vertices = {
+        uv_normal_vertex({-1.0F, -1.0F, 0.0F}, 0.0F, 0.0F),
+        uv_normal_vertex({1.0F, -1.0F, 0.0F}, 8.0F, 0.0F),
+        uv_normal_vertex({-1.0F, 1.0F, 0.0F}, 0.0F, 8.0F),
+    };
+    mesh.triangles = {{0U, 1U, 2U}};
+    return mesh;
+}
+
+std::shared_ptr<const Texture2D> checker_texture(const Vec3& even, const Vec3& odd) {
+    std::vector<Vec3> texels(64U);
+    for (std::size_t y = 0U; y < 8U; ++y) {
+        for (std::size_t x = 0U; x < 8U; ++x) {
+            texels[y * 8U + x] = ((x + y) % 2U == 0U) ? even : odd;
+        }
+    }
+    return std::make_shared<const Texture2D>(8U, 8U, std::move(texels));
+}
+
+ModelAsset single_draw_model(MaterialDraw draw) {
+    ModelAsset asset;
+    asset.mesh = minification_mesh();
+    draw.range = {0U, 1U};
+    asset.draws.push_back(std::move(draw));
+    return asset;
+}
+
+ModelRenderOptions mip_model_options() {
+    ModelRenderOptions options;
+    options.u_channel = 0U;
+    options.v_channel = 1U;
+    options.sampler = {
+        AddressMode::Repeat,
+        AddressMode::Repeat,
+        FilterMode::Nearest,
+        MipFilterMode::Nearest,
+    };
+    return options;
 }
 
 Vertex interpolate_smooth_uv_vertex(const Vertex& a, const Vertex& b, float t) {
@@ -193,6 +242,92 @@ void test_gradient_lod_and_invalid_mip_state() {
     check(threw, "unknown mip filter mode is rejected deterministically");
 }
 
+void test_raster_derived_lod_across_material_texture_roles() {
+    const auto checker = checker_texture(
+        {0.0F, 0.0F, 0.0F},
+        {1.0F, 1.0F, 1.0F});
+    const std::size_t probe_x = 2U;
+    const std::size_t probe_y = 6U;
+
+    {
+        MaterialDraw draw;
+        draw.diffuse_texture = checker;
+        const ModelAsset asset = single_draw_model(draw);
+        const ModelRenderOptions options = mip_model_options();
+        Framebuffer framebuffer(9U, 9U);
+        draw_model_asset(framebuffer, asset, Mat4::identity(), options);
+        check_color(
+            framebuffer.color_at(probe_x, probe_y),
+            {0.5F, 0.5F, 0.5F},
+            "raster-derived LOD selects the averaged diffuse mip level");
+    }
+
+    {
+        MaterialDraw draw;
+        draw.opacity_texture = checker;
+        draw.material.albedo = {1.0F, 0.0F, 0.0F};
+        const ModelAsset asset = single_draw_model(draw);
+        ModelRenderOptions options = mip_model_options();
+        options.depth_state.write_enabled = false;
+        options.blend_state.enabled = true;
+        options.blend_state.source_factor = BlendFactor::SourceAlpha;
+        options.blend_state.destination_factor = BlendFactor::OneMinusSourceAlpha;
+        Framebuffer framebuffer(9U, 9U);
+        draw_model_asset(framebuffer, asset, Mat4::identity(), options);
+        check_color(
+            framebuffer.color_at(probe_x, probe_y),
+            {0.5F, 0.0F, 0.0F},
+            "opacity texture consumes the same raster-derived mip footprint before source-alpha blending");
+    }
+
+    {
+        const auto normal_checker = checker_texture(
+            {1.0F, 0.5F, 0.5F},
+            {0.5F, 0.5F, 1.0F});
+        MaterialDraw draw;
+        draw.normal_texture = normal_checker;
+        const ModelAsset asset = single_draw_model(draw);
+        ModelRenderOptions options = mip_model_options();
+        options.directional_light.enabled = true;
+        options.directional_light.normal = {2U, 3U, 4U};
+        options.directional_light.direction_to_light = {0.0F, 0.0F, 1.0F};
+        options.directional_light.ambient = 0.0F;
+        options.directional_light.diffuse = 1.0F;
+        Framebuffer framebuffer(9U, 9U);
+        draw_model_asset(
+            framebuffer,
+            asset,
+            Mat4::identity(),
+            Mat4::identity(),
+            Mat4::identity(),
+            options);
+        const float diagonal_lambert = std::sqrt(0.5F);
+        check_color(
+            framebuffer.color_at(probe_x, probe_y),
+            {diagonal_lambert, diagonal_lambert, diagonal_lambert},
+            "normal texture consumes the shared raster-derived mip footprint for Lambert shading",
+            3.0e-3F);
+    }
+}
+
+void test_prepared_model_rejects_invalid_mip_policy() {
+    MaterialDraw draw;
+    draw.diffuse_texture = checker_texture(
+        {0.0F, 0.0F, 0.0F},
+        {1.0F, 1.0F, 1.0F});
+    ModelAsset asset = single_draw_model(std::move(draw));
+    ModelRenderOptions options = mip_model_options();
+    options.sampler.mip_filter = static_cast<MipFilterMode>(99);
+
+    bool threw = false;
+    try {
+        (void)prepare_model_asset(std::move(asset), options);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "prepared model construction rejects an unknown mip filter policy");
+}
+
 void test_perspective_correct_uv_sampling() {
     const Vec3 red{1.0F, 0.0F, 0.0F};
     const Vec3 green{0.0F, 1.0F, 0.0F};
@@ -289,6 +424,8 @@ int main() {
         test_sampler_address_and_filter_modes();
         test_mip_chain_and_explicit_lod_sampling();
         test_gradient_lod_and_invalid_mip_state();
+        test_raster_derived_lod_across_material_texture_roles();
+        test_prepared_model_rejects_invalid_mip_policy();
         test_perspective_correct_uv_sampling();
         test_textured_clipping_matches_manual_geometry();
         test_invalid_uv_binding_is_fail_closed();
