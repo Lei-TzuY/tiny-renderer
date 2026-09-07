@@ -184,6 +184,12 @@ public:
     [[nodiscard]] std::uint64_t fnv1a64() const;
     void write_ppm(const std::string& path) const;
 
+    // Deterministic data-preserving HDR export. PFM output is RGB (`PF`),
+    // bottom-to-top, and explicitly little-endian (`-1.0` scale marker).
+    // Resolved linear 32-bit floats are written without transfer encoding,
+    // clamping, or tone mapping.
+    void write_pfm(const std::string& path) const;
+
     // Explicit export transfer overloads operate only on resolved linear RGB.
     [[nodiscard]] std::vector<std::uint8_t> rgb8(OutputTransferFunction transfer_function) const;
     [[nodiscard]] std::uint64_t fnv1a64(OutputTransferFunction transfer_function) const;
