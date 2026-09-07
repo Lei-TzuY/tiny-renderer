@@ -5,6 +5,7 @@
 #include <optional>
 #include <utility>
 
+#include "tiny_renderer/environment_lighting.hpp"
 #include "tiny_renderer/fragment_program.hpp"
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/material.hpp"
@@ -75,6 +76,14 @@ struct NormalBinding {
     std::size_t x{0U};
     std::size_t y{1U};
     std::size_t z{2U};
+};
+
+// Diffuse environment lighting is independent from camera-background
+// visibility. It borrows one validated environment and uses the same normal
+// channels as every fixed light in a composed lighting submission.
+struct EnvironmentDiffuseLight {
+    NormalBinding normal{};
+    EnvironmentDiffuseState environment{};
 };
 
 struct DirectionalLight {
@@ -148,6 +157,10 @@ struct FixedLightCollection {
     std::optional<std::size_t> shadowed_point_index{};
     std::optional<std::size_t> shadowed_spot_index{};
     SpotShadowState spot_shadow_state{};
+    // Trailing optional contribution: does not consume one of the four
+    // directional/point/spot records and remains independent of background
+    // rendering. The referenced texture is borrowed by the submission state.
+    std::optional<EnvironmentDiffuseLight> environment_diffuse{};
 };
 
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);

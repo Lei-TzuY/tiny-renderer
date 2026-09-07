@@ -336,7 +336,7 @@ DirectionalLight prepare_directional_light(const DirectionalLight& light) {
         return light;
     }
     DirectionalLight prepared = light;
-    prepared.direction_to_light = normalize(light.direction_to_light);
+    prepared.direction_to_light = normalize(prepared.direction_to_light);
     return prepared;
 }
 
@@ -1220,6 +1220,19 @@ Vec3 light_contribution(
     return shaded;
 }
 
+Vec3 environment_diffuse_contribution(
+    const Vec3& base,
+    const Vec3& normal,
+    const FixedLightCollection& fixed_lights) {
+    if (!fixed_lights.environment_diffuse) {
+        return {};
+    }
+    const Vec3 factor = environment_lighting_detail::diffuse_environment_lambert_factor_unchecked(
+        fixed_lights.environment_diffuse->environment,
+        normal);
+    return modulate_rgb(base, factor);
+}
+
 ShadedFragment shade_fragment(
     const VaryingPack& varyings,
     const TextureGradients& gradients,
@@ -1271,19 +1284,20 @@ ShadedFragment shade_fragment(
         geometric_normal,
         tangent_frame);
 
+    Vec3 shaded{};
     if (fixed_lights.count == 0U) {
-        const float visibility = directional_light.enabled
-            ? shadow_visibility(shadow, light_clip)
-            : 1.0F;
-        const Vec3 shaded = directional_light.enabled
-            ? light_contribution(
-                base, normal, material, &directional_light, nullptr, nullptr, visibility, world_position)
-            : light_contribution(
+        if (directional_light.enabled) {
+            const float visibility = shadow_visibility(shadow, light_clip);
+            shaded = light_contribution(
+                base, normal, material, &directional_light, nullptr, nullptr, visibility, world_position);
+        } else if (point_light.enabled) {
+            shaded = light_contribution(
                 base, normal, material, nullptr, &point_light, nullptr, 1.0F, world_position);
+        }
+        shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
         return {shaded, opacity, false};
     }
 
-    Vec3 shaded{};
     for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
         const FixedLight& light = fixed_lights.lights[i];
         switch (light.type) {
@@ -1370,6 +1384,7 @@ ShadedFragment shade_fragment(
             }
         }
     }
+    shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
     return {shaded, opacity, false};
 }
 
@@ -1749,8 +1764,8 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& mvp) {
     if (texture_binding_.normal_texture != nullptr) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
-    if (directional_light_.enabled || point_light_.enabled
-        || fixed_lights_.count != 0U || shadow_state_.enabled || point_shadow_state_.enabled) {
+    if (detail::fixed_lighting_enabled(directional_light_, point_light_, fixed_lights_)
+        || shadow_state_.enabled || point_shadow_state_.enabled) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const Triangle programmed = detail::apply_vertex_program(vertex_program_, triangle);
@@ -1888,8 +1903,8 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& mvp) {
     if (texture_binding_.normal_texture != nullptr) {
         throw std::invalid_argument("normal mapping requires separate model/view/projection transforms");
     }
-    if (directional_light_.enabled || point_light_.enabled
-        || fixed_lights_.count != 0U || shadow_state_.enabled || point_shadow_state_.enabled) {
+    if (detail::fixed_lighting_enabled(directional_light_, point_light_, fixed_lights_)
+        || shadow_state_.enabled || point_shadow_state_.enabled) {
         throw std::invalid_argument("fixed lighting and shadows require separate model/view/projection transforms");
     }
     const detail::PreparedVertexMesh programmed =
