@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -78,6 +79,11 @@ struct ShadedFragment {
     Vec3 rgb;
     float opacity{1.0F};
     bool discard{false};
+};
+
+struct BarycentricDerivatives {
+    Vec3 dx;
+    Vec3 dy;
 };
 
 SampleLocation sample_location(SampleCount count, std::size_t sample_index) {
@@ -233,6 +239,7 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
         && binding.normal_texture == nullptr) {
         return;
     }
+    validate_sampler_state(binding.sampler);
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
         throw std::out_of_range("texture binding references unavailable varying channel");
     }
@@ -716,6 +723,86 @@ VaryingPack interpolate_varyings(
     return result;
 }
 
+BarycentricDerivatives barycentric_derivatives(
+    const std::array<ScreenVertex, 3>& v,
+    float area) {
+    return {
+        {
+            (v[1].position.y - v[2].position.y) / area,
+            (v[2].position.y - v[0].position.y) / area,
+            (v[0].position.y - v[1].position.y) / area,
+        },
+        {
+            (v[2].position.x - v[1].position.x) / area,
+            (v[0].position.x - v[2].position.x) / area,
+            (v[1].position.x - v[0].position.x) / area,
+        },
+    };
+}
+
+float bounded_derivative(double value) {
+    if (std::isnan(value)) {
+        throw std::logic_error("texture derivative became NaN");
+    }
+    const double limit = static_cast<double>(std::numeric_limits<float>::max());
+    return static_cast<float>(std::clamp(value, -limit, limit));
+}
+
+float varying_derivative(
+    const std::array<ScreenVertex, 3>& v,
+    const Vec3& bary,
+    float reciprocal_w,
+    std::size_t channel,
+    const Vec3& bary_derivative) {
+    const Interpolation mode = v[0].interpolation_terms.interpolation[channel];
+    if (mode == Interpolation::Flat) {
+        return 0.0F;
+    }
+
+    const double d_numerator =
+        static_cast<double>(v[0].interpolation_terms.values[channel]) * bary_derivative.x
+        + static_cast<double>(v[1].interpolation_terms.values[channel]) * bary_derivative.y
+        + static_cast<double>(v[2].interpolation_terms.values[channel]) * bary_derivative.z;
+    if (mode == Interpolation::NoPerspective) {
+        return bounded_derivative(d_numerator);
+    }
+
+    const double numerator =
+        static_cast<double>(v[0].interpolation_terms.values[channel]) * bary.x
+        + static_cast<double>(v[1].interpolation_terms.values[channel]) * bary.y
+        + static_cast<double>(v[2].interpolation_terms.values[channel]) * bary.z;
+    const double d_reciprocal_w =
+        static_cast<double>(v[0].inv_w) * bary_derivative.x
+        + static_cast<double>(v[1].inv_w) * bary_derivative.y
+        + static_cast<double>(v[2].inv_w) * bary_derivative.z;
+    const double q = static_cast<double>(reciprocal_w);
+    return bounded_derivative((d_numerator * q - numerator * d_reciprocal_w) / (q * q));
+}
+
+TextureGradients texture_gradients(
+    const std::array<ScreenVertex, 3>& v,
+    const Vec3& bary,
+    float reciprocal_w,
+    const TextureBinding& binding,
+    const BarycentricDerivatives& derivatives) {
+    if (binding.sampler.mip_filter == MipFilterMode::Disabled
+        || (binding.texture == nullptr
+            && binding.opacity_texture == nullptr
+            && binding.normal_texture == nullptr)) {
+        return {};
+    }
+    return {
+        {
+            varying_derivative(v, bary, reciprocal_w, binding.u_channel, derivatives.dx),
+            varying_derivative(v, bary, reciprocal_w, binding.v_channel, derivatives.dx),
+        },
+        {
+            varying_derivative(v, bary, reciprocal_w, binding.u_channel, derivatives.dy),
+            varying_derivative(v, bary, reciprocal_w, binding.v_channel, derivatives.dy),
+        },
+    };
+}
+
 Vec4 interpolate_light_clip(
     const std::array<ScreenVertex, 3>& v,
     const Vec3& bary,
@@ -748,6 +835,7 @@ Vec3 interpolate_world_position(
 
 Vec3 base_fragment_color(
     const VaryingPack& varyings,
+    const TextureGradients& gradients,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source) {
@@ -759,8 +847,9 @@ Vec3 base_fragment_color(
                 varyings.values[color_binding.blue],
             };
         case BaseColorSource::Texture:
-            return texture_binding.texture->sample(
+            return texture_binding.texture->sample_grad(
                 {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+                gradients,
                 texture_binding.sampler);
         case BaseColorSource::ConstantWhite:
             return {1.0F, 1.0F, 1.0F};
@@ -772,13 +861,15 @@ Vec3 base_fragment_color(
 
 float fragment_opacity(
     const VaryingPack& varyings,
+    const TextureGradients& gradients,
     const TextureBinding& texture_binding,
     const MaterialState& material) {
     if (texture_binding.opacity_texture == nullptr) {
         return material.opacity;
     }
-    const Vec3 sampled = texture_binding.opacity_texture->sample(
+    const Vec3 sampled = texture_binding.opacity_texture->sample_grad(
         {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+        gradients,
         texture_binding.sampler);
     const float map_opacity = std::clamp(
         (sampled.x + sampled.y + sampled.z) / 3.0F,
@@ -1131,6 +1222,7 @@ Vec3 light_contribution(
 
 ShadedFragment shade_fragment(
     const VaryingPack& varyings,
+    const TextureGradients& gradients,
     const ColorBinding& color_binding,
     const TextureBinding& texture_binding,
     BaseColorSource source,
@@ -1143,13 +1235,14 @@ ShadedFragment shade_fragment(
     const Vec4& light_clip,
     const Vec3& world_position,
     const detail::TangentFrame* tangent_frame) {
-    const Vec3 source_color = base_fragment_color(varyings, color_binding, texture_binding, source);
+    const Vec3 source_color = base_fragment_color(
+        varyings, gradients, color_binding, texture_binding, source);
     const Vec3 base{
         source_color.x * material.albedo.x,
         source_color.y * material.albedo.y,
         source_color.z * material.albedo.z,
     };
-    const float opacity = fragment_opacity(varyings, texture_binding, material);
+    const float opacity = fragment_opacity(varyings, gradients, texture_binding, material);
     const NormalBinding* normal_binding = detail::active_normal_binding(
         directional_light, point_light, fixed_lights);
     if (normal_binding == nullptr) {
@@ -1174,6 +1267,7 @@ ShadedFragment shade_fragment(
     const Vec3 normal = detail::tangent_space_lighting_normal(
         texture_binding,
         varyings,
+        gradients,
         geometric_normal,
         tangent_frame);
 
@@ -1316,6 +1410,7 @@ void rasterize_screen_triangle(
     if (!std::isfinite(interpolation_area) || std::fabs(interpolation_area) <= kEpsilon) {
         return;
     }
+    const BarycentricDerivatives derivatives = barycentric_derivatives(v, interpolation_area);
 
     const float min_x_f = std::min({v[0].position.x, v[1].position.x, v[2].position.x});
     const float max_x_f = std::max({v[0].position.x, v[1].position.x, v[2].position.x});
@@ -1385,6 +1480,8 @@ void rasterize_screen_triangle(
                     continue;
                 }
                 const VaryingPack varyings = interpolate_varyings(v, bary, reciprocal_w);
+                const TextureGradients gradients = texture_gradients(
+                    v, bary, reciprocal_w, texture_binding, derivatives);
                 const Vec4 light_clip = shadow_state.enabled
                     ? interpolate_light_clip(v, bary, reciprocal_w)
                     : Vec4{};
@@ -1397,6 +1494,7 @@ void rasterize_screen_triangle(
                     : Vec3{};
                 const ShadedFragment fixed_fragment = shade_fragment(
                     varyings,
+                    gradients,
                     color_binding,
                     texture_binding,
                     source,
