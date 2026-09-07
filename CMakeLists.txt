@@ -249,6 +249,13 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_environment_mip_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_environment_mip_tests COMMAND tiny_renderer_environment_mip_tests)
 
+    add_executable(tiny_renderer_environment_reflection_mip_tests
+        tests/test_environment_reflection_mips.cpp)
+    target_link_libraries(tiny_renderer_environment_reflection_mip_tests PRIVATE tiny_renderer)
+    add_test(
+        NAME tiny_renderer_environment_reflection_mip_tests
+        COMMAND tiny_renderer_environment_reflection_mip_tests)
+
     add_test(
         NAME tiny_renderer_render_cli_ppm
         COMMAND tiny_renderer_render

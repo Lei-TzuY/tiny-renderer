@@ -28,10 +28,18 @@ struct EnvironmentDiffuseState {
     float yaw_radians{0.0F};
 };
 
-// Bounded perfect-mirror environment reflection. This intentionally has no
-// roughness-to-mip mapping: the first slice samples one deterministic reflected
-// direction from the base level and leaves MaterialState::shininess to local
-// Blinn-Phong lighting only.
+enum class EnvironmentReflectionMipPolicy {
+    BaseLevel,
+    AngularFootprint,
+};
+
+// Bounded perfect-mirror environment reflection. BaseLevel preserves the
+// original M58/M59 behavior exactly. AngularFootprint keeps the actual
+// view-dependent mirror direction as the lookup center, constructs two
+// deterministic neighboring rays at a caller-bounded angular radius, and
+// delegates the resulting seam-aware equirectangular UV footprint to the
+// existing Texture2D gradient sampler. This is a finite teaching footprint,
+// not a roughness model or a claim of screen-space derivative equivalence.
 struct EnvironmentReflectionState {
     const Texture2D* texture{nullptr};
     SamplerState sampler{
@@ -42,6 +50,8 @@ struct EnvironmentReflectionState {
     };
     float intensity{1.0F};
     float yaw_radians{0.0F};
+    EnvironmentReflectionMipPolicy mip_policy{EnvironmentReflectionMipPolicy::BaseLevel};
+    float angular_footprint_radians{0.0F};
 };
 
 namespace environment_lighting_detail {
@@ -156,6 +166,47 @@ inline Vec3 diffuse_environment_lambert_factor_unchecked(
     return diffuse_environment_irradiance_unchecked(state, world_normal) * (1.0F / kPi);
 }
 
+inline TextureGradients reflection_angular_footprint_gradients(
+    const Vec3& direction,
+    float yaw_radians,
+    float angular_footprint_radians) {
+    const Vec3 helper = std::fabs(direction.y) < 0.999F
+        ? Vec3{0.0F, 1.0F, 0.0F}
+        : Vec3{1.0F, 0.0F, 0.0F};
+    const Vec3 tangent_unscaled = cross(helper, direction);
+    const float tangent_length = length(tangent_unscaled);
+    if (!environment_detail::finite_vec3(tangent_unscaled)
+        || !std::isfinite(tangent_length)
+        || tangent_length <= kEpsilon) {
+        throw std::logic_error("environment reflection footprint basis became degenerate");
+    }
+    const Vec3 tangent = tangent_unscaled / tangent_length;
+    const Vec3 bitangent = cross(direction, tangent);
+    if (!environment_detail::finite_vec3(bitangent)) {
+        throw std::logic_error("environment reflection footprint basis became non-finite");
+    }
+
+    const float cosine = std::cos(angular_footprint_radians);
+    const float sine = std::sin(angular_footprint_radians);
+    if (!std::isfinite(cosine) || !std::isfinite(sine)) {
+        throw std::logic_error("environment reflection footprint angle became non-finite");
+    }
+    const Vec3 dx_direction = direction * cosine + tangent * sine;
+    const Vec3 dy_direction = direction * cosine + bitangent * sine;
+    const Vec2 center_uv = equirectangular_uv(direction, yaw_radians);
+    const Vec2 dx_uv = equirectangular_uv(dx_direction, yaw_radians);
+    const Vec2 dy_uv = equirectangular_uv(dy_direction, yaw_radians);
+    const TextureGradients gradients{
+        environment_detail::uv_delta(center_uv, dx_uv),
+        environment_detail::uv_delta(center_uv, dy_uv),
+    };
+    if (!std::isfinite(gradients.dx.x) || !std::isfinite(gradients.dx.y)
+        || !std::isfinite(gradients.dy.x) || !std::isfinite(gradients.dy.y)) {
+        throw std::logic_error("environment reflection footprint produced non-finite texture gradients");
+    }
+    return gradients;
+}
+
 inline Vec3 reflection_environment_radiance_unchecked(
     const EnvironmentReflectionState& state,
     const Vec3& reflection_direction) {
@@ -171,8 +222,23 @@ inline Vec3 reflection_environment_radiance_unchecked(
     }
     const Vec3 direction = reflection_direction / direction_length;
     const Vec2 uv = equirectangular_uv(direction, state.yaw_radians);
-    return environment_detail::checked_scaled_radiance(
-        state.texture->sample(uv, state.sampler), state.intensity);
+    Vec3 sampled{};
+    switch (state.mip_policy) {
+        case EnvironmentReflectionMipPolicy::BaseLevel:
+            sampled = state.texture->sample(uv, state.sampler);
+            break;
+        case EnvironmentReflectionMipPolicy::AngularFootprint: {
+            const TextureGradients gradients = reflection_angular_footprint_gradients(
+                direction,
+                state.yaw_radians,
+                state.angular_footprint_radians);
+            sampled = state.texture->sample_grad(uv, gradients, state.sampler);
+            break;
+        }
+        default:
+            throw std::logic_error("validated environment reflection state lost its mip policy");
+    }
+    return environment_detail::checked_scaled_radiance(sampled, state.intensity);
 }
 
 }  // namespace environment_lighting_detail
@@ -218,8 +284,31 @@ inline void validate_environment_reflection_state(const EnvironmentReflectionSta
         throw std::invalid_argument("environment reflection texture must be in the linear texture domain");
     }
     validate_sampler_state(state.sampler);
-    if (state.sampler.mip_filter != MipFilterMode::Disabled) {
-        throw std::invalid_argument("perfect-mirror environment reflection requires disabled mip filtering");
+    switch (state.mip_policy) {
+        case EnvironmentReflectionMipPolicy::BaseLevel:
+            if (state.sampler.mip_filter != MipFilterMode::Disabled) {
+                throw std::invalid_argument(
+                    "base-level environment reflection requires disabled mip filtering");
+            }
+            if (state.angular_footprint_radians != 0.0F) {
+                throw std::invalid_argument(
+                    "base-level environment reflection requires a zero angular footprint");
+            }
+            break;
+        case EnvironmentReflectionMipPolicy::AngularFootprint:
+            if (state.sampler.mip_filter == MipFilterMode::Disabled) {
+                throw std::invalid_argument(
+                    "angular-footprint environment reflection requires nearest or linear mip filtering");
+            }
+            if (!std::isfinite(state.angular_footprint_radians)
+                || state.angular_footprint_radians <= 0.0F
+                || state.angular_footprint_radians > kPi * 0.5F) {
+                throw std::invalid_argument(
+                    "environment reflection angular footprint must be finite and within (0, pi/2]");
+            }
+            break;
+        default:
+            throw std::invalid_argument("unknown environment reflection mip policy");
     }
     if (!std::isfinite(state.intensity)
         || state.intensity < 0.0F
