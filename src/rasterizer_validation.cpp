@@ -643,7 +643,10 @@ bool fixed_lighting_enabled(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
     const FixedLightCollection& fixed_lights) {
-    return directional_light.enabled || point_light.enabled || fixed_lights.count != 0U;
+    return directional_light.enabled
+        || point_light.enabled
+        || fixed_lights.count != 0U
+        || fixed_lights.environment_diffuse.has_value();
 }
 
 const NormalBinding* active_normal_binding(
@@ -661,6 +664,9 @@ const NormalBinding* active_normal_binding(
     }
     if (point_light.enabled) {
         return &point_light.normal;
+    }
+    if (fixed_lights.environment_diffuse) {
+        return &fixed_lights.environment_diffuse->normal;
     }
     return nullptr;
 }
@@ -726,15 +732,28 @@ void validate_fixed_lighting_definition(
     if (fixed_lights.count > kMaxFixedLights) {
         throw std::invalid_argument("fixed-light collection exceeds its bounded capacity");
     }
+    if (fixed_lights.environment_diffuse) {
+        validate_environment_diffuse_state(fixed_lights.environment_diffuse->environment);
+    }
+
     if (fixed_lights.count == 0U) {
         if (directional_light.enabled && point_light.enabled) {
             throw std::invalid_argument("legacy directional and point lights are mutually exclusive");
         }
+        const NormalBinding* shared_normal = nullptr;
         if (directional_light.enabled) {
             validate_directional_light(directional_light);
+            shared_normal = &directional_light.normal;
         }
         if (point_light.enabled) {
             validate_point_light(point_light);
+            shared_normal = &point_light.normal;
+        }
+        if (fixed_lights.environment_diffuse
+            && shared_normal != nullptr
+            && !same_normal_binding(*shared_normal, fixed_lights.environment_diffuse->normal)) {
+            throw std::invalid_argument(
+                "environment diffuse lighting must share the active fixed-light normal binding");
         }
         validate_spot_shadow_association(fixed_lights);
         return;
@@ -783,6 +802,12 @@ void validate_fixed_lighting_definition(
         } else if (!same_normal_binding(*shared_normal, *normal)) {
             throw std::invalid_argument("fixed-light collection must share one normal binding");
         }
+    }
+    if (fixed_lights.environment_diffuse
+        && shared_normal != nullptr
+        && !same_normal_binding(*shared_normal, fixed_lights.environment_diffuse->normal)) {
+        throw std::invalid_argument(
+            "environment diffuse lighting must share the fixed-light collection normal binding");
     }
     validate_spot_shadow_association(fixed_lights);
 }
