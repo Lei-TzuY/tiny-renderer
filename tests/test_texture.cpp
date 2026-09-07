@@ -80,6 +80,17 @@ Mesh minification_mesh() {
     return mesh;
 }
 
+Mesh anisotropic_minification_mesh() {
+    Mesh mesh;
+    mesh.vertices = {
+        uv_normal_vertex({-1.0F, -1.0F, 0.0F}, -0.25F, 0.5F),
+        uv_normal_vertex({1.0F, -1.0F, 0.0F}, 3.75F, 0.5F),
+        uv_normal_vertex({-1.0F, 1.0F, 0.0F}, -0.25F, 0.5F),
+    };
+    mesh.triangles = {{0U, 1U, 2U}};
+    return mesh;
+}
+
 std::shared_ptr<const Texture2D> checker_texture(const Vec3& even, const Vec3& odd) {
     std::vector<Vec3> texels(64U);
     for (std::size_t y = 0U; y < 8U; ++y) {
@@ -90,9 +101,27 @@ std::shared_ptr<const Texture2D> checker_texture(const Vec3& even, const Vec3& o
     return std::make_shared<const Texture2D>(8U, 8U, std::move(texels));
 }
 
+std::shared_ptr<const Texture2D> ramp_texture() {
+    std::vector<Vec3> texels;
+    texels.reserve(8U);
+    for (std::size_t x = 0U; x < 8U; ++x) {
+        const float value = static_cast<float>(x) / 7.0F;
+        texels.push_back({value, value, value});
+    }
+    return std::make_shared<const Texture2D>(8U, 1U, std::move(texels));
+}
+
 ModelAsset single_draw_model(MaterialDraw draw) {
     ModelAsset asset;
     asset.mesh = minification_mesh();
+    draw.range = {0U, 1U};
+    asset.draws.push_back(std::move(draw));
+    return asset;
+}
+
+ModelAsset single_draw_anisotropic_model(MaterialDraw draw) {
+    ModelAsset asset;
+    asset.mesh = anisotropic_minification_mesh();
     draw.range = {0U, 1U};
     asset.draws.push_back(std::move(draw));
     return asset;
@@ -242,6 +271,71 @@ void test_gradient_lod_and_invalid_mip_state() {
     check(threw, "unknown mip filter mode is rejected deterministically");
 }
 
+void test_bounded_anisotropic_gradient_sampling() {
+    const auto texture = ramp_texture();
+    const Vec2 uv{0.5F, 0.5F};
+    const TextureGradients gradients{{0.5F, 0.0F}, {0.0F, 1.0F}};
+
+    SamplerState isotropic{
+        AddressMode::Clamp,
+        AddressMode::Clamp,
+        FilterMode::Nearest,
+        MipFilterMode::Nearest,
+    };
+    check_color(
+        texture->sample_grad(uv, gradients, isotropic),
+        texture->sample_lod(uv, 2.0F, isotropic),
+        "max_anisotropy=1 preserves the historical max-footprint LOD path");
+
+    SamplerState two = isotropic;
+    two.max_anisotropy = 2U;
+    const float expected_two = 4.0F / 7.0F;
+    check_color(
+        texture->sample_grad(uv, gradients, two),
+        {expected_two, expected_two, expected_two},
+        "2x anisotropy uses two centered major-axis taps at minor-axis LOD");
+
+    SamplerState four = isotropic;
+    four.max_anisotropy = 4U;
+    check_color(
+        texture->sample_grad(uv, gradients, four),
+        {0.5F, 0.5F, 0.5F},
+        "4x anisotropy uses four centered major-axis taps at minor-axis LOD");
+    check_color(
+        texture->sample_grad(uv, TextureGradients{gradients.dy, gradients.dx}, four),
+        {0.5F, 0.5F, 0.5F},
+        "principal-axis filtering is invariant to exchanging screen derivative columns");
+
+    SamplerState repeat = four;
+    repeat.address_u = AddressMode::Repeat;
+    check_color(
+        texture->sample_grad({0.0F, 0.5F}, gradients, repeat),
+        {0.5F, 0.5F, 0.5F},
+        "anisotropic taps reuse repeat addressing across the U seam");
+
+    for (const std::size_t invalid_value : {0U, 3U, 8U}) {
+        SamplerState invalid = isotropic;
+        invalid.max_anisotropy = invalid_value;
+        bool threw = false;
+        try {
+            validate_sampler_state(invalid);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw, "unsupported anisotropy level is rejected deterministically");
+    }
+
+    SamplerState no_mips;
+    no_mips.max_anisotropy = 2U;
+    bool threw = false;
+    try {
+        validate_sampler_state(no_mips);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "anisotropy greater than one requires an explicit mip policy");
+}
+
 void test_raster_derived_lod_across_material_texture_roles() {
     const auto checker = checker_texture(
         {0.0F, 0.0F, 0.0F},
@@ -310,6 +404,26 @@ void test_raster_derived_lod_across_material_texture_roles() {
     }
 }
 
+void test_raster_derived_anisotropic_filtering() {
+    MaterialDraw draw;
+    draw.diffuse_texture = ramp_texture();
+    const ModelAsset asset = single_draw_anisotropic_model(draw);
+    ModelRenderOptions options = mip_model_options();
+    options.sampler.max_anisotropy = 4U;
+
+    Framebuffer framebuffer(9U, 9U);
+    draw_model_asset(framebuffer, asset, Mat4::identity(), options);
+    check_color(
+        framebuffer.color_at(1U, 6U),
+        {0.5F, 0.5F, 0.5F},
+        "raster-derived anisotropic UV footprint reaches the bounded multi-tap sampler");
+
+    Framebuffer repeat(9U, 9U);
+    draw_model_asset(repeat, asset, Mat4::identity(), options);
+    check(framebuffer.rgb8() == repeat.rgb8(),
+          "raster-derived anisotropic filtering is deterministic across repeated submissions");
+}
+
 void test_prepared_model_rejects_invalid_mip_policy() {
     MaterialDraw draw;
     draw.diffuse_texture = checker_texture(
@@ -321,11 +435,21 @@ void test_prepared_model_rejects_invalid_mip_policy() {
 
     bool threw = false;
     try {
-        (void)prepare_model_asset(std::move(asset), options);
+        (void)prepare_model_asset(asset, options);
     } catch (const std::invalid_argument&) {
         threw = true;
     }
     check(threw, "prepared model construction rejects an unknown mip filter policy");
+
+    options = mip_model_options();
+    options.sampler.max_anisotropy = 3U;
+    threw = false;
+    try {
+        (void)prepare_model_asset(std::move(asset), options);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "prepared model construction rejects an unsupported anisotropy level");
 }
 
 void test_perspective_correct_uv_sampling() {
@@ -424,7 +548,9 @@ int main() {
         test_sampler_address_and_filter_modes();
         test_mip_chain_and_explicit_lod_sampling();
         test_gradient_lod_and_invalid_mip_state();
+        test_bounded_anisotropic_gradient_sampling();
         test_raster_derived_lod_across_material_texture_roles();
+        test_raster_derived_anisotropic_filtering();
         test_prepared_model_rejects_invalid_mip_policy();
         test_perspective_correct_uv_sampling();
         test_textured_clipping_matches_manual_geometry();

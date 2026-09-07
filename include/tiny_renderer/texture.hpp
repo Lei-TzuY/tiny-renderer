@@ -37,6 +37,11 @@ struct SamplerState {
     AddressMode address_v{AddressMode::Clamp};
     FilterMode filter{FilterMode::Nearest};
     MipFilterMode mip_filter{MipFilterMode::Disabled};
+    // Bounded anisotropic filtering applies only to gradient-based sampling.
+    // One preserves the historical isotropic path exactly; two and four use a
+    // deterministic major-axis multi-tap footprint with the existing mip
+    // filter. Values greater than one therefore require mip filtering.
+    std::size_t max_anisotropy{1U};
 };
 
 struct TextureGradients {
