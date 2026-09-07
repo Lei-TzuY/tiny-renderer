@@ -109,6 +109,70 @@ Vec3 lerp(const Vec3& a, const Vec3& b, float t) {
     return a * (1.0F - t) + b * t;
 }
 
+struct PrincipalFootprint {
+    double major{};
+    double minor{};
+    double direction_u_texels{1.0};
+    double direction_v_texels{0.0};
+};
+
+PrincipalFootprint principal_footprint(
+    const TextureGradients& gradients,
+    std::size_t width,
+    std::size_t height) {
+    const double width_scale = static_cast<double>(width);
+    const double height_scale = static_cast<double>(height);
+    const double gx_u = static_cast<double>(gradients.dx.x) * width_scale;
+    const double gx_v = static_cast<double>(gradients.dx.y) * height_scale;
+    const double gy_u = static_cast<double>(gradients.dy.x) * width_scale;
+    const double gy_v = static_cast<double>(gradients.dy.y) * height_scale;
+
+    // J*J^T describes the texture-space footprint ellipse induced by the two
+    // screen-space derivative vectors. Its eigenvalues are the squared
+    // principal footprint lengths.
+    const double a = gx_u * gx_u + gy_u * gy_u;
+    const double b = gx_u * gx_v + gy_u * gy_v;
+    const double c = gx_v * gx_v + gy_v * gy_v;
+    const double discriminant = std::sqrt(std::max(
+        (a - c) * (a - c) + 4.0 * b * b,
+        0.0));
+    const double lambda_major = 0.5 * (a + c + discriminant);
+    const double lambda_minor = std::max(0.5 * (a + c - discriminant), 0.0);
+    if (!std::isfinite(lambda_major) || !std::isfinite(lambda_minor)) {
+        throw std::logic_error("finite texture gradients produced a non-finite principal footprint");
+    }
+
+    PrincipalFootprint result;
+    result.major = std::sqrt(std::max(lambda_major, 0.0));
+    result.minor = std::sqrt(lambda_minor);
+
+    double direction_u = b;
+    double direction_v = lambda_major - a;
+    double direction_length = std::hypot(direction_u, direction_v);
+    if (direction_length == 0.0) {
+        direction_u = lambda_major - c;
+        direction_v = b;
+        direction_length = std::hypot(direction_u, direction_v);
+    }
+    if (direction_length == 0.0) {
+        direction_u = a >= c ? 1.0 : 0.0;
+        direction_v = a >= c ? 0.0 : 1.0;
+        direction_length = 1.0;
+    }
+    direction_u /= direction_length;
+    direction_v /= direction_length;
+
+    // Eigenvector sign is mathematically arbitrary. Canonicalize it so tap
+    // accumulation order is deterministic across equivalent gradient inputs.
+    if (direction_u < 0.0 || (direction_u == 0.0 && direction_v < 0.0)) {
+        direction_u = -direction_u;
+        direction_v = -direction_v;
+    }
+    result.direction_u_texels = direction_u;
+    result.direction_v_texels = direction_v;
+    return result;
+}
+
 }  // namespace
 
 void validate_sampler_state(const SamplerState& sampler) {
@@ -135,9 +199,19 @@ void validate_sampler_state(const SamplerState& sampler) {
         case MipFilterMode::Disabled:
         case MipFilterMode::Nearest:
         case MipFilterMode::Linear:
-            return;
+            break;
+        default:
+            throw std::invalid_argument("unsupported texture mip filter mode");
     }
-    throw std::invalid_argument("unsupported texture mip filter mode");
+
+    if (sampler.max_anisotropy != 1U
+        && sampler.max_anisotropy != 2U
+        && sampler.max_anisotropy != 4U) {
+        throw std::invalid_argument("texture max anisotropy must be one of 1, 2, or 4");
+    }
+    if (sampler.max_anisotropy > 1U && sampler.mip_filter == MipFilterMode::Disabled) {
+        throw std::invalid_argument("anisotropic filtering requires mip filtering");
+    }
 }
 
 void validate_texture_transfer_function(TextureTransferFunction transfer_function) {
@@ -349,11 +423,53 @@ Vec3 Texture2D::sample_grad(
         static_cast<double>(gradients.dy.x) * width_scale,
         static_cast<double>(gradients.dy.y) * height_scale);
     const double footprint = std::max(footprint_x, footprint_y);
-    const double lod = footprint > 1.0 ? std::log2(footprint) : 0.0;
-    if (!std::isfinite(lod)) {
+    const double isotropic_lod = footprint > 1.0 ? std::log2(footprint) : 0.0;
+    if (!std::isfinite(isotropic_lod)) {
         throw std::logic_error("finite texture gradients produced a non-finite LOD");
     }
-    return sample_lod(uv, static_cast<float>(lod), sampler);
+    if (sampler.max_anisotropy == 1U) {
+        return sample_lod(uv, static_cast<float>(isotropic_lod), sampler);
+    }
+
+    const PrincipalFootprint principal = principal_footprint(gradients, width(), height());
+    const double minor_for_sampling = std::max(principal.minor, 1.0);
+    const double ratio = principal.major / minor_for_sampling;
+    if (!std::isfinite(ratio)) {
+        throw std::logic_error("finite texture gradients produced a non-finite anisotropy ratio");
+    }
+    const std::size_t requested_taps = ratio > 1.0
+        ? static_cast<std::size_t>(std::ceil(ratio))
+        : 1U;
+    const std::size_t tap_count = std::min(requested_taps, sampler.max_anisotropy);
+    if (tap_count <= 1U) {
+        return sample_lod(uv, static_cast<float>(isotropic_lod), sampler);
+    }
+
+    const double anisotropic_lod = principal.minor > 1.0
+        ? std::log2(principal.minor)
+        : 0.0;
+    if (!std::isfinite(anisotropic_lod)) {
+        throw std::logic_error("finite texture gradients produced a non-finite anisotropic LOD");
+    }
+
+    const double spacing_texels = principal.major / static_cast<double>(tap_count);
+    Vec3 sum{};
+    for (std::size_t tap = 0U; tap < tap_count; ++tap) {
+        const double centered_tap = static_cast<double>(tap) + 0.5
+            - 0.5 * static_cast<double>(tap_count);
+        const double offset_texels = centered_tap * spacing_texels;
+        const Vec2 tap_uv{
+            uv.x + static_cast<float>(
+                principal.direction_u_texels * offset_texels / width_scale),
+            uv.y + static_cast<float>(
+                principal.direction_v_texels * offset_texels / height_scale),
+        };
+        sum = sum + sample_lod(
+            tap_uv,
+            static_cast<float>(anisotropic_lod),
+            sampler);
+    }
+    return sum / static_cast<float>(tap_count);
 }
 
 }  // namespace tiny_renderer
