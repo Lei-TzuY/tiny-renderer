@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "tiny_renderer/image_loader.hpp"
+#include "tiny_renderer/obj_loader.hpp"
 #include "tiny_renderer/offline_render.hpp"
 
 using namespace tiny_renderer;
@@ -345,6 +347,26 @@ void write_constant_pfm(const std::filesystem::path& path) {
     }
 }
 
+void write_directional_pfm(const std::filesystem::path& path) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("failed to create filtered reflection HDR fixture");
+    }
+    constexpr std::size_t width = 8U;
+    constexpr std::size_t height = 4U;
+    output << "PF\n8 4\n-1.0\n";
+    for (std::size_t y = 0U; y < height; ++y) {
+        for (std::size_t x = 0U; x < width; ++x) {
+            write_float_le(output, 0.25F + static_cast<float>(x) * 0.5F);
+            write_float_le(output, 0.5F + static_cast<float>(y) * 0.75F);
+            write_float_le(output, 0.25F + static_cast<float>((x + 2U * y) % 5U) * 0.6F);
+        }
+    }
+    if (!output) {
+        throw std::runtime_error("failed to write filtered reflection HDR fixture");
+    }
+}
+
 std::vector<char> read_file_bytes(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -365,6 +387,38 @@ int run_renderer(
         command += " \"" + argument + "\"";
     }
     return std::system(command.c_str());
+}
+
+void render_library_reflection(
+    const std::filesystem::path& obj_path,
+    const std::filesystem::path& environment_path,
+    const std::filesystem::path& output_path,
+    EnvironmentReflectionMipPolicy mip_policy,
+    MipFilterMode mip_filter,
+    std::size_t anisotropy,
+    float angular_footprint) {
+    const ModelAsset asset = load_obj_model_asset_file(obj_path);
+    const Texture2D environment = load_texture_image_file(
+        environment_path,
+        TextureTransferFunction::Linear);
+
+    OfflineRenderSettings settings{};
+    settings.width = 32U;
+    settings.height = 24U;
+    settings.sample_count = SampleCount::Four;
+    OfflineEnvironmentReflectionState reflection;
+    reflection.normal = {0U, 1U, 2U};
+    reflection.environment.texture = &environment;
+    reflection.environment.intensity = 0.65F;
+    reflection.environment.yaw_radians = 0.2F;
+    reflection.environment.sampler.mip_filter = mip_filter;
+    reflection.environment.sampler.max_anisotropy = anisotropy;
+    reflection.environment.mip_policy = mip_policy;
+    reflection.environment.angular_footprint_radians = angular_footprint;
+    settings.environment_reflection = reflection;
+
+    const Framebuffer framebuffer = render_model_preview(asset, settings);
+    framebuffer.write_pfm(output_path.string());
 }
 
 void check_repeated_cli_render(
@@ -420,6 +474,7 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
     const std::filesystem::path generated_obj = root / "generated.obj";
     const std::filesystem::path mixed_layout_obj = root / "mixed_layout.obj";
     const std::filesystem::path environment = root / "environment.pfm";
+    const std::filesystem::path filtered_environment = root / "filtered_environment.pfm";
 
     write_text_file(
         glossy_obj,
@@ -435,7 +490,7 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         "newmtl glossy\n"
         "Kd 0.2 0.1 0.05\n"
         "Ks 0.8 0.4 0.2\n"
-        "Ns 32\n");
+        "Ns 4\n");
     write_text_file(
         zero_obj,
         "mtllib zero.mtl\n"
@@ -472,6 +527,7 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         "usemtl glossy\n"
         "f 1/1/1 2/2 3/3/1\n");
     write_constant_pfm(environment);
+    write_directional_pfm(filtered_environment);
 
     const std::vector<std::string> reflection_args{
         "--environment-reflection", environment.string(),
@@ -492,6 +548,17 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
     combined_args.insert(combined_args.end(), diffuse_args.begin(), diffuse_args.end());
     combined_args.insert(combined_args.end(), reflection_args.begin(), reflection_args.end());
 
+    const std::vector<std::string> fixed_filter_args{
+        "--environment-reflection", filtered_environment.string(),
+        "--environment-reflection-intensity", "0.65",
+        "--environment-reflection-yaw", "0.2",
+        "--environment-reflection-mip", "linear",
+        "--environment-reflection-anisotropy", "4",
+        "--environment-reflection-footprint", "1.2",
+    };
+    std::vector<std::string> material_filter_args = fixed_filter_args;
+    material_filter_args.push_back("--environment-reflection-material-shininess");
+
     check_repeated_cli_render(
         executable, root, glossy_obj,
         "reflection_1x_ppm", "ppm", "1", reflection_args);
@@ -507,6 +574,12 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
     check_repeated_cli_render(
         executable, root, generated_obj,
         "generated_normals_reflection", "ppm", "1", reflection_args);
+    check_repeated_cli_render(
+        executable, root, glossy_obj,
+        "fixed_filtered_reflection", "pfm", "4", fixed_filter_args);
+    check_repeated_cli_render(
+        executable, root, glossy_obj,
+        "material_filtered_reflection", "pfm", "4", material_filter_args);
 
     const std::filesystem::path glossy_baseline = root / "glossy_baseline.pfm";
     const std::filesystem::path glossy_reflection = root / "glossy_reflection.pfm";
@@ -525,6 +598,80 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         check(
             read_file_bytes(glossy_baseline) != read_file_bytes(glossy_reflection),
             "CLI reflection observably shades non-zero Ks material");
+    }
+
+    const std::filesystem::path explicit_base = root / "explicit_base_reflection.pfm";
+    const std::filesystem::path implicit_base = root / "implicit_base_reflection.pfm";
+    std::vector<std::string> implicit_base_args{
+        glossy_obj.string(), implicit_base.string(), "32", "24", "4",
+    };
+    implicit_base_args.insert(implicit_base_args.end(), reflection_args.begin(), reflection_args.end());
+    std::vector<std::string> explicit_base_args{
+        glossy_obj.string(), explicit_base.string(), "32", "24", "4",
+    };
+    explicit_base_args.insert(explicit_base_args.end(), reflection_args.begin(), reflection_args.end());
+    explicit_base_args.insert(
+        explicit_base_args.end(),
+        {"--environment-reflection-mip", "base", "--environment-reflection-anisotropy", "1"});
+    const int implicit_base_result = run_renderer(executable, implicit_base_args);
+    const int explicit_base_result = run_renderer(executable, explicit_base_args);
+    check(
+        implicit_base_result == 0 && explicit_base_result == 0,
+        "implicit and explicit base-level reflection CLI renders succeed");
+    if (implicit_base_result == 0 && explicit_base_result == 0) {
+        check(
+            read_file_bytes(implicit_base) == read_file_bytes(explicit_base),
+            "new reflection filtering controls preserve historical base-level output exactly");
+    }
+
+    const std::filesystem::path fixed_cli = root / "fixed_cli.pfm";
+    const std::filesystem::path fixed_library = root / "fixed_library.pfm";
+    std::vector<std::string> fixed_cli_args{
+        glossy_obj.string(), fixed_cli.string(), "32", "24", "4",
+    };
+    fixed_cli_args.insert(fixed_cli_args.end(), fixed_filter_args.begin(), fixed_filter_args.end());
+    const int fixed_cli_result = run_renderer(executable, fixed_cli_args);
+    render_library_reflection(
+        glossy_obj,
+        filtered_environment,
+        fixed_library,
+        EnvironmentReflectionMipPolicy::AngularFootprint,
+        MipFilterMode::Linear,
+        4U,
+        1.2F);
+    check(fixed_cli_result == 0, "fixed-footprint reflection CLI render succeeds");
+    if (fixed_cli_result == 0) {
+        check(
+            read_file_bytes(fixed_cli) == read_file_bytes(fixed_library),
+            "fixed-footprint reflection CLI is byte-equivalent to direct library settings");
+    }
+
+    const std::filesystem::path material_cli = root / "material_cli.pfm";
+    const std::filesystem::path material_library = root / "material_library.pfm";
+    std::vector<std::string> material_cli_args{
+        glossy_obj.string(), material_cli.string(), "32", "24", "4",
+    };
+    material_cli_args.insert(
+        material_cli_args.end(), material_filter_args.begin(), material_filter_args.end());
+    const int material_cli_result = run_renderer(executable, material_cli_args);
+    render_library_reflection(
+        glossy_obj,
+        filtered_environment,
+        material_library,
+        EnvironmentReflectionMipPolicy::MaterialShininess,
+        MipFilterMode::Linear,
+        4U,
+        1.2F);
+    check(material_cli_result == 0, "material-shininess reflection CLI render succeeds");
+    if (material_cli_result == 0) {
+        check(
+            read_file_bytes(material_cli) == read_file_bytes(material_library),
+            "material-shininess reflection CLI is byte-equivalent to direct library settings");
+    }
+    if (fixed_cli_result == 0 && material_cli_result == 0) {
+        check(
+            read_file_bytes(fixed_cli) != read_file_bytes(material_cli),
+            "fixed and material-coupled reflection policies are observably distinct for Ns=4");
     }
 
     const std::filesystem::path zero_baseline = root / "zero_baseline.pfm";
@@ -565,6 +712,10 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         {"--environment-reflection-intensity", "2.0"});
     check_failed_without_output(
         glossy_obj,
+        "orphan_reflection_mip",
+        {"--environment-reflection-mip", "linear"});
+    check_failed_without_output(
+        glossy_obj,
         "duplicate_reflection",
         {
             "--environment-reflection", environment.string(),
@@ -572,8 +723,67 @@ void test_real_headless_reflection_cli(const std::filesystem::path& argv0) {
         });
     check_failed_without_output(
         glossy_obj,
+        "duplicate_reflection_mip",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-mip", "nearest",
+            "--environment-reflection-mip", "linear",
+        });
+    check_failed_without_output(
+        glossy_obj,
         "missing_reflection_file",
         {"--environment-reflection", (root / "missing.pfm").string()});
+    check_failed_without_output(
+        glossy_obj,
+        "filtered_reflection_missing_footprint",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-mip", "linear",
+        });
+    check_failed_without_output(
+        glossy_obj,
+        "reflection_footprint_without_mip",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-footprint", "0.5",
+        });
+    check_failed_without_output(
+        glossy_obj,
+        "material_reflection_missing_filter_state",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-material-shininess",
+        });
+    check_failed_without_output(
+        glossy_obj,
+        "base_reflection_with_footprint",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-mip", "base",
+            "--environment-reflection-footprint", "0.5",
+        });
+    check_failed_without_output(
+        glossy_obj,
+        "reflection_anisotropy_without_mips",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-anisotropy", "2",
+        });
+    check_failed_without_output(
+        glossy_obj,
+        "invalid_reflection_anisotropy",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-anisotropy", "3",
+        });
+    check_failed_without_output(
+        glossy_obj,
+        "invalid_reflection_footprint",
+        {
+            "--environment-reflection", filtered_environment.string(),
+            "--environment-reflection-mip", "linear",
+            "--environment-reflection-footprint", "2.0",
+        });
     check_failed_without_output(
         mixed_layout_obj,
         "unsupported_mixed_normal_layout",
