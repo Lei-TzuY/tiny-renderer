@@ -19,23 +19,7 @@ bool finite_vec3(const Vec3& value) {
 }
 
 void validate_sampler(const SamplerState& sampler) {
-    const auto validate_address = [](AddressMode mode) {
-        switch (mode) {
-            case AddressMode::Clamp:
-            case AddressMode::Repeat:
-                return;
-        }
-        throw std::invalid_argument("model texture sampler uses an unknown address mode");
-    };
-    validate_address(sampler.address_u);
-    validate_address(sampler.address_v);
-
-    switch (sampler.filter) {
-        case FilterMode::Nearest:
-        case FilterMode::Bilinear:
-            return;
-    }
-    throw std::invalid_argument("model texture sampler uses an unknown filter mode");
+    validate_sampler_state(sampler);
 }
 
 void validate_material(const MaterialState& material) {
