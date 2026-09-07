@@ -80,12 +80,16 @@ void Framebuffer::write_ppm(
         return;
     }
 
+    // Complete validation and encoding before creating or truncating the file.
+    // This keeps the explicit sRGB export path fail-closed for invalid resolved
+    // framebuffer values.
+    const std::vector<std::uint8_t> bytes = rgb8(transfer_function);
+
     std::ofstream out(path, std::ios::binary);
     if (!out) {
         throw std::runtime_error("failed to open PPM output: " + path);
     }
     out << "P6\n" << width_ << ' ' << height_ << "\n255\n";
-    const std::vector<std::uint8_t> bytes = rgb8(transfer_function);
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!out) {
         throw std::runtime_error("failed while writing PPM output: " + path);
