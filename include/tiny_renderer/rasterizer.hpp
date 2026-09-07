@@ -86,9 +86,11 @@ struct EnvironmentDiffuseLight {
     EnvironmentDiffuseState environment{};
 };
 
-// Perfect-mirror environment reflection is a separate optional contribution.
-// It shares the active world-space normal binding but also needs a finite viewer
-// position so the reflected lookup direction can vary across the surface.
+// Environment reflection is a separate optional contribution. It shares the
+// active world-space normal binding but also needs a finite viewer position so
+// the reflected lookup direction can vary across the surface. Material-coupled
+// glossy policy is resolved once per Rasterizer/material draw before the
+// existing M66 angular-footprint sampler is used.
 struct EnvironmentReflectionLight {
     NormalBinding normal{};
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
@@ -219,7 +221,16 @@ public:
           vertex_program_(std::move(vertex_program)),
           point_light_(point_light),
           fixed_lights_(std::move(fixed_lights)),
-          point_shadow_state_(std::move(point_shadow_state)) {}
+          point_shadow_state_(std::move(point_shadow_state)) {
+        if (fixed_lights_.environment_reflection
+            && fixed_lights_.environment_reflection->environment.mip_policy
+                == EnvironmentReflectionMipPolicy::MaterialShininess) {
+            fixed_lights_.environment_reflection->environment =
+                environment_lighting_detail::resolve_material_reflection_state(
+                    fixed_lights_.environment_reflection->environment,
+                    material_state_.shininess);
+        }
+    }
 
     void draw_triangle(const Triangle& triangle, const Mat4& model, const Mat4& view, const Mat4& projection);
     void draw_triangle(const Triangle& triangle, const Mat4& mvp);
