@@ -118,6 +118,17 @@ EnvironmentReflectionState angular_state(
     return state;
 }
 
+EnvironmentReflectionState material_shininess_state(
+    const Texture2D& texture,
+    MipFilterMode mip_filter = MipFilterMode::Linear,
+    float max_angle = 0.60F,
+    std::size_t max_anisotropy = 1U) {
+    EnvironmentReflectionState state = angular_state(
+        texture, mip_filter, max_angle, max_anisotropy);
+    state.mip_policy = EnvironmentReflectionMipPolicy::MaterialShininess;
+    return state;
+}
+
 VaryingPack normal_varyings() {
     VaryingPack varyings;
     varyings.count = 3U;
@@ -145,12 +156,56 @@ ModelAsset reflective_triangle_asset() {
     return asset;
 }
 
+ModelAsset reflective_pair_asset(float left_shininess, float right_shininess) {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-0.9F, -0.8F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({-0.1F, -0.8F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({-0.5F, 0.8F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.1F, -0.8F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.9F, -0.8F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.5F, 0.8F, 0.0F}, normal_varyings()),
+    };
+    asset.mesh.triangles = {
+        {{0U, 1U, 2U}},
+        {{3U, 4U, 5U}},
+    };
+
+    MaterialDraw left;
+    left.range = {0U, 1U};
+    left.material_name = "broad";
+    left.material.albedo = {0.0F, 0.0F, 0.0F};
+    left.material.specular = {1.0F, 1.0F, 1.0F};
+    left.material.shininess = left_shininess;
+    asset.draws.push_back(left);
+
+    MaterialDraw right;
+    right.range = {1U, 1U};
+    right.material_name = "sharp";
+    right.material.albedo = {0.0F, 0.0F, 0.0F};
+    right.material.specular = {1.0F, 1.0F, 1.0F};
+    right.material.shininess = right_shininess;
+    asset.draws.push_back(right);
+    return asset;
+}
+
 ModelRenderOptions reflection_options(const Texture2D& texture) {
     ModelRenderOptions options;
     EnvironmentReflectionLight light;
     light.normal = {0U, 1U, 2U};
     light.viewer_position = {0.0F, 0.0F, 2.0F};
     light.environment = angular_state(texture, MipFilterMode::Linear, 0.30F, 4U);
+    options.fixed_lights.environment_reflection = light;
+    return options;
+}
+
+ModelRenderOptions material_reflection_options(const Texture2D& texture) {
+    ModelRenderOptions options;
+    EnvironmentReflectionLight light;
+    light.normal = {0U, 1U, 2U};
+    light.viewer_position = {0.0F, 0.0F, 2.0F};
+    light.environment = material_shininess_state(
+        texture, MipFilterMode::Nearest, 0.60F, 1U);
     options.fixed_lights.environment_reflection = light;
     return options;
 }
@@ -214,6 +269,53 @@ void test_angular_footprint_reuses_sample_grad() {
         "angular reflection regression exercises a mip-filtered result");
 }
 
+void test_material_shininess_reuses_angular_sampler() {
+    const Texture2D texture = checker_texture(128U, 64U);
+    const EnvironmentReflectionState state = material_shininess_state(
+        texture, MipFilterMode::Nearest, 0.60F, 1U);
+    const Vec3 direction{0.32F, 0.18F, -1.0F};
+    const Vec2 uv = equirectangular_uv(direction, state.yaw_radians);
+
+    for (const float shininess : {1.0F, 4.0F, 1000.0F}) {
+        const float effective_angle = state.angular_footprint_radians / shininess;
+        const TextureGradients gradients = expected_angular_gradients(
+            direction, state.yaw_radians, effective_angle);
+        const Vec3 expected = texture.sample_grad(uv, gradients, state.sampler);
+        const Vec3 actual = reflection_environment_radiance(
+            state, direction, shininess);
+        check_vec3_near(
+            actual,
+            expected,
+            "material shininess resolves to the documented max-angle/Ns footprint");
+    }
+
+    const Vec3 broad = reflection_environment_radiance(state, direction, 1.0F);
+    const Vec3 sharp = reflection_environment_radiance(state, direction, 1000.0F);
+    check(
+        !nearly_equal(broad.x, sharp.x)
+            || !nearly_equal(broad.y, sharp.y)
+            || !nearly_equal(broad.z, sharp.z),
+        "material shininess changes reflection sharpness under one environment state");
+
+    check_throws<std::invalid_argument>(
+        [&] { (void)reflection_environment_radiance(state, direction); },
+        "material-shininess reflection cannot be sampled without material state");
+    check_throws<std::invalid_argument>(
+        [&] { (void)reflection_environment_radiance(state, direction, 0.0F); },
+        "material-shininess reflection rejects shininess below the material bound");
+    check_throws<std::invalid_argument>(
+        [&] { (void)reflection_environment_radiance(state, direction, 1001.0F); },
+        "material-shininess reflection rejects shininess above the material bound");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)reflection_environment_radiance(
+                state,
+                direction,
+                std::numeric_limits<float>::quiet_NaN());
+        },
+        "material-shininess reflection rejects non-finite shininess");
+}
+
 void test_angular_footprint_wraps_environment_seam() {
     const Texture2D texture = checker_texture(128U, 32U);
     const EnvironmentReflectionState state = angular_state(
@@ -248,6 +350,13 @@ void test_invalid_policy_combinations_fail_closed() {
         "angular reflection rejects disabled mip filtering");
 
     invalid = base_state(texture);
+    invalid.mip_policy = EnvironmentReflectionMipPolicy::MaterialShininess;
+    invalid.angular_footprint_radians = 0.2F;
+    check_throws<std::invalid_argument>(
+        [&] { validate_environment_reflection_state(invalid); },
+        "material-shininess reflection rejects disabled mip filtering");
+
+    invalid = base_state(texture);
     invalid.sampler.mip_filter = MipFilterMode::Nearest;
     check_throws<std::invalid_argument>(
         [&] { validate_environment_reflection_state(invalid); },
@@ -258,6 +367,12 @@ void test_invalid_policy_combinations_fail_closed() {
     check_throws<std::invalid_argument>(
         [&] { validate_environment_reflection_state(invalid); },
         "angular reflection rejects a zero footprint");
+
+    invalid = material_shininess_state(texture);
+    invalid.angular_footprint_radians = 0.0F;
+    check_throws<std::invalid_argument>(
+        [&] { validate_environment_reflection_state(invalid); },
+        "material-shininess reflection rejects a zero maximum footprint");
 
     invalid = angular_state(texture);
     invalid.angular_footprint_radians = std::numeric_limits<float>::quiet_NaN();
@@ -348,6 +463,82 @@ void test_direct_prepared_and_headless_propagation() {
         "headless angular reflection uses the authoritative preview viewer with the shared sampler path");
 }
 
+void test_material_shininess_direct_prepared_and_headless_equivalence() {
+    const Texture2D texture = checker_texture(128U, 64U);
+    const ModelAsset asset = reflective_pair_asset(1.0F, 1000.0F);
+    const ModelRenderOptions options = material_reflection_options(texture);
+
+    Framebuffer direct(65U, 33U, SampleCount::Four);
+    Framebuffer prepared_fb(65U, 33U, SampleCount::Four);
+    direct.clear({0.0F, 0.0F, 0.0F});
+    prepared_fb.clear({0.0F, 0.0F, 0.0F});
+    draw_model_asset(
+        direct,
+        asset,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        options);
+    const PreparedModelSubmission prepared = prepare_model_asset(asset, options);
+    draw_prepared_model(
+        prepared_fb,
+        prepared,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity());
+    check(
+        exact_samples_equal(direct, prepared_fb),
+        "material-coupled reflection is exact-sample equivalent through direct and prepared submission");
+
+    Framebuffer uniform(65U, 33U, SampleCount::Four);
+    uniform.clear({0.0F, 0.0F, 0.0F});
+    draw_model_asset(
+        uniform,
+        reflective_pair_asset(1.0F, 1.0F),
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        options);
+    check_vec3_near(
+        direct.color_at(16U, 20U),
+        uniform.color_at(16U, 20U),
+        "unchanged left material keeps the same glossy environment result");
+    const Vec3 sharp = direct.color_at(48U, 20U);
+    const Vec3 broad = uniform.color_at(48U, 20U);
+    check(
+        !nearly_equal(sharp.x, broad.x)
+            || !nearly_equal(sharp.y, broad.y)
+            || !nearly_equal(sharp.z, broad.z),
+        "two materials under one environment light resolve different reflection sharpness");
+
+    OfflineRenderSettings settings;
+    settings.width = 65U;
+    settings.height = 49U;
+    settings.sample_count = SampleCount::Four;
+    OfflineEnvironmentReflectionState offline;
+    offline.normal = {0U, 1U, 2U};
+    offline.environment = material_shininess_state(
+        texture, MipFilterMode::Nearest, 0.60F, 1U);
+    settings.environment_reflection = offline;
+    const Framebuffer headless = render_model_preview(asset, settings);
+
+    OfflineRenderSettings explicit_settings = settings;
+    explicit_settings.environment_reflection.reset();
+    ModelRenderOptions explicit_options;
+    EnvironmentReflectionLight explicit_light;
+    explicit_light.normal = {0U, 1U, 2U};
+    explicit_light.viewer_position = {0.0F, 0.0F, 3.0F};
+    explicit_light.environment = offline.environment;
+    explicit_options.fixed_lights.environment_reflection = explicit_light;
+    const Framebuffer explicit_headless = render_model_preview(
+        asset,
+        explicit_settings,
+        explicit_options);
+    check(
+        exact_samples_equal(headless, explicit_headless),
+        "headless material-coupled reflection resolves per-material shininess through the shared viewer path");
+}
+
 void test_prepared_validation_rejects_invalid_reflection_state() {
     const Texture2D texture = checker_texture();
     ModelRenderOptions options = reflection_options(texture);
@@ -356,6 +547,13 @@ void test_prepared_validation_rejects_invalid_reflection_state() {
     check_throws<std::invalid_argument>(
         [&] { (void)prepare_model_asset(reflective_triangle_asset(), options); },
         "prepared model rejects invalid angular reflection state before framebuffer execution");
+
+    options = material_reflection_options(texture);
+    options.fixed_lights.environment_reflection->environment.sampler.mip_filter =
+        MipFilterMode::Disabled;
+    check_throws<std::invalid_argument>(
+        [&] { (void)prepare_model_asset(reflective_triangle_asset(), options); },
+        "prepared model rejects invalid material-coupled reflection state before execution");
 }
 
 }  // namespace
@@ -363,9 +561,11 @@ void test_prepared_validation_rejects_invalid_reflection_state() {
 int main() {
     test_base_level_preserves_reference();
     test_angular_footprint_reuses_sample_grad();
+    test_material_shininess_reuses_angular_sampler();
     test_angular_footprint_wraps_environment_seam();
     test_invalid_policy_combinations_fail_closed();
     test_direct_prepared_and_headless_propagation();
+    test_material_shininess_direct_prepared_and_headless_equivalence();
     test_prepared_validation_rejects_invalid_reflection_state();
 
     if (failures != 0) {
