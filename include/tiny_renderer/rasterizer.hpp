@@ -86,6 +86,15 @@ struct EnvironmentDiffuseLight {
     EnvironmentDiffuseState environment{};
 };
 
+// Perfect-mirror environment reflection is a separate optional contribution.
+// It shares the active world-space normal binding but also needs a finite viewer
+// position so the reflected lookup direction can vary across the surface.
+struct EnvironmentReflectionLight {
+    NormalBinding normal{};
+    Vec3 viewer_position{0.0F, 0.0F, 0.0F};
+    EnvironmentReflectionState environment{};
+};
+
 struct DirectionalLight {
     bool enabled{false};
     NormalBinding normal{};
@@ -157,10 +166,11 @@ struct FixedLightCollection {
     std::optional<std::size_t> shadowed_point_index{};
     std::optional<std::size_t> shadowed_spot_index{};
     SpotShadowState spot_shadow_state{};
-    // Trailing optional contribution: does not consume one of the four
-    // directional/point/spot records and remains independent of background
-    // rendering. The referenced texture is borrowed by the submission state.
+    // Trailing optional contributions do not consume one of the four
+    // directional/point/spot records and remain independent of background
+    // rendering. Referenced environment textures are borrowed.
     std::optional<EnvironmentDiffuseLight> environment_diffuse{};
+    std::optional<EnvironmentReflectionLight> environment_reflection{};
 };
 
 [[nodiscard]] float signed_area_twice(const Vec2& a, const Vec2& b, const Vec2& c);
