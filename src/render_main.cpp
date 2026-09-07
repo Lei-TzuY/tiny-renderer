@@ -60,7 +60,7 @@ tiny_renderer::SampleCount parse_sample_count(std::string_view text) {
     throw std::invalid_argument("sample count must be 1 or 4");
 }
 
-tiny_renderer::MipFilterMode parse_environment_mip(std::string_view text) {
+tiny_renderer::MipFilterMode parse_mip_filter(std::string_view text, const char* label) {
     if (text == "base") {
         return tiny_renderer::MipFilterMode::Disabled;
     }
@@ -70,7 +70,15 @@ tiny_renderer::MipFilterMode parse_environment_mip(std::string_view text) {
     if (text == "linear") {
         return tiny_renderer::MipFilterMode::Linear;
     }
-    throw std::invalid_argument("environment mip mode must be base, nearest, or linear");
+    throw std::invalid_argument(std::string(label) + " must be base, nearest, or linear");
+}
+
+std::size_t parse_texture_anisotropy(std::string_view text) {
+    const std::size_t value = parse_positive_size(text, "texture anisotropy");
+    if (value != 1U && value != 2U && value != 4U) {
+        throw std::invalid_argument("texture anisotropy must be 1, 2, or 4");
+    }
+    return value;
 }
 
 std::string lowercase_extension(const std::filesystem::path& path) {
@@ -129,6 +137,8 @@ tiny_renderer::ModelRenderOptions preview_options(const tiny_renderer::ModelAsse
 
 struct ParsedArguments {
     tiny_renderer::OfflineRenderSettings settings{};
+    std::optional<tiny_renderer::MipFilterMode> texture_mip{};
+    std::optional<std::size_t> texture_anisotropy{};
     std::optional<std::filesystem::path> environment_path{};
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
@@ -144,6 +154,8 @@ struct ParsedArguments {
 ParsedArguments parse_arguments(int argc, char** argv) {
     ParsedArguments parsed;
     std::vector<std::string_view> positional;
+    bool saw_texture_mip = false;
+    bool saw_texture_anisotropy = false;
     bool saw_environment = false;
     bool saw_intensity = false;
     bool saw_yaw = false;
@@ -165,7 +177,19 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             return argv[index];
         };
 
-        if (token == "--environment") {
+        if (token == "--texture-mip") {
+            if (saw_texture_mip) {
+                throw std::invalid_argument("--texture-mip may be specified at most once");
+            }
+            saw_texture_mip = true;
+            parsed.texture_mip = parse_mip_filter(require_value("--texture-mip"), "texture mip mode");
+        } else if (token == "--texture-anisotropy") {
+            if (saw_texture_anisotropy) {
+                throw std::invalid_argument("--texture-anisotropy may be specified at most once");
+            }
+            saw_texture_anisotropy = true;
+            parsed.texture_anisotropy = parse_texture_anisotropy(require_value("--texture-anisotropy"));
+        } else if (token == "--environment") {
             if (saw_environment) {
                 throw std::invalid_argument("--environment may be specified at most once");
             }
@@ -195,7 +219,7 @@ ParsedArguments parse_arguments(int argc, char** argv) {
                 throw std::invalid_argument("--environment-mip may be specified at most once");
             }
             saw_mip = true;
-            parsed.environment_mip = parse_environment_mip(require_value("--environment-mip"));
+            parsed.environment_mip = parse_mip_filter(require_value("--environment-mip"), "environment mip mode");
         } else if (token == "--environment-light") {
             if (saw_environment_light) {
                 throw std::invalid_argument("--environment-light may be specified at most once");
@@ -286,16 +310,17 @@ ParsedArguments parse_arguments(int argc, char** argv) {
 void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.obj OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
+           " [--texture-mip base|nearest|linear] [--texture-anisotropy 1|2|4]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
            " [--environment-mip base|nearest|linear]"
            " [--environment-light IMAGE] [--environment-light-intensity VALUE]"
            " [--environment-light-yaw RADIANS]"
            " [--environment-reflection IMAGE] [--environment-reflection-intensity VALUE]"
            " [--environment-reflection-yaw RADIANS]\n"
-        << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 environment-intensity=1"
-           " environment-yaw=0 environment-mip=base environment-light-intensity=1"
-           " environment-light-yaw=0 environment-reflection-intensity=1"
-           " environment-reflection-yaw=0\n";
+        << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
+           " environment-intensity=1 environment-yaw=0 environment-mip=base"
+           " environment-light-intensity=1 environment-light-yaw=0"
+           " environment-reflection-intensity=1 environment-reflection-yaw=0\n";
 }
 
 }  // namespace
@@ -402,6 +427,13 @@ int main(int argc, char** argv) {
 
         const tiny_renderer::ModelAsset asset = tiny_renderer::load_obj_model_asset_file(input_path);
         tiny_renderer::ModelRenderOptions options = preview_options(asset);
+        if (parsed.texture_mip) {
+            options.sampler.mip_filter = *parsed.texture_mip;
+        }
+        if (parsed.texture_anisotropy) {
+            options.sampler.max_anisotropy = *parsed.texture_anisotropy;
+        }
+        tiny_renderer::validate_sampler_state(options.sampler);
         if (diffuse_environment) {
             tiny_renderer::EnvironmentDiffuseLight light;
             light.normal = preview_normal_binding(asset);
