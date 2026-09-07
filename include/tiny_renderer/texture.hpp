@@ -23,6 +23,15 @@ enum class MipFilterMode {
     Linear,
 };
 
+// Describes how source texture samples are interpreted before they enter the
+// renderer's linear-float texture domain. Linear preserves source values
+// exactly; Srgb decodes normalized encoded RGB to linear RGB before mip
+// generation, filtering, lighting, or any material use.
+enum class TextureTransferFunction {
+    Linear,
+    Srgb,
+};
+
 struct SamplerState {
     AddressMode address_u{AddressMode::Clamp};
     AddressMode address_v{AddressMode::Clamp};
@@ -36,10 +45,15 @@ struct TextureGradients {
 };
 
 void validate_sampler_state(const SamplerState& sampler);
+void validate_texture_transfer_function(TextureTransferFunction transfer_function);
 
 class Texture2D {
 public:
-    Texture2D(std::size_t width, std::size_t height, std::vector<Vec3> texels);
+    Texture2D(
+        std::size_t width,
+        std::size_t height,
+        std::vector<Vec3> texels,
+        TextureTransferFunction transfer_function = TextureTransferFunction::Linear);
 
     [[nodiscard]] std::size_t width() const noexcept { return levels_.front().width; }
     [[nodiscard]] std::size_t height() const noexcept { return levels_.front().height; }
@@ -47,6 +61,9 @@ public:
     [[nodiscard]] std::size_t mip_width(std::size_t level) const;
     [[nodiscard]] std::size_t mip_height(std::size_t level) const;
     [[nodiscard]] bool texels_within_unit_range() const noexcept { return texels_within_unit_range_; }
+    [[nodiscard]] TextureTransferFunction source_transfer_function() const noexcept {
+        return source_transfer_function_;
+    }
     [[nodiscard]] const Vec3& texel(std::size_t x, std::size_t y) const;
     [[nodiscard]] const Vec3& mip_texel(std::size_t level, std::size_t x, std::size_t y) const;
     [[nodiscard]] Vec3 sample(const Vec2& uv, const SamplerState& sampler = {}) const;
@@ -73,6 +90,7 @@ private:
 
     std::vector<MipLevel> levels_;
     bool texels_within_unit_range_{true};
+    TextureTransferFunction source_transfer_function_{TextureTransferFunction::Linear};
 };
 
 }  // namespace tiny_renderer
