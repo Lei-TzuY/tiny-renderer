@@ -15,6 +15,16 @@ enum class SampleCount : std::uint8_t {
     Four = 4U,
 };
 
+// Export-only transfer interpretation. Framebuffer storage, blending, depth,
+// stencil, resolve, and raster ownership remain linear regardless of this
+// choice. The no-argument export APIs retain the historical linear behavior.
+enum class OutputTransferFunction {
+    Linear,
+    Srgb,
+};
+
+void validate_output_transfer_function(OutputTransferFunction transfer_function);
+
 enum class DepthCompare {
     Less,
     LessEqual,
@@ -150,9 +160,9 @@ public:
         return sample_count_ == SampleCount::Four ? 4U : 1U;
     }
 
-    // color_at is always the resolved RGB value. For multisample targets,
-    // depth_at/stencil_at retain a sample-0 compatibility view; use the
-    // sample-specific accessors whenever per-sample ownership matters.
+    // color_at is always the resolved linear RGB value. For multisample
+    // targets, depth_at/stencil_at retain a sample-0 compatibility view; use
+    // the sample-specific accessors whenever per-sample ownership matters.
     [[nodiscard]] const Vec3& color_at(std::size_t x, std::size_t y) const;
     [[nodiscard]] float depth_at(std::size_t x, std::size_t y) const;
     [[nodiscard]] std::uint8_t stencil_at(std::size_t x, std::size_t y) const;
@@ -168,10 +178,16 @@ public:
         std::size_t x,
         std::size_t y,
         std::size_t sample_index) const;
+
+    // Historical no-argument export is intentionally retained unchanged.
     [[nodiscard]] std::vector<std::uint8_t> rgb8() const;
     [[nodiscard]] std::uint64_t fnv1a64() const;
-
     void write_ppm(const std::string& path) const;
+
+    // Explicit export transfer overloads operate only on resolved linear RGB.
+    [[nodiscard]] std::vector<std::uint8_t> rgb8(OutputTransferFunction transfer_function) const;
+    [[nodiscard]] std::uint64_t fnv1a64(OutputTransferFunction transfer_function) const;
+    void write_ppm(const std::string& path, OutputTransferFunction transfer_function) const;
 
 private:
     [[nodiscard]] std::size_t pixel_index(std::size_t x, std::size_t y) const;
