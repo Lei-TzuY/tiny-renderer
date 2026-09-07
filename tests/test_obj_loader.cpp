@@ -203,6 +203,26 @@ void test_vertex_color_layout_and_validation() {
         }
     }
 
+    const ObjModelSource generated_uv = parse_model_source_text(
+        "v -0.8 -0.8 0 1 0 0\n"
+        "v 0.8 -0.8 0 0 1 0\n"
+        "v 0 0.8 0 0 0 1\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "vt 0.5 1\n"
+        "f 1/1 2/2 3/3\n");
+    check(generated_uv.vertex_color_channels == std::optional<VertexColorChannels>{VertexColorChannels{5U, 6U, 7U}},
+          "generated-normal v/vt RGB metadata follows UV plus generated-normal channels");
+    for (const Vertex& vertex : generated_uv.mesh.vertices) {
+        check(vertex.varyings.count == 8U,
+              "generated-normal v/vt RGB vertices exactly fill the fixed eight-varying capacity");
+        if (vertex.varyings.count == 8U) {
+            check_near(vertex.varyings[2], 0.0F, "generated UV colored normal x");
+            check_near(vertex.varyings[3], 0.0F, "generated UV colored normal y");
+            check_near(vertex.varyings[4], 1.0F, "generated UV colored normal z");
+        }
+    }
+
     const ObjModelSource uvn = parse_model_source_text(
         "v -0.8 -0.8 0 1 0 0\n"
         "v 0.8 -0.8 0 0 1 0\n"
