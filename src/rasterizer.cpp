@@ -136,6 +136,10 @@ Vec3 modulate_rgb(const Vec3& a, const Vec3& b) {
     return {a.x * b.x, a.y * b.y, a.z * b.z};
 }
 
+Vec3 add_emissive(const Vec3& shaded, const MaterialState& material) {
+    return shaded + material.emissive;
+}
+
 bool material_has_specular(const MaterialState& material) {
     return material.specular.x > 0.0F || material.specular.y > 0.0F || material.specular.z > 0.0F;
 }
@@ -381,6 +385,12 @@ MaterialState prepare_material_state(const MaterialState& material) {
     if (!std::isfinite(material.shininess)
         || material.shininess < 1.0F || material.shininess > 1000.0F) {
         throw std::invalid_argument("material shininess must be finite and within [1, 1000]");
+    }
+    if (!finite_vec3(material.emissive)
+        || material.emissive.x < 0.0F || material.emissive.x > 1.0F
+        || material.emissive.y < 0.0F || material.emissive.y > 1.0F
+        || material.emissive.z < 0.0F || material.emissive.z > 1.0F) {
+        throw std::invalid_argument("material emissive components must be finite and within [0, 1]");
     }
     return material;
 }
@@ -1294,12 +1304,12 @@ ShadedFragment shade_fragment(
     const float opacity = fragment_opacity(varyings, gradients, texture_binding, material);
     if (reflection_is_only_zero_contribution(
             directional_light, point_light, fixed_lights, material)) {
-        return {base, opacity, false};
+        return {add_emissive(base, material), opacity, false};
     }
     const NormalBinding* normal_binding = detail::active_normal_binding(
         directional_light, point_light, fixed_lights);
     if (normal_binding == nullptr) {
-        return {base, opacity, false};
+        return {add_emissive(base, material), opacity, false};
     }
 
     const Vec3 interpolated_normal{
@@ -1309,11 +1319,11 @@ ShadedFragment shade_fragment(
     };
     const Vec3 ambient = ambient_sum(directional_light, point_light, fixed_lights);
     if (!finite_vec3(interpolated_normal)) {
-        return {modulate_rgb(base, ambient), opacity, false};
+        return {add_emissive(modulate_rgb(base, ambient), material), opacity, false};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {modulate_rgb(base, ambient), opacity, false};
+        return {add_emissive(modulate_rgb(base, ambient), material), opacity, false};
     }
 
     const Vec3 geometric_normal = interpolated_normal / normal_length;
@@ -1337,7 +1347,7 @@ ShadedFragment shade_fragment(
         shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
         shaded = shaded + environment_reflection_contribution(
             normal, world_position, material, fixed_lights);
-        return {shaded, opacity, false};
+        return {add_emissive(shaded, material), opacity, false};
     }
 
     for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
@@ -1429,7 +1439,7 @@ ShadedFragment shade_fragment(
     shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
     shaded = shaded + environment_reflection_contribution(
         normal, world_position, material, fixed_lights);
-    return {shaded, opacity, false};
+    return {add_emissive(shaded, material), opacity, false};
 }
 
 void rasterize_screen_triangle(

@@ -278,6 +278,53 @@ void test_invalid_materials_fail_closed() {
     expect_invalid_material(
         MaterialState{{1.0F, 1.01F, 1.0F}},
         "material albedo above one is rejected");
+
+    MaterialState non_finite_emissive;
+    non_finite_emissive.emissive = {std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F};
+    expect_invalid_material(non_finite_emissive, "non-finite material emissive is rejected");
+
+    MaterialState negative_emissive;
+    negative_emissive.emissive = {-0.01F, 0.0F, 0.0F};
+    expect_invalid_material(negative_emissive, "negative material emissive is rejected");
+
+    MaterialState high_emissive;
+    high_emissive.emissive = {0.0F, 1.01F, 0.0F};
+    expect_invalid_material(high_emissive, "material emissive above one is rejected");
+}
+
+void test_emissive_adds_independently_of_direct_light() {
+    const Vec3 normal{0.0F, 0.0F, -1.0F};
+    const Triangle triangle{{
+        uv_normal_vertex({-0.6F, -0.6F, 0.0F}, 0.0F, 0.0F, normal),
+        uv_normal_vertex({0.6F, -0.6F, 0.0F}, 1.0F, 0.0F, normal),
+        uv_normal_vertex({0.0F, 0.6F, 0.0F}, 0.5F, 1.0F, normal),
+    }};
+    const DirectionalLight light{
+        true,
+        NormalBinding{2U, 3U, 4U},
+        {0.0F, 0.0F, 1.0F},
+        0.0F,
+        1.0F,
+    };
+    MaterialState material;
+    material.albedo = {0.8F, 0.6F, 0.4F};
+    material.emissive = {0.1F, 0.2F, 0.3F};
+
+    Framebuffer framebuffer(33U, 33U);
+    Rasterizer rasterizer(
+        framebuffer,
+        ColorBinding{99U, 99U, 99U},
+        {},
+        light,
+        material,
+        BaseColorSource::ConstantWhite);
+    rasterizer.draw_triangle(
+        triangle, Mat4::identity(), Mat4::identity(), Mat4::identity());
+
+    check_color(
+        framebuffer.color_at(16U, 16U),
+        material.emissive,
+        "self-emission survives a zero-Lambert direct-light contribution");
 }
 
 void expect_invalid_source(
@@ -332,6 +379,7 @@ int main() {
         test_constant_white_source_composes_with_material_and_lambert();
         test_constant_white_clipping_matches_explicit_geometry();
         test_invalid_materials_fail_closed();
+        test_emissive_adds_independently_of_direct_light();
         test_invalid_source_bindings_fail_closed();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';

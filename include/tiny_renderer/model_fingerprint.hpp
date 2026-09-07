@@ -145,6 +145,22 @@ inline void model_fingerprint_texture(
         detail::model_fingerprint_size(hash, asset.vertex_color_channels->blue);
     }
 
+    bool has_emissive_material = false;
+    for (const MaterialDraw& draw : asset.draws) {
+        if (draw.material.emissive.x != 0.0F
+            || draw.material.emissive.y != 0.0F
+            || draw.material.emissive.z != 0.0F) {
+            has_emissive_material = true;
+            break;
+        }
+    }
+    if (has_emissive_material) {
+        detail::model_fingerprint_string(hash, "material-emissive-v1");
+        for (const MaterialDraw& draw : asset.draws) {
+            detail::model_fingerprint_vec3(hash, draw.material.emissive);
+        }
+    }
+
     return hash;
 }
 

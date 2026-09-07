@@ -10,6 +10,8 @@
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/material.hpp"
+#include "tiny_renderer/model_fingerprint.hpp"
+#include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/mtl_loader.hpp"
 #include "tiny_renderer/obj_loader.hpp"
 #include "tiny_renderer/ppm_loader.hpp"
@@ -96,6 +98,80 @@ void test_mtl_diffuse_subset_and_rejections() {
         "newmtl a\nKd 1 1 1\nnewmtl a\nKd 0 0 0\n",
         "duplicate material names are rejected");
     expect_mtl_error("newmtl a\nKd 1 1 1\nillum 2\n", "unsupported MTL directives fail closed");
+}
+
+std::filesystem::path fixture_path(const char* name);
+
+void test_mtl_emissive_ke_subset_and_rejections() {
+    const MaterialLibrary library = parse_mtl(
+        "newmtl glow\n"
+        "Kd 0.2 0.3 0.4\n"
+        "Ke 0.1 0.25 0.5\n");
+    check(library.size() == 1U, "bounded MTL loader accepts one Ke material");
+    if (const auto glow = library.find("glow"); glow != library.end()) {
+        check_color(glow->second.emissive, {0.1F, 0.25F, 0.5F},
+                    "Ke maps to runtime self-emission");
+    } else {
+        check(false, "Ke material exists");
+    }
+
+    const MaterialAssetLibrary rich = parse_mtl_assets(
+        "newmtl glow\n"
+        "Kd 0.2 0.3 0.4\n"
+        "Ke 0.1 0.25 0.5\n");
+    if (const auto glow = rich.find("glow"); glow != rich.end()) {
+        check_color(glow->second.material.emissive, {0.1F, 0.25F, 0.5F},
+                    "rich material asset path preserves Ke");
+    } else {
+        check(false, "rich Ke material exists");
+    }
+
+    expect_mtl_error("Ke 0 0 0\n", "Ke before newmtl is rejected");
+    expect_mtl_error(
+        "newmtl a\nKd 1 1 1\nKe 0 0 0\nKe 0 0 0\n",
+        "duplicate Ke is rejected");
+    expect_mtl_error("newmtl a\nKd 1 1 1\nKe 0 0\n",
+                     "malformed Ke component count is rejected");
+    expect_mtl_error("newmtl a\nKd 1 1 1\nKe -0.01 0 0\n",
+                     "negative Ke is rejected");
+    expect_mtl_error("newmtl a\nKd 1 1 1\nKe 0 1.01 0\n",
+                     "Ke above one is rejected");
+    expect_mtl_error("newmtl a\nKd 1 1 1\nKe 0 nope 0\n",
+                     "non-numeric Ke is rejected");
+}
+
+void test_file_driven_emissive_model_submission_and_fingerprint() {
+    const ModelAsset asset = load_obj_model_asset_file(fixture_path("emissive_material.obj"));
+    check(asset.draws.size() == 1U, "emissive fixture produces one canonical material draw");
+    if (asset.draws.empty()) {
+        return;
+    }
+    check_color(asset.draws[0].material.emissive, {0.1F, 0.2F, 0.1F},
+                "file-driven Ke reaches canonical ModelAsset material state");
+
+    Framebuffer direct(33U, 33U);
+    draw_model_asset(direct, asset, Mat4::identity());
+
+    const PreparedModelSubmission prepared = prepare_model_asset(asset);
+    Framebuffer prepared_fb(33U, 33U);
+    draw_prepared_model(prepared_fb, prepared, Mat4::identity());
+    check(direct.rgb8() == prepared_fb.rgb8(),
+          "prepared emissive rendering is byte-identical to direct model submission");
+    check_color(direct.color_at(16U, 16U), {0.3F, 0.5F, 0.5F},
+                "unlit file-driven Kd plus Ke reaches the existing linear shading path");
+
+    const PreparedModelListEntry entry{&prepared, Mat4::identity()};
+    Framebuffer list_fb(33U, 33U);
+    draw_prepared_model_list(
+        list_fb, std::span<const PreparedModelListEntry>{&entry, 1U},
+        Mat4::identity(), Mat4::identity());
+    check(direct.rgb8() == list_fb.rgb8(),
+          "prepared-list emissive rendering matches direct model submission");
+
+    ModelAsset zero_emission = asset;
+    zero_emission.draws[0].material.emissive = {0.0F, 0.0F, 0.0F};
+    check(model_asset_fnv1a64(asset) != model_asset_fnv1a64(zero_emission),
+          "model fingerprint distinguishes active emissive material semantics");
 }
 
 void test_rich_mtl_diffuse_map_subset_and_legacy_strictness() {
@@ -421,6 +497,8 @@ void test_missing_diffuse_texture_fails_closed() {
 int main() {
     try {
         test_mtl_diffuse_subset_and_rejections();
+        test_mtl_emissive_ke_subset_and_rejections();
+        test_file_driven_emissive_model_submission_and_fingerprint();
         test_rich_mtl_diffuse_map_subset_and_legacy_strictness();
         test_contiguous_batch_order_and_material_values();
         test_material_batches_render_like_programmatic_submission();

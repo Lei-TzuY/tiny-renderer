@@ -12,6 +12,9 @@ struct MaterialState {
     Vec3 specular{0.0F, 0.0F, 0.0F};
     // Bounded teaching-space exponent used only when specular is non-zero.
     float shininess{32.0F};
+    // Bounded self-emission in the renderer's current linear RGB teaching
+    // space. Zero preserves every historical material result.
+    Vec3 emissive{0.0F, 0.0F, 0.0F};
 };
 
 }  // namespace tiny_renderer
