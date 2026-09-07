@@ -48,6 +48,9 @@ void validate_settings(const OfflineRenderSettings& settings) {
     if (settings.environment) {
         validate_environment_background_state(*settings.environment);
     }
+    if (settings.environment_lighting) {
+        validate_environment_diffuse_state(settings.environment_lighting->environment);
+    }
 }
 
 struct ModelBounds {
@@ -126,6 +129,13 @@ Framebuffer render_model_preview(
     const OfflineRenderSettings& settings,
     ModelRenderOptions options) {
     validate_settings(settings);
+    if (settings.environment_lighting) {
+        if (options.fixed_lights.environment_diffuse) {
+            throw std::invalid_argument(
+                "offline render environment lighting conflicts with ModelRenderOptions environment diffuse lighting");
+        }
+        options.fixed_lights.environment_diffuse = settings.environment_lighting;
+    }
     const ModelBounds bounds = model_bounds(asset);
 
     const double aspect = static_cast<double>(settings.width) / static_cast<double>(settings.height);
