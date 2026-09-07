@@ -237,6 +237,10 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_offline_render_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_offline_render_tests COMMAND tiny_renderer_offline_render_tests)
 
+    add_executable(tiny_renderer_headless_environment_tests tests/test_headless_environment.cpp)
+    target_link_libraries(tiny_renderer_headless_environment_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_headless_environment_tests COMMAND tiny_renderer_headless_environment_tests)
+
     add_test(
         NAME tiny_renderer_render_cli_ppm
         COMMAND tiny_renderer_render
@@ -257,6 +261,99 @@ if(BUILD_TESTING)
     set_tests_properties(tiny_renderer_render_cli_pfm PROPERTIES
         PASS_REGULAR_EXPRESSION "rendered format=pfm width=48 height=64 samples=4"
     )
+
+    add_test(
+        NAME tiny_renderer_render_cli_environment_ppm_a
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_a.ppm"
+            40 30 1
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-intensity 1.25
+            --environment-yaw 0.3
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_ppm_a PROPERTIES
+        PASS_REGULAR_EXPRESSION "rendered format=ppm width=40 height=30 samples=1"
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_environment_ppm_b
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_b.ppm"
+            40 30 1
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-intensity 1.25
+            --environment-yaw 0.3
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_environment_ppm_compare
+        COMMAND ${CMAKE_COMMAND} -E compare_files
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_a.ppm"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_b.ppm"
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_ppm_compare PROPERTIES
+        DEPENDS "tiny_renderer_render_cli_environment_ppm_a;tiny_renderer_render_cli_environment_ppm_b"
+    )
+
+    add_test(
+        NAME tiny_renderer_render_cli_environment_pfm_a
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_a.pfm"
+            40 30 4
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-intensity 1.25
+            --environment-yaw 0.3
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_pfm_a PROPERTIES
+        PASS_REGULAR_EXPRESSION "rendered format=pfm width=40 height=30 samples=4"
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_environment_pfm_b
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_b.pfm"
+            40 30 4
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment-intensity 1.25
+            --environment-yaw 0.3
+    )
+    add_test(
+        NAME tiny_renderer_render_cli_environment_pfm_compare
+        COMMAND ${CMAKE_COMMAND} -E compare_files
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_a.pfm"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_environment_b.pfm"
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_pfm_compare PROPERTIES
+        DEPENDS "tiny_renderer_render_cli_environment_pfm_a;tiny_renderer_render_cli_environment_pfm_b"
+    )
+
+    add_test(
+        NAME tiny_renderer_render_cli_environment_duplicate
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_duplicate.ppm"
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/environment_hdr.pfm"
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_duplicate PROPERTIES WILL_FAIL TRUE)
+    add_test(
+        NAME tiny_renderer_render_cli_environment_orphan_intensity
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_orphan.ppm"
+            --environment-intensity 2.0
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_orphan_intensity PROPERTIES WILL_FAIL TRUE)
+    add_test(
+        NAME tiny_renderer_render_cli_environment_missing_file
+        COMMAND tiny_renderer_render
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/material_texture_sequence.obj"
+            "${CMAKE_CURRENT_BINARY_DIR}/tiny_renderer_render_missing_environment.ppm"
+            --environment "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/does_not_exist.pfm"
+    )
+    set_tests_properties(tiny_renderer_render_cli_environment_missing_file PROPERTIES WILL_FAIL TRUE)
+
     add_test(NAME tiny_renderer_render_usage COMMAND tiny_renderer_render)
     set_tests_properties(tiny_renderer_render_usage PROPERTIES WILL_FAIL TRUE)
 
