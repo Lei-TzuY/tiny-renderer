@@ -241,6 +241,10 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_headless_environment_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_headless_environment_tests COMMAND tiny_renderer_headless_environment_tests)
 
+    add_executable(tiny_renderer_headless_reflection_tests tests/test_headless_reflection.cpp)
+    target_link_libraries(tiny_renderer_headless_reflection_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_headless_reflection_tests COMMAND tiny_renderer_headless_reflection_tests)
+
     add_executable(tiny_renderer_environment_mip_tests tests/test_environment_mips.cpp)
     target_link_libraries(tiny_renderer_environment_mip_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_environment_mip_tests COMMAND tiny_renderer_environment_mip_tests)
