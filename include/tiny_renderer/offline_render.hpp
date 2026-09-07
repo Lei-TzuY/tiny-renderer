@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 
+#include "tiny_renderer/environment.hpp"
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/model_renderer.hpp"
@@ -19,11 +21,14 @@ struct OfflineRenderSettings {
     Vec3 clear_color{0.02F, 0.025F, 0.035F};
     float vertical_fov_radians{radians(50.0F)};
     float framing_margin{1.10F};
+    // Optional borrowed linear-HDR environment. When present it is rendered
+    // before geometry using the exact same fixed preview camera/FOV/aspect.
+    std::optional<EnvironmentBackgroundState> environment{};
 };
 
 // Renders a bounded, auto-framed preview through the existing model/raster
 // path. ModelRenderOptions are forwarded unchanged; no alternate material,
-// texture, lighting, depth, or framebuffer implementation is introduced.
+// texture, lighting, depth, environment, or framebuffer implementation is introduced.
 [[nodiscard]] Framebuffer render_model_preview(
     const ModelAsset& asset,
     const OfflineRenderSettings& settings = {},
