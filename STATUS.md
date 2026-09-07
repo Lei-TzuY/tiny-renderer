@@ -2,11 +2,11 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains the detailed milestone record. A milestone is closed only after its exact `main` commit passes Linux, macOS, and ASan/UBSan CI.
 
-## Integrated architecture through Milestone 53
+## Integrated architecture through Milestone 54
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity/A2C, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–43 extend the same path with tangent-space normal mapping, Blinn-Phong specular lighting, point lights, caller-ordered fixed multi-light accumulation, point-light cubemap shadows, spotlight shading/shadows, and bounded per-light RGB color.
 
-Milestones 44–46 make shadow ownership and sampling composable: every bounded light record can own a typed shadow resource, Hard/3x3-PCF is explicit per binding, and directional records can own bounded ordered cascade sets selected deterministically from perspective-correct world position and camera-view depth. Milestone 47 promotes texture minification onto the same path with owned mip chains, explicit nearest-level/trilinear policy, and raster-derived perspective-correct UV gradients shared by diffuse, opacity, and normal texture roles. Milestone 48 makes source texture interpretation explicit: historical/default imports remain linear, while opted-in diffuse color textures are sRGB-decoded to linear floats before mip construction and data-texture roles remain linear. Milestone 49 makes the opposite 8-bit boundary explicit: framebuffer storage and all rendering remain linear, while callers may opt into standard sRGB encoding only when resolved RGB becomes export bytes. Milestone 50 adds a data-preserving HDR output boundary with deterministic float RGB PFM, Milestone 51 closes the loop by importing bounded RGB PFM back into the same linear `Texture2D`/mipmap/shared-dispatch domain, Milestone 52 adds opt-in bounded HDR display mapping after resolve without changing linear rendering or archival HDR behavior, and Milestone 53 makes imported/programmatic linear HDR textures executable as a deterministic equirectangular camera background while preserving normal geometry depth/stencil ownership.
+Milestones 44–46 make shadow ownership and sampling composable: every bounded light record can own a typed shadow resource, Hard/3x3-PCF is explicit per binding, and directional records can own bounded ordered cascade sets selected deterministically from perspective-correct world position and camera-view depth. Milestone 47 promotes texture minification onto the same path with owned mip chains, explicit nearest-level/trilinear policy, and raster-derived perspective-correct UV gradients shared by diffuse, opacity, and normal texture roles. Milestone 48 makes source texture interpretation explicit: historical/default imports remain linear, while opted-in diffuse color textures are sRGB-decoded to linear floats before mip construction and data-texture roles remain linear. Milestone 49 makes the opposite 8-bit boundary explicit: framebuffer storage and all rendering remain linear, while callers may opt into standard sRGB encoding only when resolved RGB becomes export bytes. Milestone 50 adds a data-preserving HDR output boundary with deterministic float RGB PFM, Milestone 51 closes the loop by importing bounded RGB PFM back into the same linear `Texture2D`/mipmap/shared-dispatch domain, Milestone 52 adds opt-in bounded HDR display mapping after resolve without changing linear rendering or archival HDR behavior, Milestone 53 makes imported/programmatic linear HDR textures executable as a deterministic equirectangular camera background while preserving normal geometry depth/stencil ownership, and Milestone 54 connects that background to the existing auto-fit headless preview/CLI transaction with real 1x/4x HDR-file execution.
 
 The current main line also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, bounded PPM/TGA/PFM texture import through the shared image dispatch path, and bounded headless OBJ preview/render tooling.
 
@@ -83,7 +83,7 @@ Implemented acceptance surface:
 
 - `EnvironmentBackgroundState` borrows one existing linear `Texture2D` and carries an explicitly validated sampler, finite bounded intensity, and finite bounded yaw without creating a second decoder, cache, mip chain, or framebuffer path;
 - `PerspectiveCameraState` reconstructs world-space background rays from explicit finite eye/target/up/FOV/aspect state while keeping geometry submission on the existing model/view/projection path;
-- equirectangular mapping has one documented convention: +Y is the north pole, -Y the south pole, -Z maps to `u=0.5`, +X increases longitude, +Z owns the canonical `u=0` seam, exact poles use deterministic longitude zero, and yaw rotates around +Y;
+- equirectangular mapping has one documented convention: +Y is the north pole, -Y the south, -Z maps to `u=0.5`, +X increases longitude, +Z owns the canonical `u=0` seam, exact poles use deterministic longitude zero, and yaw rotates around +Y;
 - the exact +Z seam is canonicalized before `atan2` so signed-zero/libm differences cannot move seam ownership between `u=0` and `u=1` on supported platforms;
 - 1x and 4x background rays use the renderer's established center/quarter-offset sample positions and sample the same linear `Texture2D` path; mip filtering is deliberately disabled until a later capability owns ray differentials/LOD semantics;
 - every ray, texture sample, and intensity-scaled HDR radiance value is computed and validated into temporary storage before the first framebuffer mutation, including finite/non-negative radiance and float-range overflow checks;
@@ -91,17 +91,30 @@ Implemented acceptance surface:
 - deterministic regressions lock cardinal directions/seam/poles/yaw, per-sample 1x/4x reconstruction and resolve, PFM-imported/programmatic HDR equivalence, depth/stencil preservation, background→geometry occlusion→M52 display mapping while retaining linear HDR storage, and fail-closed invalid/overflow state;
 - the milestone adds no diffuse/specular image-based lighting, importance sampling, prefiltered cubemaps, BRDF LUTs, automatic exposure, ray-differential mip selection, GPU path, scene graph, or performance/image-quality claim.
 
-## Next frontier — Milestone 54
+## Milestone 54 — environment-enabled headless rendering
 
-Promote M53 from a library-level background pass into **environment-enabled headless preview and CLI execution**. The repository now has both deterministic auto-fit model rendering and deterministic HDR environment backgrounds, but the public headless preview/`tiny_renderer_render` executable still cannot connect an environment file to the same camera/render/output transaction.
+Implemented acceptance surface:
+
+- `OfflineRenderSettings` carries one trailing optional borrowed `EnvironmentBackgroundState`; the default/absent environment path remains the historical clear-color preview behavior;
+- the preview constructs one fixed eye/target/up/FOV/aspect camera definition and reuses those exact values for both M53 sample-ray reconstruction and the geometry view/projection matrices before the existing auto-fit model draw;
+- `tiny_renderer_render` preserves the historical `INPUT.obj OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]` positional form and adds bounded `--environment`, `--environment-intensity`, and `--environment-yaw` options with deterministic duplicate/unknown/malformed/orphan-option rejection;
+- environment images are owned only for the CLI render transaction and load through the existing linear `load_texture_image_file` PPM/TGA/PFM dispatcher; no decoder, mip chain, cache, or environment texture ownership subsystem is duplicated;
+- output extension, CLI structure, environment loading/state, model loading, and the complete headless render finish before any PPM/PFM write begins, so invalid environment requests cannot produce a partially rendered output artifact;
+- PPM output remains M52 default Reinhard display mapping followed by M49 sRGB encoding, while PFM remains M50 resolved-linear HDR serialization without display mapping;
+- a real 2x1 little-endian PFM fixture with values greater than one drives real CLI OBJ+HDR-environment renders; 1x PPM and 4x PFM are each rendered twice and compared byte-for-byte for deterministic execution;
+- focused library regressions lock no-environment compatibility, exact preview-camera environment rays, uncovered per-sample HDR radiance, unchanged geometry depth/stencil ownership, 1x/4x determinism, and invalid environment rejection;
+- the milestone adds no image-based lighting, artistic camera/environment fitting, new image formats, automatic exposure, scene graph, GUI renderer, GPU path, or performance/image-quality claim.
+
+## Next frontier — Milestone 55
+
+Promote the environment path from forced base-level sampling into **deterministic camera-ray-footprint mip LOD selection**. M47 already owns mip chains and trilinear sampling for material textures, but M53/M54 intentionally disable environment mip filtering because no ray-footprint/LOD contract exists; high-resolution equirectangular backgrounds therefore cannot reuse the renderer's existing minification architecture safely.
 
 Acceptance should require:
 
-- the headless preview path can optionally draw one validated M53 environment before the model using the exact same fixed preview camera/FOV/aspect used for geometry, while the no-environment overload/settings remain byte/hash-compatible with the existing clear-color behavior;
-- the CLI accepts a bounded explicit environment option backed by the existing linear image-dispatch/PFM path, with optional finite bounded intensity/yaw controls, without adding a second decoder or environment texture ownership system;
-- historical positional CLI invocations remain source/behavior compatible, and environment-related parsing rejects duplicate/malformed/unsupported options deterministically rather than silently falling back;
-- environment loading and all render state validate before output creation/truncation; a bad environment path/format/state cannot leave a partial PPM/PFM artifact;
-- real CLI integration regressions execute OBJ + HDR environment → auto-fit camera background + geometry → mapped sRGB PPM and linear PFM, including 1x/4x targets and deterministic repeated output/hash evidence;
-- library regressions prove the preview camera used for M53 ray reconstruction is exactly the camera used by the model projection, and normal geometry continues to own depth/stencil while uncovered samples retain environment radiance;
-- direct linear PFM output remains the resolved HDR framebuffer, while PPM continues to use the existing M52 display-mapping + M49 sRGB boundary;
-- the slice does not add image-based lighting, artistic camera/environment fitting, new image formats, automatic exposure, scene graphs, GUI rendering, GPU acceleration, or performance/image-quality claims.
+- an explicit environment mip policy keeps the current base-level behavior as the default/compatibility mode and adds an opt-in ray-footprint mode without creating a second texture sampler;
+- each 1x/4x environment sample derives a finite screen-space ray footprint from the same `PerspectiveCameraState` and established sample layout used by M53/M54, then converts neighboring directions into seam-aware equirectangular UV derivatives;
+- longitude derivatives use the shortest wrapped `u` distance across the `u=0/1` seam so the canonical +Z seam cannot spuriously request the coarsest mip;
+- the resulting bounded LOD uses the existing `Texture2D` nearest-level/trilinear mip semantics from M47, with deterministic clamping to available levels and no anisotropic or EWA quality claim;
+- preflight computes/validates all directions, derivatives, LODs, and sampled/scaled radiance before framebuffer mutation, preserving the M53 fail-closed transaction;
+- regressions lock base-level byte/hash compatibility, analytic footprint/LOD cases, seam and pole behavior, 1x/4x determinism, imported PFM mip usage, headless CLI propagation, and depth/stencil preservation;
+- the slice does not add diffuse/specular image-based lighting, importance sampling, prefiltered reflection probes, BRDF LUTs, anisotropic filtering, automatic exposure, GPU execution, or performance/image-quality parity claims.
