@@ -51,6 +51,9 @@ void validate_settings(const OfflineRenderSettings& settings) {
     if (settings.environment_lighting) {
         validate_environment_diffuse_state(settings.environment_lighting->environment);
     }
+    if (settings.environment_reflection) {
+        validate_environment_reflection_state(settings.environment_reflection->environment);
+    }
 }
 
 struct ModelBounds {
@@ -136,6 +139,10 @@ Framebuffer render_model_preview(
         }
         options.fixed_lights.environment_diffuse = settings.environment_lighting;
     }
+    if (settings.environment_reflection && options.fixed_lights.environment_reflection) {
+        throw std::invalid_argument(
+            "offline render environment reflection conflicts with ModelRenderOptions environment reflection");
+    }
     const ModelBounds bounds = model_bounds(asset);
 
     const double aspect = static_cast<double>(settings.width) / static_cast<double>(settings.height);
@@ -162,6 +169,14 @@ Framebuffer render_model_preview(
     const Vec3 camera_target{0.0F, 0.0F, 0.0F};
     const Vec3 camera_up{0.0F, 1.0F, 0.0F};
     const Mat4 view = Mat4::look_at(camera_eye, camera_target, camera_up);
+
+    if (settings.environment_reflection) {
+        EnvironmentReflectionLight reflection;
+        reflection.normal = settings.environment_reflection->normal;
+        reflection.viewer_position = camera_eye;
+        reflection.environment = settings.environment_reflection->environment;
+        options.fixed_lights.environment_reflection = reflection;
+    }
 
     const double near_plane = std::max(
         0.001,
