@@ -136,6 +136,9 @@ struct ParsedArguments {
     std::optional<std::filesystem::path> environment_light_path{};
     std::optional<float> environment_light_intensity{};
     std::optional<float> environment_light_yaw{};
+    std::optional<std::filesystem::path> environment_reflection_path{};
+    std::optional<float> environment_reflection_intensity{};
+    std::optional<float> environment_reflection_yaw{};
 };
 
 ParsedArguments parse_arguments(int argc, char** argv) {
@@ -148,6 +151,9 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_environment_light = false;
     bool saw_light_intensity = false;
     bool saw_light_yaw = false;
+    bool saw_environment_reflection = false;
+    bool saw_reflection_intensity = false;
+    bool saw_reflection_yaw = false;
 
     for (int index = 3; index < argc; ++index) {
         const std::string_view token = argv[index];
@@ -215,6 +221,34 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             parsed.environment_light_yaw = parse_finite_float(
                 require_value("--environment-light-yaw"),
                 "environment light yaw");
+        } else if (token == "--environment-reflection") {
+            if (saw_environment_reflection) {
+                throw std::invalid_argument("--environment-reflection may be specified at most once");
+            }
+            saw_environment_reflection = true;
+            parsed.environment_reflection_path =
+                std::filesystem::path(require_value("--environment-reflection"));
+            if (parsed.environment_reflection_path->empty()) {
+                throw std::invalid_argument("--environment-reflection requires a non-empty path");
+            }
+        } else if (token == "--environment-reflection-intensity") {
+            if (saw_reflection_intensity) {
+                throw std::invalid_argument(
+                    "--environment-reflection-intensity may be specified at most once");
+            }
+            saw_reflection_intensity = true;
+            parsed.environment_reflection_intensity = parse_finite_float(
+                require_value("--environment-reflection-intensity"),
+                "environment reflection intensity");
+        } else if (token == "--environment-reflection-yaw") {
+            if (saw_reflection_yaw) {
+                throw std::invalid_argument(
+                    "--environment-reflection-yaw may be specified at most once");
+            }
+            saw_reflection_yaw = true;
+            parsed.environment_reflection_yaw = parse_finite_float(
+                require_value("--environment-reflection-yaw"),
+                "environment reflection yaw");
         } else if (token.starts_with("--")) {
             throw std::invalid_argument("unknown option: " + std::string(token));
         } else {
@@ -241,6 +275,11 @@ ParsedArguments parse_arguments(int argc, char** argv) {
         throw std::invalid_argument(
             "environment light intensity/yaw requires --environment-light");
     }
+    if ((parsed.environment_reflection_intensity || parsed.environment_reflection_yaw)
+        && !parsed.environment_reflection_path) {
+        throw std::invalid_argument(
+            "environment reflection intensity/yaw requires --environment-reflection");
+    }
     return parsed;
 }
 
@@ -250,10 +289,13 @@ void print_usage() {
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
            " [--environment-mip base|nearest|linear]"
            " [--environment-light IMAGE] [--environment-light-intensity VALUE]"
-           " [--environment-light-yaw RADIANS]\n"
+           " [--environment-light-yaw RADIANS]"
+           " [--environment-reflection IMAGE] [--environment-reflection-intensity VALUE]"
+           " [--environment-reflection-yaw RADIANS]\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 environment-intensity=1"
            " environment-yaw=0 environment-mip=base environment-light-intensity=1"
-           " environment-light-yaw=0\n";
+           " environment-light-yaw=0 environment-reflection-intensity=1"
+           " environment-reflection-yaw=0\n";
 }
 
 }  // namespace
@@ -275,8 +317,10 @@ int main(int argc, char** argv) {
         ParsedArguments parsed = parse_arguments(argc, argv);
         std::optional<tiny_renderer::Texture2D> environment_texture;
         std::optional<tiny_renderer::Texture2D> environment_light_texture;
+        std::optional<tiny_renderer::Texture2D> environment_reflection_texture;
         const tiny_renderer::Texture2D* background_texture = nullptr;
         const tiny_renderer::Texture2D* light_texture = nullptr;
+        const tiny_renderer::Texture2D* reflection_texture = nullptr;
 
         if (parsed.environment_path) {
             environment_texture.emplace(tiny_renderer::load_texture_image_file(
@@ -327,6 +371,35 @@ int main(int argc, char** argv) {
             diffuse_environment = environment_light;
         }
 
+        std::optional<tiny_renderer::EnvironmentReflectionState> reflection_environment;
+        if (parsed.environment_reflection_path) {
+            const std::filesystem::path normalized_reflection =
+                parsed.environment_reflection_path->lexically_normal();
+            if (parsed.environment_path
+                && parsed.environment_path->lexically_normal() == normalized_reflection) {
+                reflection_texture = background_texture;
+            } else if (parsed.environment_light_path
+                && parsed.environment_light_path->lexically_normal() == normalized_reflection) {
+                reflection_texture = light_texture;
+            } else {
+                environment_reflection_texture.emplace(tiny_renderer::load_texture_image_file(
+                    *parsed.environment_reflection_path,
+                    tiny_renderer::TextureTransferFunction::Linear));
+                reflection_texture = &*environment_reflection_texture;
+            }
+
+            tiny_renderer::EnvironmentReflectionState environment_reflection;
+            environment_reflection.texture = reflection_texture;
+            if (parsed.environment_reflection_intensity) {
+                environment_reflection.intensity = *parsed.environment_reflection_intensity;
+            }
+            if (parsed.environment_reflection_yaw) {
+                environment_reflection.yaw_radians = *parsed.environment_reflection_yaw;
+            }
+            tiny_renderer::validate_environment_reflection_state(environment_reflection);
+            reflection_environment = environment_reflection;
+        }
+
         const tiny_renderer::ModelAsset asset = tiny_renderer::load_obj_model_asset_file(input_path);
         tiny_renderer::ModelRenderOptions options = preview_options(asset);
         if (diffuse_environment) {
@@ -334,6 +407,12 @@ int main(int argc, char** argv) {
             light.normal = preview_normal_binding(asset);
             light.environment = *diffuse_environment;
             parsed.settings.environment_lighting = light;
+        }
+        if (reflection_environment) {
+            tiny_renderer::OfflineEnvironmentReflectionState reflection;
+            reflection.normal = preview_normal_binding(asset);
+            reflection.environment = *reflection_environment;
+            parsed.settings.environment_reflection = reflection;
         }
 
         const tiny_renderer::Framebuffer framebuffer = tiny_renderer::render_model_preview(
