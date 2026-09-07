@@ -10,6 +10,14 @@
 
 namespace tiny_renderer {
 
+// Headless reflection intentionally omits a viewer position. The fixed preview
+// camera is authoritative, so render_model_preview binds the M58 reflection
+// light to the exact same camera eye used to build the view matrix.
+struct OfflineEnvironmentReflectionState {
+    NormalBinding normal{};
+    EnvironmentReflectionState environment{};
+};
+
 // Deterministic headless preview settings. The preview camera is fixed at
 // +Z looking at the origin; the model is translated/scaled from its finite
 // object-space bounds so the complete bounding sphere fits the limiting
@@ -29,13 +37,17 @@ struct OfflineRenderSettings {
     // The normal binding is explicit because OfflineRenderSettings is also a
     // library API and cannot infer arbitrary caller-owned varying layouts.
     std::optional<EnvironmentDiffuseLight> environment_lighting{};
+    // Optional borrowed perfect-mirror environment reflection. The preview
+    // owns viewer/camera consistency; callers supply only normal binding and
+    // the borrowed environment state.
+    std::optional<OfflineEnvironmentReflectionState> environment_reflection{};
 };
 
 // Renders a bounded, auto-framed preview through the existing model/raster
-// path. ModelRenderOptions are forwarded unchanged except that an optional
-// environment_lighting setting is injected into the existing fixed-light
-// collection. No alternate material, texture, lighting, depth, environment,
-// or framebuffer implementation is introduced.
+// path. ModelRenderOptions are forwarded unchanged except that optional
+// environment lighting/reflection settings are injected into the existing
+// fixed-light collection. No alternate material, texture, lighting, depth,
+// environment, or framebuffer implementation is introduced.
 [[nodiscard]] Framebuffer render_model_preview(
     const ModelAsset& asset,
     const OfflineRenderSettings& settings = {},
