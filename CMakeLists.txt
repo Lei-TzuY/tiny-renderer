@@ -9,6 +9,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 
 add_library(tiny_renderer
     src/framebuffer.cpp
+    src/framebuffer_output.cpp
     src/image_loader.cpp
     src/material_asset_loader.cpp
     src/model_inspection.cpp
@@ -215,6 +216,10 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_msaa_tests tests/test_msaa.cpp)
     target_link_libraries(tiny_renderer_msaa_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_msaa_tests COMMAND tiny_renderer_msaa_tests)
+
+    add_executable(tiny_renderer_output_transfer_tests tests/test_output_transfer.cpp)
+    target_link_libraries(tiny_renderer_output_transfer_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_output_transfer_tests COMMAND tiny_renderer_output_transfer_tests)
 
     add_executable(tiny_renderer_opacity_texture_tests tests/test_opacity_texture.cpp)
     target_link_libraries(tiny_renderer_opacity_texture_tests PRIVATE tiny_renderer)
