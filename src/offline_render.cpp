@@ -45,6 +45,9 @@ void validate_settings(const OfflineRenderSettings& settings) {
         || settings.framing_margin > 4.0F) {
         throw std::invalid_argument("offline render framing margin must be finite and within [1, 4]");
     }
+    if (settings.environment) {
+        validate_environment_background_state(*settings.environment);
+    }
 }
 
 struct ModelBounds {
@@ -145,10 +148,10 @@ Framebuffer render_model_preview(
 
     const Mat4 model = Mat4::scale({scale_float, scale_float, scale_float})
         * Mat4::translation({-bounds.center.x, -bounds.center.y, -bounds.center.z});
-    const Mat4 view = Mat4::look_at(
-        {0.0F, 0.0F, kCameraDistance},
-        {0.0F, 0.0F, 0.0F},
-        {0.0F, 1.0F, 0.0F});
+    const Vec3 camera_eye{0.0F, 0.0F, kCameraDistance};
+    const Vec3 camera_target{0.0F, 0.0F, 0.0F};
+    const Vec3 camera_up{0.0F, 1.0F, 0.0F};
+    const Mat4 view = Mat4::look_at(camera_eye, camera_target, camera_up);
 
     const double near_plane = std::max(
         0.001,
@@ -158,14 +161,25 @@ Framebuffer render_model_preview(
         || far_plane > static_cast<double>(std::numeric_limits<float>::max())) {
         throw std::invalid_argument("offline render preview clip range is not representable");
     }
+    const float aspect_float = static_cast<float>(aspect);
     const Mat4 projection = Mat4::perspective(
         settings.vertical_fov_radians,
-        static_cast<float>(aspect),
+        aspect_float,
         static_cast<float>(near_plane),
         static_cast<float>(far_plane));
 
     Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
     framebuffer.clear(settings.clear_color);
+    if (settings.environment) {
+        const PerspectiveCameraState camera{
+            camera_eye,
+            camera_target,
+            camera_up,
+            settings.vertical_fov_radians,
+            aspect_float,
+        };
+        draw_environment_background(framebuffer, camera, *settings.environment);
+    }
     draw_model_asset(framebuffer, asset, model, view, projection, options);
     return framebuffer;
 }
