@@ -138,8 +138,10 @@ void test_map_ns_import_cache_fingerprint_and_inspection() {
     without.draws[0].shininess_texture.reset();
     check(model_asset_fnv1a64(without) != with_fingerprint,
           "model fingerprint includes map_Ns semantic content");
-    check(inspect_model_asset(imported).find("shininess_texture=1x1") != std::string::npos,
-          "asset inspection exposes map_Ns dimensions");
+    const std::string inspection = inspect_model_asset(imported);
+    check(inspection.find("shininess_texture=") != std::string::npos
+              && inspection.find("shininess_texture=none") == std::string::npos,
+          "asset inspection exposes owned map_Ns dimensions");
 
     std::istringstream rich(
         "newmtl x\nKd 1 1 1\nmap_Ns shininess_map.ppm\n");

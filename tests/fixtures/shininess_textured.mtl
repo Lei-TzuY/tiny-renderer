@@ -2,5 +2,5 @@ newmtl glossy
 Kd 0 0 0
 Ks 1 1 1
 Ns 32
-map_Ks shininess_map.ppm
-map_Ns shininess_map.ppm
+map_Ks checker.ppm
+map_Ns checker.ppm

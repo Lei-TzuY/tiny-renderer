@@ -37,6 +37,9 @@ struct TextureBinding {
     // Optional linear/HDR emissive-radiance multiplier. It reuses the
     // same UV channels, sampler, mip chain, and raster gradients.
     const Texture2D* emissive_texture{nullptr};
+    // Optional linear data map. Arithmetic-mean RGB is mapped from [0,1]
+    // into the bounded [1,1000] shininess exponent domain per fragment.
+    const Texture2D* shininess_texture{nullptr};
 };
 
 enum class BaseColorSource {
@@ -95,8 +98,9 @@ struct EnvironmentDiffuseLight {
 // Environment reflection is a separate optional contribution. It shares the
 // active world-space normal binding but also needs a finite viewer position so
 // the reflected lookup direction can vary across the surface. Material-coupled
-// glossy policy is resolved once per Rasterizer/material draw before the
-// existing M66 angular-footprint sampler is used.
+// glossy policy is resolved once per Rasterizer/material draw when shininess
+// is uniform, or per fragment when a shininess texture is bound. Both paths
+// delegate to the existing M66 angular-footprint sampler.
 struct EnvironmentReflectionLight {
     NormalBinding normal{};
     Vec3 viewer_position{0.0F, 0.0F, 0.0F};
@@ -230,7 +234,8 @@ public:
           point_shadow_state_(std::move(point_shadow_state)) {
         if (fixed_lights_.environment_reflection
             && fixed_lights_.environment_reflection->environment.mip_policy
-                == EnvironmentReflectionMipPolicy::MaterialShininess) {
+                == EnvironmentReflectionMipPolicy::MaterialShininess
+            && texture_binding_.shininess_texture == nullptr) {
             fixed_lights_.environment_reflection->environment =
                 environment_lighting_detail::resolve_material_reflection_state(
                     fixed_lights_.environment_reflection->environment,
