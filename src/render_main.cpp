@@ -81,6 +81,16 @@ std::size_t parse_anisotropy(std::string_view text, const char* label) {
     return value;
 }
 
+tiny_renderer::OutputTransferFunction parse_output_transfer(std::string_view text) {
+    if (text == "linear") {
+        return tiny_renderer::OutputTransferFunction::Linear;
+    }
+    if (text == "srgb") {
+        return tiny_renderer::OutputTransferFunction::Srgb;
+    }
+    throw std::invalid_argument("output transfer must be linear or srgb");
+}
+
 std::string lowercase_extension(const std::filesystem::path& path) {
     std::string extension = path.extension().string();
     std::transform(
@@ -139,6 +149,8 @@ struct ParsedArguments {
     tiny_renderer::OfflineRenderSettings settings{};
     std::optional<tiny_renderer::MipFilterMode> texture_mip{};
     std::optional<std::size_t> texture_anisotropy{};
+    std::optional<float> display_exposure{};
+    std::optional<tiny_renderer::OutputTransferFunction> output_transfer{};
     std::optional<std::filesystem::path> environment_path{};
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
@@ -160,6 +172,8 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     std::vector<std::string_view> positional;
     bool saw_texture_mip = false;
     bool saw_texture_anisotropy = false;
+    bool saw_display_exposure = false;
+    bool saw_output_transfer = false;
     bool saw_environment = false;
     bool saw_intensity = false;
     bool saw_yaw = false;
@@ -199,6 +213,20 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             parsed.texture_anisotropy = parse_anisotropy(
                 require_value("--texture-anisotropy"),
                 "texture anisotropy");
+        } else if (token == "--display-exposure") {
+            if (saw_display_exposure) {
+                throw std::invalid_argument("--display-exposure may be specified at most once");
+            }
+            saw_display_exposure = true;
+            parsed.display_exposure = parse_finite_float(
+                require_value("--display-exposure"),
+                "display exposure");
+        } else if (token == "--output-transfer") {
+            if (saw_output_transfer) {
+                throw std::invalid_argument("--output-transfer may be specified at most once");
+            }
+            saw_output_transfer = true;
+            parsed.output_transfer = parse_output_transfer(require_value("--output-transfer"));
         } else if (token == "--environment") {
             if (saw_environment) {
                 throw std::invalid_argument("--environment may be specified at most once");
@@ -360,6 +388,7 @@ void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.obj OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
            " [--texture-mip base|nearest|linear] [--texture-anisotropy 1|2|4]"
+           " [--display-exposure VALUE] [--output-transfer linear|srgb]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
            " [--environment-mip base|nearest|linear]"
            " [--environment-light IMAGE] [--environment-light-intensity VALUE]"
@@ -371,6 +400,7 @@ void print_usage() {
            " [--environment-reflection-footprint RADIANS]"
            " [--environment-reflection-material-shininess]\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
+           " display-exposure=1 output-transfer=srgb"
            " environment-intensity=1 environment-yaw=0 environment-mip=base"
            " environment-light-intensity=1 environment-light-yaw=0"
            " environment-reflection-intensity=1 environment-reflection-yaw=0"
@@ -395,6 +425,18 @@ int main(int argc, char** argv) {
         }
 
         ParsedArguments parsed = parse_arguments(argc, argv);
+        if (extension == ".pfm" && (parsed.display_exposure || parsed.output_transfer)) {
+            throw std::invalid_argument("display output controls require .ppm output");
+        }
+        tiny_renderer::DisplayMappingState display_mapping{};
+        if (parsed.display_exposure) {
+            display_mapping.exposure = *parsed.display_exposure;
+        }
+        const tiny_renderer::OutputTransferFunction output_transfer =
+            parsed.output_transfer.value_or(tiny_renderer::OutputTransferFunction::Srgb);
+        tiny_renderer::validate_display_mapping_state(display_mapping);
+        tiny_renderer::validate_output_transfer_function(output_transfer);
+
         std::optional<tiny_renderer::Texture2D> environment_texture;
         std::optional<tiny_renderer::Texture2D> environment_light_texture;
         std::optional<tiny_renderer::Texture2D> environment_reflection_texture;
@@ -533,19 +575,16 @@ int main(int argc, char** argv) {
             options);
 
         if (extension == ".ppm") {
-            const tiny_renderer::DisplayMappingState display_mapping{};
             framebuffer.write_ppm(
                 output_path.string(),
                 display_mapping,
-                tiny_renderer::OutputTransferFunction::Srgb);
+                output_transfer);
             std::cout
                 << "rendered format=ppm width=" << parsed.settings.width
                 << " height=" << parsed.settings.height
                 << " samples=" << framebuffer.samples_per_pixel()
                 << " display_fnv1a64=0x" << std::hex
-                << framebuffer.fnv1a64(
-                    display_mapping,
-                    tiny_renderer::OutputTransferFunction::Srgb)
+                << framebuffer.fnv1a64(display_mapping, output_transfer)
                 << '\n';
         } else {
             framebuffer.write_pfm(output_path.string());
