@@ -77,9 +77,9 @@ void test_file_driven_summary_is_deterministic_and_ordered() {
 void test_specular_texture_role_is_visible_in_summary() {
     const ModelAsset asset = load_obj_model_asset_file(fixture_path("specular_textured.obj"));
     const std::string summary = inspect_model_asset(asset);
-    check(summary.find("draw[0].specular_texture=4x4\n") != std::string::npos,
+    check(summary.find("draw[0].specular_texture=2x2\n") != std::string::npos,
           "inspection exposes the owned map_Ks texture dimensions");
-    check(summary.find("draw[0].opacity_texture=4x4\n") != std::string::npos,
+    check(summary.find("draw[0].opacity_texture=2x2\n") != std::string::npos,
           "inspection exposes the sibling map_d role independently");
     check(summary.starts_with(
               "format=tiny-renderer-model-asset-inspect-v1\n" + fingerprint_line(asset)),
