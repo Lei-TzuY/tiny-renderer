@@ -30,10 +30,19 @@ jobs:
               raise SystemExit('M70 construction run block marker not found')
           payload = source.split(marker, 1)[1]
           lines = []
-          for line in payload.splitlines():
-              if line.startswith('          '):
-                  line = line[10:]
+          in_triple_single = False
+          for raw in payload.splitlines():
+              if in_triple_single:
+                  line = raw
+                  if raw.count("'''") % 2 == 1:
+                      in_triple_single = False
+              else:
+                  line = raw[10:] if raw.startswith('          ') else raw
+                  if line.count("'''") % 2 == 1:
+                      in_triple_single = True
               lines.append(line)
+          if in_triple_single:
+              raise SystemExit('unterminated triple-quoted payload while recovering M70 script')
           Path('/tmp/m70-construct.sh').write_text('\n'.join(lines) + '\n')
           PY
 
