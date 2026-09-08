@@ -39,6 +39,14 @@ target_compile_options(tiny_renderer PRIVATE
 if(TINY_RENDERER_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(tiny_renderer PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(tiny_renderer PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+
+    add_executable(tiny_renderer_emissive_texture_tests tests/test_emissive_texture.cpp)
+    target_link_libraries(tiny_renderer_emissive_texture_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_emissive_texture_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_emissive_texture_tests COMMAND tiny_renderer_emissive_texture_tests)
+
 endif()
 
 add_executable(tiny_renderer_sample src/main.cpp)

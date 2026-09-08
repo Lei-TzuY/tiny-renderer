@@ -66,6 +66,7 @@ public:
     [[nodiscard]] std::size_t mip_width(std::size_t level) const;
     [[nodiscard]] std::size_t mip_height(std::size_t level) const;
     [[nodiscard]] bool texels_within_unit_range() const noexcept { return texels_within_unit_range_; }
+    [[nodiscard]] bool texels_nonnegative() const noexcept { return texels_nonnegative_; }
     [[nodiscard]] TextureTransferFunction source_transfer_function() const noexcept {
         return source_transfer_function_;
     }
@@ -95,6 +96,7 @@ private:
 
     std::vector<MipLevel> levels_;
     bool texels_within_unit_range_{true};
+    bool texels_nonnegative_{true};
     TextureTransferFunction source_transfer_function_{TextureTransferFunction::Linear};
 };
 

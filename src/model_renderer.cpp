@@ -158,10 +158,15 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
             || static_cast<bool>(draw.diffuse_texture)
             || static_cast<bool>(draw.opacity_texture)
             || static_cast<bool>(draw.normal_texture)
-            || static_cast<bool>(draw.specular_texture);
+            || static_cast<bool>(draw.specular_texture)
+            || static_cast<bool>(draw.emissive_texture);
         if (draw.specular_texture && !draw.specular_texture->texels_within_unit_range()) {
             throw std::invalid_argument(
                 "model specular texture texels must be finite and within [0, 1]");
+        }
+        if (draw.emissive_texture && !draw.emissive_texture->texels_nonnegative()) {
+            throw std::invalid_argument(
+                "model emissive texture texels must be finite and non-negative");
         }
         if (draw.normal_texture) {
             normal_map_present = true;
@@ -190,6 +195,7 @@ TextureBinding texture_binding_for(const MaterialDraw& draw, const ModelRenderOp
     binding.opacity_texture = draw.opacity_texture.get();
     binding.normal_texture = draw.normal_texture.get();
     binding.specular_texture = draw.specular_texture.get();
+    binding.emissive_texture = draw.emissive_texture.get();
     return binding;
 }
 

@@ -22,6 +22,9 @@ struct MaterialAssetDefinition {
     // Bounded rich-MTL specular reflectance texture. It is interpreted as
     // linear RGB data and modulates MaterialState::specular per fragment.
     std::optional<std::string> specular_map_filename;
+    // Linear/HDR emissive radiance texture. Values may exceed one but
+    // must remain finite and non-negative when submitted for rendering.
+    std::optional<std::string> emissive_map_filename;
 };
 
 using MaterialAssetLibrary = std::map<std::string, MaterialAssetDefinition>;

@@ -34,6 +34,9 @@ struct TextureBinding {
     // Optional linear-RGB specular-reflectance multiplier. It shares the
     // material UV/sampler path with the other texture roles.
     const Texture2D* specular_texture{nullptr};
+    // Optional linear/HDR emissive-radiance multiplier. It reuses the
+    // same UV channels, sampler, mip chain, and raster gradients.
+    const Texture2D* emissive_texture{nullptr};
 };
 
 enum class BaseColorSource {

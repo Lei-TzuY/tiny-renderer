@@ -136,8 +136,8 @@ Vec3 modulate_rgb(const Vec3& a, const Vec3& b) {
     return {a.x * b.x, a.y * b.y, a.z * b.z};
 }
 
-Vec3 add_emissive(const Vec3& shaded, const MaterialState& material) {
-    return shaded + material.emissive;
+Vec3 add_emissive(const Vec3& shaded, const Vec3& emissive_radiance) {
+    return shaded + emissive_radiance;
 }
 
 Vec3 transform_world_position(const Mat4& model, const Vec3& position) {
@@ -237,7 +237,8 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
     if (binding.texture == nullptr
         && binding.opacity_texture == nullptr
         && binding.normal_texture == nullptr
-        && binding.specular_texture == nullptr) {
+        && binding.specular_texture == nullptr
+        && binding.emissive_texture == nullptr) {
         return;
     }
     validate_sampler_state(binding.sampler);
@@ -245,6 +246,11 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
         && !binding.specular_texture->texels_within_unit_range()) {
         throw std::invalid_argument(
             "specular texture texels must be finite and within [0, 1]");
+    }
+    if (binding.emissive_texture != nullptr
+        && !binding.emissive_texture->texels_nonnegative()) {
+        throw std::invalid_argument(
+            "emissive texture texels must be finite and non-negative");
     }
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
         throw std::out_of_range("texture binding references unavailable varying channel");
@@ -304,7 +310,8 @@ void validate_output_binding(
     if (source == BaseColorSource::Texture
         || texture_binding.opacity_texture != nullptr
         || texture_binding.normal_texture != nullptr
-        || texture_binding.specular_texture != nullptr) {
+        || texture_binding.specular_texture != nullptr
+        || texture_binding.emissive_texture != nullptr) {
         validate_texture_binding(texture_binding, varying_count);
     }
 }
@@ -803,7 +810,8 @@ TextureGradients texture_gradients(
         || (binding.texture == nullptr
             && binding.opacity_texture == nullptr
             && binding.normal_texture == nullptr
-            && binding.specular_texture == nullptr)) {
+            && binding.specular_texture == nullptr
+        && binding.emissive_texture == nullptr)) {
         return {};
     }
     return {
@@ -1003,6 +1011,25 @@ Vec3 fragment_specular_reflectance(
         throw std::logic_error("validated specular texture produced an invalid sample");
     }
     return modulate_rgb(material.specular, sampled);
+}
+
+Vec3 fragment_emissive_radiance(
+    const VaryingPack& varyings,
+    const TextureGradients& gradients,
+    const TextureBinding& texture_binding,
+    const MaterialState& material) {
+    if (texture_binding.emissive_texture == nullptr) {
+        return material.emissive;
+    }
+    const Vec3 sampled = texture_binding.emissive_texture->sample_grad(
+        {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+        gradients,
+        texture_binding.sampler);
+    if (!finite_vec3(sampled)
+        || sampled.x < 0.0F || sampled.y < 0.0F || sampled.z < 0.0F) {
+        throw std::logic_error("validated emissive texture produced an invalid sample");
+    }
+    return modulate_rgb(material.emissive, sampled);
 }
 
 bool has_specular_reflectance(const Vec3& specular) {
@@ -1332,17 +1359,21 @@ ShadedFragment shade_fragment(
         source_color.z * material.albedo.z,
     };
     const float opacity = fragment_opacity(varyings, gradients, texture_binding, material);
+    // Resolve map_Ke once before any fixed-shading exit so unlit, direct,
+    // environment, and multi-light paths share identical emission semantics.
+    const Vec3 emissive_radiance = fragment_emissive_radiance(
+        varyings, gradients, texture_binding, material);
     // Resolve map_Ks exactly once; direct and environment specular share this value.
     const Vec3 specular_reflectance = fragment_specular_reflectance(
         varyings, gradients, texture_binding, material);
     if (reflection_is_only_zero_contribution(
             directional_light, point_light, fixed_lights, specular_reflectance)) {
-        return {add_emissive(base, material), opacity, false};
+        return {add_emissive(base, emissive_radiance), opacity, false};
     }
     const NormalBinding* normal_binding = detail::active_normal_binding(
         directional_light, point_light, fixed_lights);
     if (normal_binding == nullptr) {
-        return {add_emissive(base, material), opacity, false};
+        return {add_emissive(base, emissive_radiance), opacity, false};
     }
 
     const Vec3 interpolated_normal{
@@ -1352,11 +1383,11 @@ ShadedFragment shade_fragment(
     };
     const Vec3 ambient = ambient_sum(directional_light, point_light, fixed_lights);
     if (!finite_vec3(interpolated_normal)) {
-        return {add_emissive(modulate_rgb(base, ambient), material), opacity, false};
+        return {add_emissive(modulate_rgb(base, ambient), emissive_radiance), opacity, false};
     }
     const float normal_length = length(interpolated_normal);
     if (!std::isfinite(normal_length) || normal_length <= kEpsilon) {
-        return {add_emissive(modulate_rgb(base, ambient), material), opacity, false};
+        return {add_emissive(modulate_rgb(base, ambient), emissive_radiance), opacity, false};
     }
 
     const Vec3 geometric_normal = interpolated_normal / normal_length;
@@ -1380,7 +1411,7 @@ ShadedFragment shade_fragment(
         shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
         shaded = shaded + environment_reflection_contribution(
             normal, world_position, specular_reflectance, fixed_lights);
-        return {add_emissive(shaded, material), opacity, false};
+        return {add_emissive(shaded, emissive_radiance), opacity, false};
     }
 
     for (std::size_t i = 0U; i < fixed_lights.count; ++i) {
@@ -1475,7 +1506,7 @@ ShadedFragment shade_fragment(
     shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
     shaded = shaded + environment_reflection_contribution(
         normal, world_position, specular_reflectance, fixed_lights);
-    return {add_emissive(shaded, material), opacity, false};
+    return {add_emissive(shaded, emissive_radiance), opacity, false};
 }
 
 void rasterize_screen_triangle(

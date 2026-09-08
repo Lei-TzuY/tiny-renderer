@@ -239,6 +239,8 @@ Texture2D::Texture2D(
             throw std::invalid_argument("texture texels must be finite");
         }
         value = decode_source_texel(value, transfer_function);
+        texels_nonnegative_ = texels_nonnegative_
+            && value.x >= 0.0F && value.y >= 0.0F && value.z >= 0.0F;
         texels_within_unit_range_ = texels_within_unit_range_ && within_unit_range(value);
     }
 

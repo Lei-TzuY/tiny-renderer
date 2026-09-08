@@ -30,6 +30,9 @@ struct MaterialDraw {
     // Optional per-fragment specular-reflectance multiplier. It shares the
     // material UV/sampler path and owned texture lifetime with other roles.
     std::shared_ptr<const Texture2D> specular_texture;
+    // Optional linear/HDR emissive-radiance multiplier sharing the
+    // canonical material UV/sampler path.
+    std::shared_ptr<const Texture2D> emissive_texture;
 };
 
 struct ModelAsset {

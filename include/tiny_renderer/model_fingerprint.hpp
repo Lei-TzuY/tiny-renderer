@@ -159,6 +159,20 @@ inline void model_fingerprint_texture(
         }
     }
 
+    bool has_emissive_texture = false;
+    for (const MaterialDraw& draw : asset.draws) {
+        if (draw.emissive_texture) {
+            has_emissive_texture = true;
+            break;
+        }
+    }
+    if (has_emissive_texture) {
+        detail::model_fingerprint_string(hash, "material-emissive-texture-v1");
+        for (const MaterialDraw& draw : asset.draws) {
+            detail::model_fingerprint_texture(hash, draw.emissive_texture);
+        }
+    }
+
     bool has_emissive_material = false;
     for (const MaterialDraw& draw : asset.draws) {
         if (draw.material.emissive.x != 0.0F

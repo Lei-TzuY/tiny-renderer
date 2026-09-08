@@ -75,10 +75,11 @@ struct MaterialAssetBatch {
     std::optional<VertexColorChannels> vertex_color_channels{};
     // Trailing for aggregate source compatibility with earlier material batches.
     std::shared_ptr<const Texture2D> specular_texture;
+    std::shared_ptr<const Texture2D> emissive_texture;
 };
 
 // Texture-transfer interpretation for material asset import. Only the diffuse
-// color role is caller-selectable; opacity, normal, and bounded specular maps
+// color role is caller-selectable; opacity, normal, specular, and emissive maps
 // are treated as linear data textures. Linear preserves historical import
 // byte/float semantics.
 struct ModelAssetLoadOptions {

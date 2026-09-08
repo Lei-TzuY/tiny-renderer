@@ -419,7 +419,8 @@ bool texture_coordinates_required(
     return source == BaseColorSource::Texture
         || texture_binding.opacity_texture != nullptr
         || texture_binding.normal_texture != nullptr
-        || texture_binding.specular_texture != nullptr;
+        || texture_binding.specular_texture != nullptr
+        || texture_binding.emissive_texture != nullptr;
 }
 
 void validate_output_binding(
@@ -431,6 +432,11 @@ void validate_output_binding(
         && !texture_binding.specular_texture->texels_within_unit_range()) {
         throw std::invalid_argument(
             "specular texture texels must be finite and within [0, 1]");
+    }
+    if (texture_binding.emissive_texture != nullptr
+        && !texture_binding.emissive_texture->texels_nonnegative()) {
+        throw std::invalid_argument(
+            "emissive texture texels must be finite and non-negative");
     }
     switch (source) {
         case BaseColorSource::VaryingColor:
