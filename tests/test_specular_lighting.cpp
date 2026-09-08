@@ -4,12 +4,15 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <vector>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
+#include "tiny_renderer/model_fingerprint.hpp"
 #include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/mtl_loader.hpp"
 #include "tiny_renderer/obj_loader.hpp"
@@ -331,6 +334,225 @@ void test_prepared_list_preflights_later_bad_world_transform_before_writes() {
           "later specular transform rejection happens before earlier stencil writes");
 }
 
+VaryingPack uv_normal_varyings(float u, float v) {
+    VaryingPack varyings;
+    varyings.count = 5U;
+    varyings.values[0] = u;
+    varyings.values[1] = v;
+    varyings.values[2] = 0.0F;
+    varyings.values[3] = 0.0F;
+    varyings.values[4] = 1.0F;
+    return varyings;
+}
+
+ModelAsset specular_textured_model(std::shared_ptr<const Texture2D> texture) {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-0.7F, -0.7F, 0.0F}, uv_normal_varyings(0.0F, 0.0F)),
+        Vertex::with_varyings({0.7F, -0.7F, 0.0F}, uv_normal_varyings(1.0F, 0.0F)),
+        Vertex::with_varyings({0.0F, 0.7F, 0.0F}, uv_normal_varyings(0.5F, 1.0F)),
+    };
+    asset.mesh.triangles = {{{0U, 1U, 2U}}};
+    MaterialDraw draw;
+    draw.range = {0U, 1U};
+    draw.material_name = "specular-textured";
+    draw.material.albedo = {0.0F, 0.0F, 0.0F};
+    draw.material.specular = {1.0F, 1.0F, 1.0F};
+    draw.material.shininess = 32.0F;
+    draw.specular_texture = std::move(texture);
+    asset.draws.push_back(std::move(draw));
+    return asset;
+}
+
+ModelRenderOptions specular_texture_options() {
+    ModelRenderOptions options;
+    options.directional_light = specular_light({0.0F, 0.0F, 4.0F});
+    options.directional_light.normal = {2U, 3U, 4U};
+    return options;
+}
+
+void test_map_ks_import_and_shared_linear_cache() {
+    const std::filesystem::path fixture =
+        std::filesystem::path(TINY_RENDERER_SOURCE_DIR)
+        / "tests" / "fixtures" / "specular_textured.obj";
+    const ModelAsset imported = load_obj_model_asset_file(fixture);
+    check(imported.draws.size() == 1U,
+          "map_Ks fixture produces one material draw");
+    if (imported.draws.empty()) {
+        return;
+    }
+    const MaterialDraw& draw = imported.draws[0];
+    check(draw.specular_texture != nullptr,
+          "map_Ks fixture owns a decoded specular texture");
+    check(draw.opacity_texture != nullptr,
+          "fixture owns its sibling linear opacity texture");
+    check(draw.specular_texture.get() == draw.opacity_texture.get(),
+          "linear map_Ks and map_d references share the decoded texture cache");
+    if (draw.specular_texture) {
+        check(draw.specular_texture->source_transfer_function()
+                  == TextureTransferFunction::Linear,
+              "map_Ks enters the linear material texture domain");
+    }
+
+    std::istringstream duplicate(
+        "newmtl x\nKd 1 1 1\nmap_Ks checker.ppm\nmap_Ks checker.ppm\n");
+    bool duplicate_threw = false;
+    try {
+        (void)load_mtl_assets(duplicate);
+    } catch (const MtlParseError&) {
+        duplicate_threw = true;
+    }
+    check(duplicate_threw,
+          "duplicate map_Ks is rejected deterministically");
+
+    std::istringstream legacy(
+        "newmtl x\nKd 1 1 1\nmap_Ks checker.ppm\n");
+    bool legacy_threw = false;
+    try {
+        (void)load_mtl(legacy);
+    } catch (const MtlParseError&) {
+        legacy_threw = true;
+    }
+    check(legacy_threw,
+          "legacy strict MTL loader continues to reject map_Ks directives");
+}
+
+void test_specular_texture_modulates_direct_and_environment_specular() {
+    const auto specular_texture = std::make_shared<const Texture2D>(
+        1U, 1U, std::vector<Vec3>{{0.25F, 0.5F, 1.0F}});
+    const ModelAsset asset = specular_textured_model(specular_texture);
+
+    Framebuffer direct(65U, 65U);
+    draw_model_asset(
+        direct,
+        asset,
+        Mat4::identity(), Mat4::identity(), Mat4::identity(),
+        specular_texture_options());
+    const Vec3 direct_center = direct.color_at(32U, 32U);
+    check_near(direct_center.x, 0.25F,
+               "map_Ks modulates direct specular red once");
+    check_near(direct_center.y, 0.5F,
+               "map_Ks modulates direct specular green once");
+    check_near(direct_center.z, 1.0F,
+               "map_Ks modulates direct specular blue once");
+
+    Texture2D environment(
+        1U, 1U, std::vector<Vec3>{{0.8F, 0.4F, 0.2F}});
+    ModelRenderOptions reflection_options;
+    EnvironmentReflectionLight reflection;
+    reflection.normal = {2U, 3U, 4U};
+    reflection.viewer_position = {0.0F, 0.0F, 4.0F};
+    reflection.environment.texture = &environment;
+    reflection_options.fixed_lights.environment_reflection = reflection;
+
+    Framebuffer reflected(65U, 65U);
+    draw_model_asset(
+        reflected,
+        asset,
+        Mat4::identity(), Mat4::identity(), Mat4::identity(),
+        reflection_options);
+    const Vec3 reflected_center = reflected.color_at(32U, 32U);
+    check_near(reflected_center.x, 0.2F,
+               "map_Ks resolved reflectance feeds environment reflection red");
+    check_near(reflected_center.y, 0.2F,
+               "map_Ks resolved reflectance feeds environment reflection green");
+    check_near(reflected_center.z, 0.2F,
+               "map_Ks resolved reflectance feeds environment reflection blue");
+}
+
+void test_specular_texture_prepared_lifetime_sampler_and_list_preflight() {
+    auto owner = std::make_shared<const Texture2D>(
+        1U, 1U, std::vector<Vec3>{{0.4F, 0.6F, 0.8F}});
+    std::weak_ptr<const Texture2D> retained = owner;
+    ModelAsset source = specular_textured_model(owner);
+    const std::uint64_t with_texture_fingerprint = model_asset_fnv1a64(source);
+    ModelAsset without_texture = source;
+    without_texture.draws[0].specular_texture.reset();
+    check(model_asset_fnv1a64(without_texture) != with_texture_fingerprint,
+          "model fingerprint includes map_Ks semantic content");
+
+    PreparedModelSubmission prepared = prepare_model_asset(
+        std::move(source), specular_texture_options());
+    owner.reset();
+    check(!retained.expired(),
+          "prepared plan retains map_Ks ownership after source lifetime ends");
+
+    Framebuffer prepared_framebuffer(65U, 65U);
+    draw_prepared_model(
+        prepared_framebuffer,
+        prepared,
+        Mat4::identity(), Mat4::identity(), Mat4::identity());
+    const Vec3 center = prepared_framebuffer.color_at(32U, 32U);
+    check_near(center.x, 0.4F,
+               "prepared plan samples retained map_Ks red");
+    check_near(center.y, 0.6F,
+               "prepared plan samples retained map_Ks green");
+    check_near(center.z, 0.8F,
+               "prepared plan samples retained map_Ks blue");
+
+    ModelRenderOptions invalid_sampler;
+    invalid_sampler.sampler.max_anisotropy = 2U;
+    bool sampler_threw = false;
+    try {
+        (void)prepare_model_asset(
+            specular_textured_model(std::make_shared<const Texture2D>(
+                1U, 1U, std::vector<Vec3>{{1.0F, 1.0F, 1.0F}})),
+            invalid_sampler);
+    } catch (const std::invalid_argument&) {
+        sampler_threw = true;
+    }
+    check(sampler_threw,
+          "specular-only texture participates in shared sampler validation");
+
+    const auto invalid_texels = std::make_shared<const Texture2D>(
+        1U, 1U, std::vector<Vec3>{{1.1F, 0.5F, 0.5F}});
+    bool texel_threw = false;
+    try {
+        (void)prepare_model_asset(specular_textured_model(invalid_texels));
+    } catch (const std::invalid_argument&) {
+        texel_threw = true;
+    }
+    check(texel_threw,
+          "prepared model rejects out-of-range map_Ks reflectance before execution");
+
+    MaterialState visible_material;
+    visible_material.albedo = {0.7F, 0.1F, 0.1F};
+    const PreparedModelSubmission first = prepare_model_asset(
+        model_from_triangle(visible_material));
+
+    ModelRenderOptions invalid_uv;
+    invalid_uv.u_channel = 99U;
+    const PreparedModelSubmission later = prepare_model_asset(
+        specular_textured_model(std::make_shared<const Texture2D>(
+            1U, 1U, std::vector<Vec3>{{1.0F, 1.0F, 1.0F}})),
+        invalid_uv);
+    const PreparedModelListEntry entries[] = {
+        {&first, Mat4::identity()},
+        {&later, Mat4::identity()},
+    };
+    Framebuffer framebuffer(65U, 65U);
+    framebuffer.clear({0.13F, 0.17F, 0.19F}, 0.8F, 9U);
+    const auto before = framebuffer.rgb8();
+    const float before_depth = framebuffer.depth_at(32U, 32U);
+    const std::uint8_t before_stencil = framebuffer.stencil_at(32U, 32U);
+    bool uv_threw = false;
+    try {
+        draw_prepared_model_list(
+            framebuffer,
+            entries,
+            Mat4::identity(), Mat4::identity());
+    } catch (const std::out_of_range&) {
+        uv_threw = true;
+    }
+    check(uv_threw,
+          "later prepared-list map_Ks invalid UV binding is rejected");
+    check(framebuffer.rgb8() == before,
+          "later map_Ks UV rejection occurs before earlier list color writes");
+    check(framebuffer.depth_at(32U, 32U) == before_depth,
+          "later map_Ks UV rejection occurs before earlier list depth writes");
+    check(framebuffer.stencil_at(32U, 32U) == before_stencil,
+          "later map_Ks UV rejection occurs before earlier list stencil writes");
+}
 }  // namespace
 
 int main() {
@@ -341,6 +563,9 @@ int main() {
         test_file_driven_specular_material_matches_programmatic_state();
         test_prepared_static_specular_validation();
         test_prepared_list_preflights_later_bad_world_transform_before_writes();
+        test_map_ks_import_and_shared_linear_cache();
+        test_specular_texture_modulates_direct_and_environment_specular();
+        test_specular_texture_prepared_lifetime_sampler_and_list_preflight();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;

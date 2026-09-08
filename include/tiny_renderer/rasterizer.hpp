@@ -31,6 +31,9 @@ struct TextureBinding {
     SamplerState sampler{};
     const Texture2D* opacity_texture{nullptr};
     const Texture2D* normal_texture{nullptr};
+    // Optional linear-RGB specular-reflectance multiplier. It shares the
+    // material UV/sampler path with the other texture roles.
+    const Texture2D* specular_texture{nullptr};
 };
 
 enum class BaseColorSource {
