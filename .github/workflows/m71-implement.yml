@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/m71-implement.yml
       - .github/m71_apply.py
+      - .github/m71_fix.py
 
 permissions:
   contents: write
@@ -19,13 +20,15 @@ jobs:
         with:
           ref: milestone-71-map-ns-shininess-texture
       - name: Apply coherent map_Ns vertical slice
-        run: python3 .github/m71_apply.py
+        run: |
+          python3 .github/m71_apply.py
+          python3 .github/m71_fix.py
       - name: Check generated diff
         run: |
           git diff --check
           git status --short
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTINY_RENDERER_BUILD_TESTS=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
       - name: Build
         run: cmake --build build --parallel 2
       - name: Test complete suite
