@@ -145,6 +145,20 @@ inline void model_fingerprint_texture(
         detail::model_fingerprint_size(hash, asset.vertex_color_channels->blue);
     }
 
+    bool has_specular_texture = false;
+    for (const MaterialDraw& draw : asset.draws) {
+        if (draw.specular_texture) {
+            has_specular_texture = true;
+            break;
+        }
+    }
+    if (has_specular_texture) {
+        detail::model_fingerprint_string(hash, "material-specular-texture-v1");
+        for (const MaterialDraw& draw : asset.draws) {
+            detail::model_fingerprint_texture(hash, draw.specular_texture);
+        }
+    }
+
     bool has_emissive_material = false;
     for (const MaterialDraw& draw : asset.draws) {
         if (draw.material.emissive.x != 0.0F

@@ -140,10 +140,6 @@ Vec3 add_emissive(const Vec3& shaded, const MaterialState& material) {
     return shaded + material.emissive;
 }
 
-bool material_has_specular(const MaterialState& material) {
-    return material.specular.x > 0.0F || material.specular.y > 0.0F || material.specular.z > 0.0F;
-}
-
 Vec3 transform_world_position(const Mat4& model, const Vec3& position) {
     const Vec4 world = model * Vec4{position.x, position.y, position.z, 1.0F};
     if (!std::isfinite(world.x) || !std::isfinite(world.y) || !std::isfinite(world.z)
@@ -240,10 +236,16 @@ void validate_color_binding(const ColorBinding& binding, std::size_t varying_cou
 void validate_texture_binding(const TextureBinding& binding, std::size_t varying_count) {
     if (binding.texture == nullptr
         && binding.opacity_texture == nullptr
-        && binding.normal_texture == nullptr) {
+        && binding.normal_texture == nullptr
+        && binding.specular_texture == nullptr) {
         return;
     }
     validate_sampler_state(binding.sampler);
+    if (binding.specular_texture != nullptr
+        && !binding.specular_texture->texels_within_unit_range()) {
+        throw std::invalid_argument(
+            "specular texture texels must be finite and within [0, 1]");
+    }
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
         throw std::out_of_range("texture binding references unavailable varying channel");
     }
@@ -301,7 +303,8 @@ void validate_output_binding(
     }
     if (source == BaseColorSource::Texture
         || texture_binding.opacity_texture != nullptr
-        || texture_binding.normal_texture != nullptr) {
+        || texture_binding.normal_texture != nullptr
+        || texture_binding.specular_texture != nullptr) {
         validate_texture_binding(texture_binding, varying_count);
     }
 }
@@ -312,7 +315,8 @@ void validate_texture_coordinates(
     BaseColorSource source) {
     if (source != BaseColorSource::Texture
         && binding.opacity_texture == nullptr
-        && binding.normal_texture == nullptr) {
+        && binding.normal_texture == nullptr
+        && binding.specular_texture == nullptr) {
         return;
     }
     const float u = pack.values[binding.u_channel];
@@ -798,7 +802,8 @@ TextureGradients texture_gradients(
     if (binding.sampler.mip_filter == MipFilterMode::Disabled
         || (binding.texture == nullptr
             && binding.opacity_texture == nullptr
-            && binding.normal_texture == nullptr)) {
+            && binding.normal_texture == nullptr
+            && binding.specular_texture == nullptr)) {
         return {};
     }
     return {
@@ -979,6 +984,30 @@ float projected_shadow_visibility(
         });
 }
 
+Vec3 fragment_specular_reflectance(
+    const VaryingPack& varyings,
+    const TextureGradients& gradients,
+    const TextureBinding& texture_binding,
+    const MaterialState& material) {
+    if (texture_binding.specular_texture == nullptr) {
+        return material.specular;
+    }
+    const Vec3 sampled = texture_binding.specular_texture->sample_grad(
+        {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+        gradients,
+        texture_binding.sampler);
+    if (!finite_vec3(sampled)
+        || sampled.x < 0.0F || sampled.x > 1.0F
+        || sampled.y < 0.0F || sampled.y > 1.0F
+        || sampled.z < 0.0F || sampled.z > 1.0F) {
+        throw std::logic_error("validated specular texture produced an invalid sample");
+    }
+    return modulate_rgb(material.specular, sampled);
+}
+
+bool has_specular_reflectance(const Vec3& specular) {
+    return specular.x > 0.0F || specular.y > 0.0F || specular.z > 0.0F;
+}
 float shadow_visibility(const ShadowState& shadow, const Vec4& light_clip) {
     if (!shadow.enabled) {
         return 1.0F;
@@ -1154,6 +1183,7 @@ Vec3 light_contribution(
     const Vec3& base,
     const Vec3& normal,
     const MaterialState& material,
+    const Vec3& specular_reflectance,
     const DirectionalLight* directional_light,
     const PointLight* point_light,
     const SpotLight* spot_light,
@@ -1207,7 +1237,7 @@ Vec3 light_contribution(
     const float diffuse_intensity = diffuse * lambert * direct_factor;
     Vec3 shaded = modulate_rgb(base, light_color) * (ambient + diffuse_intensity);
 
-    if (material_has_specular(material)) {
+    if (has_specular_reflectance(specular_reflectance)) {
         const Vec3 to_viewer = viewer_position - world_position;
         const float view_length = length(to_viewer);
         if (finite_vec3(to_viewer) && std::isfinite(view_length) && view_length > kEpsilon) {
@@ -1220,9 +1250,9 @@ Vec3 light_contribution(
                 const float specular_strength = diffuse * direct_factor
                     * std::pow(nh, material.shininess);
                 shaded = {
-                    shaded.x + material.specular.x * light_color.x * specular_strength,
-                    shaded.y + material.specular.y * light_color.y * specular_strength,
-                    shaded.z + material.specular.z * light_color.z * specular_strength,
+                    shaded.x + specular_reflectance.x * light_color.x * specular_strength,
+                    shaded.y + specular_reflectance.y * light_color.y * specular_strength,
+                    shaded.z + specular_reflectance.z * light_color.z * specular_strength,
                 };
             }
         }
@@ -1246,9 +1276,9 @@ Vec3 environment_diffuse_contribution(
 Vec3 environment_reflection_contribution(
     const Vec3& normal,
     const Vec3& world_position,
-    const MaterialState& material,
+    const Vec3& specular_reflectance,
     const FixedLightCollection& fixed_lights) {
-    if (!fixed_lights.environment_reflection || !material_has_specular(material)) {
+    if (!fixed_lights.environment_reflection || !has_specular_reflectance(specular_reflectance)) {
         return {};
     }
     const EnvironmentReflectionLight& reflection = *fixed_lights.environment_reflection;
@@ -1263,16 +1293,16 @@ Vec3 environment_reflection_contribution(
     const Vec3 radiance = environment_lighting_detail::reflection_environment_radiance_unchecked(
         reflection.environment,
         reflected);
-    return modulate_rgb(material.specular, radiance);
+    return modulate_rgb(specular_reflectance, radiance);
 }
 
 bool reflection_is_only_zero_contribution(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
     const FixedLightCollection& fixed_lights,
-    const MaterialState& material) {
+    const Vec3& specular_reflectance) {
     return fixed_lights.environment_reflection.has_value()
-        && !material_has_specular(material)
+        && !has_specular_reflectance(specular_reflectance)
         && !directional_light.enabled
         && !point_light.enabled
         && fixed_lights.count == 0U
@@ -1302,8 +1332,11 @@ ShadedFragment shade_fragment(
         source_color.z * material.albedo.z,
     };
     const float opacity = fragment_opacity(varyings, gradients, texture_binding, material);
+    // Resolve map_Ks exactly once; direct and environment specular share this value.
+    const Vec3 specular_reflectance = fragment_specular_reflectance(
+        varyings, gradients, texture_binding, material);
     if (reflection_is_only_zero_contribution(
-            directional_light, point_light, fixed_lights, material)) {
+            directional_light, point_light, fixed_lights, specular_reflectance)) {
         return {add_emissive(base, material), opacity, false};
     }
     const NormalBinding* normal_binding = detail::active_normal_binding(
@@ -1339,14 +1372,14 @@ ShadedFragment shade_fragment(
         if (directional_light.enabled) {
             const float visibility = shadow_visibility(shadow, light_clip);
             shaded = light_contribution(
-                base, normal, material, &directional_light, nullptr, nullptr, visibility, world_position);
+                base, normal, material, specular_reflectance, &directional_light, nullptr, nullptr, visibility, world_position);
         } else if (point_light.enabled) {
             shaded = light_contribution(
-                base, normal, material, nullptr, &point_light, nullptr, 1.0F, world_position);
+                base, normal, material, specular_reflectance, nullptr, &point_light, nullptr, 1.0F, world_position);
         }
         shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
         shaded = shaded + environment_reflection_contribution(
-            normal, world_position, material, fixed_lights);
+            normal, world_position, specular_reflectance, fixed_lights);
         return {add_emissive(shaded, material), opacity, false};
     }
 
@@ -1371,6 +1404,7 @@ ShadedFragment shade_fragment(
                     base,
                     normal,
                     material,
+                    specular_reflectance,
                     &light.directional,
                     nullptr,
                     nullptr,
@@ -1400,6 +1434,7 @@ ShadedFragment shade_fragment(
                     base,
                     normal,
                     material,
+                    specular_reflectance,
                     nullptr,
                     &light.point,
                     nullptr,
@@ -1427,6 +1462,7 @@ ShadedFragment shade_fragment(
                     base,
                     normal,
                     material,
+                    specular_reflectance,
                     nullptr,
                     nullptr,
                     &light.spot,
@@ -1438,7 +1474,7 @@ ShadedFragment shade_fragment(
     }
     shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
     shaded = shaded + environment_reflection_contribution(
-        normal, world_position, material, fixed_lights);
+        normal, world_position, specular_reflectance, fixed_lights);
     return {add_emissive(shaded, material), opacity, false};
 }
 
