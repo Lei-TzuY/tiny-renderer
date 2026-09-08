@@ -70,6 +70,20 @@ void test_file_driven_summary_is_deterministic_and_ordered() {
           "inspection exposes contiguous canonical draw ranges");
     check(first_summary.find("draw[1].diffuse_texture=none\n") != std::string::npos,
           "inspection distinguishes Kd-only draws from mapped draws");
+    check(first_summary.find("draw[0].specular_texture=none\n") != std::string::npos,
+          "inspection reports absent specular texture roles explicitly");
+}
+
+void test_specular_texture_role_is_visible_in_summary() {
+    const ModelAsset asset = load_obj_model_asset_file(fixture_path("specular_textured.obj"));
+    const std::string summary = inspect_model_asset(asset);
+    check(summary.find("draw[0].specular_texture=4x4\n") != std::string::npos,
+          "inspection exposes the owned map_Ks texture dimensions");
+    check(summary.find("draw[0].opacity_texture=4x4\n") != std::string::npos,
+          "inspection exposes the sibling map_d role independently");
+    check(summary.starts_with(
+              "format=tiny-renderer-model-asset-inspect-v1\n" + fingerprint_line(asset)),
+          "map_Ks inspection fingerprint matches canonical model content");
 }
 
 void test_structural_mutation_changes_summary() {
@@ -91,6 +105,7 @@ void test_structural_mutation_changes_summary() {
 int main() {
     try {
         test_file_driven_summary_is_deterministic_and_ordered();
+        test_specular_texture_role_is_visible_in_summary();
         test_structural_mutation_changes_summary();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
