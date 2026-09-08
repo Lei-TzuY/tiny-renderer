@@ -1,7 +1,9 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -10,6 +12,8 @@
 #include <vector>
 
 #include "tiny_renderer/framebuffer.hpp"
+#include "tiny_renderer/obj_loader.hpp"
+#include "tiny_renderer/offline_render.hpp"
 
 using namespace tiny_renderer;
 
@@ -235,14 +239,192 @@ void test_mapping_does_not_mutate_legacy_or_pfm_output() {
     std::filesystem::remove(ppm_path);
 }
 
+void write_text_file(const std::filesystem::path& path, const std::string& text) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("failed to create headless display fixture");
+    }
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!output) {
+        throw std::runtime_error("failed to write headless display fixture");
+    }
+}
+
+std::string quote(const std::filesystem::path& path) {
+    return "\"" + path.string() + "\"";
+}
+
+int run_renderer(
+    const std::filesystem::path& executable,
+    const std::vector<std::string>& arguments) {
+    std::string command = quote(executable);
+    for (const std::string& argument : arguments) {
+        command += " \"" + argument + "\"";
+    }
+    return std::system(command.c_str());
+}
+
+std::filesystem::path renderer_executable(const std::filesystem::path& argv0) {
+    std::filesystem::path executable = std::filesystem::absolute(argv0).parent_path()
+        / "tiny_renderer_render";
+    if (!std::filesystem::exists(executable)) {
+        const std::filesystem::path exe_candidate = executable.string() + ".exe";
+        if (std::filesystem::exists(exe_candidate)) {
+            executable = exe_candidate;
+        }
+    }
+    return executable;
+}
+
+void test_headless_display_output_controls(const std::filesystem::path& argv0) {
+    const std::filesystem::path executable = renderer_executable(argv0);
+    check(std::filesystem::exists(executable), "headless renderer is available to display-output integration test");
+    if (!std::filesystem::exists(executable)) {
+        return;
+    }
+
+    const std::size_t path_hash = std::hash<std::string>{}(
+        std::filesystem::absolute(argv0).string());
+    const std::filesystem::path root = std::filesystem::temp_directory_path()
+        / ("tiny_renderer_display_cli_" + std::to_string(path_hash));
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::filesystem::path obj = root / "display.obj";
+    const std::filesystem::path mtl = root / "display.mtl";
+    write_text_file(
+        obj,
+        "mtllib display.mtl\n"
+        "v -0.8 -0.8 0\n"
+        "v 0.8 -0.8 0\n"
+        "v 0 0.8 0\n"
+        "usemtl matte\n"
+        "f 1 2 3\n");
+    write_text_file(
+        mtl,
+        "newmtl matte\n"
+        "Kd 0.8 0.35 0.1\n");
+
+    const std::filesystem::path legacy_ppm = root / "legacy.ppm";
+    const std::filesystem::path explicit_default_ppm = root / "explicit_default.ppm";
+    const std::filesystem::path custom_ppm = root / "custom.ppm";
+    const std::filesystem::path library_ppm = root / "library.ppm";
+    const std::filesystem::path cli_pfm = root / "archive.pfm";
+    const std::filesystem::path library_pfm = root / "library.pfm";
+
+    check(
+        run_renderer(executable, {obj.string(), legacy_ppm.string(), "32", "24", "4"}) == 0,
+        "legacy headless PPM render succeeds");
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), explicit_default_ppm.string(), "32", "24", "4",
+             "--display-exposure", "1", "--output-transfer", "srgb"}) == 0,
+        "explicit default headless display controls succeed");
+    if (std::filesystem::exists(legacy_ppm) && std::filesystem::exists(explicit_default_ppm)) {
+        check(
+            read_binary_file(legacy_ppm) == read_binary_file(explicit_default_ppm),
+            "implicit and explicit default display controls are byte-identical");
+    }
+
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), custom_ppm.string(), "32", "24", "4",
+             "--display-exposure", "2", "--output-transfer", "linear"}) == 0,
+        "custom headless display controls succeed");
+
+    const ModelAsset asset = load_obj_model_asset_file(obj);
+    OfflineRenderSettings settings{};
+    settings.width = 32U;
+    settings.height = 24U;
+    settings.sample_count = SampleCount::Four;
+    const Framebuffer framebuffer = render_model_preview(asset, settings);
+    const DisplayMappingState mapping{2.0F, ToneMapOperator::Reinhard};
+    framebuffer.write_ppm(library_ppm.string(), mapping, OutputTransferFunction::Linear);
+    if (std::filesystem::exists(custom_ppm) && std::filesystem::exists(library_ppm)) {
+        check(
+            read_binary_file(custom_ppm) == read_binary_file(library_ppm),
+            "headless exposure/transfer output is byte-identical to the library display boundary");
+        check(
+            read_binary_file(custom_ppm) != read_binary_file(legacy_ppm),
+            "custom display controls observably change PPM output");
+    }
+
+    check(
+        run_renderer(executable, {obj.string(), cli_pfm.string(), "32", "24", "4"}) == 0,
+        "legacy PFM archival render succeeds");
+    framebuffer.write_pfm(library_pfm.string());
+    if (std::filesystem::exists(cli_pfm) && std::filesystem::exists(library_pfm)) {
+        check(
+            read_binary_file(cli_pfm) == read_binary_file(library_pfm),
+            "headless PFM remains byte-identical to the data-preserving library path");
+    }
+
+    const std::filesystem::path invalid_pfm = root / "invalid_display_control.pfm";
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), invalid_pfm.string(), "32", "24", "4",
+             "--display-exposure", "2"}) != 0,
+        "PFM rejects display-only exposure control");
+    check(!std::filesystem::exists(invalid_pfm), "PFM display-control rejection occurs before output creation");
+
+    const std::filesystem::path invalid_transfer_pfm = root / "invalid_transfer_control.pfm";
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), invalid_transfer_pfm.string(), "32", "24", "4",
+             "--output-transfer", "linear"}) != 0,
+        "PFM rejects display-only transfer control");
+    check(
+        !std::filesystem::exists(invalid_transfer_pfm),
+        "PFM transfer-control rejection occurs before output creation");
+
+    const std::filesystem::path duplicate_ppm = root / "duplicate.ppm";
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), duplicate_ppm.string(), "32", "24", "4",
+             "--display-exposure", "1", "--display-exposure", "2"}) != 0,
+        "duplicate display exposure is rejected");
+    check(!std::filesystem::exists(duplicate_ppm), "duplicate display exposure rejects before output creation");
+
+    const std::filesystem::path negative_ppm = root / "negative.ppm";
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), negative_ppm.string(), "32", "24", "4",
+             "--display-exposure", "-1"}) != 0,
+        "negative display exposure is rejected");
+    check(!std::filesystem::exists(negative_ppm), "negative exposure rejects before output creation");
+
+    const std::filesystem::path unknown_transfer_ppm = root / "unknown_transfer.ppm";
+    check(
+        run_renderer(
+            executable,
+            {obj.string(), unknown_transfer_ppm.string(), "32", "24", "4",
+             "--output-transfer", "gamma22"}) != 0,
+        "unknown output transfer is rejected");
+    check(
+        !std::filesystem::exists(unknown_transfer_ppm),
+        "unknown output transfer rejects before output creation");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     test_component_reinhard_and_negative_rule();
     test_transfer_runs_after_tone_mapping_and_hashes_mapped_bytes();
     test_multisample_resolve_precedes_display_mapping();
     test_invalid_mapping_is_fail_closed();
     test_mapping_does_not_mutate_legacy_or_pfm_output();
+    if (argc > 0) {
+        test_headless_display_output_controls(argv[0]);
+    }
 
     if (failures != 0) {
         std::cerr << failures << " display-mapping test(s) failed\n";
