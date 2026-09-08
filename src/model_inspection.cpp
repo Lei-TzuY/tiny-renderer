@@ -50,6 +50,7 @@ std::string inspect_model_asset(const ModelAsset& asset) {
         append_texture_summary(output, (prefix + "opacity_texture").c_str(), draw.opacity_texture);
         append_texture_summary(output, (prefix + "normal_texture").c_str(), draw.normal_texture);
         append_texture_summary(output, (prefix + "specular_texture").c_str(), draw.specular_texture);
+        append_texture_summary(output, (prefix + "emissive_texture").c_str(), draw.emissive_texture);
     }
 
     return output.str();

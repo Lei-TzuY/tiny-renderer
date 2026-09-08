@@ -1,0 +1,4 @@
+newmtl hdrGlow
+Kd 0 0 0
+Ke 0.5 1 0.25
+map_Ke emissive_hdr.pfm
