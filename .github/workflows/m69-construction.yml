@@ -1,0 +1,35 @@
+name: m69-construction
+
+on:
+  push:
+    branches: [milestone-69-map-ks-specular-textures]
+
+permissions:
+  contents: write
+
+jobs:
+  construct-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Apply Milestone 69 integration
+        run: python3 .github/m69_construct.py
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Focused regression
+        run: ctest --test-dir build -R 'specular_lighting|model_renderer|prepared_model|environment_reflection' --output-on-failure
+      - name: Full regression
+        run: ctest --test-dir build --output-on-failure
+      - name: Commit verified integration
+        shell: bash
+        run: |
+          git config user.name "LeiZ"
+          git config user.email "52287354+Lei-TzuY@users.noreply.github.com"
+          git add include/tiny_renderer/rasterizer.hpp include/tiny_renderer/model_fingerprint.hpp src/model_renderer.cpp src/rasterizer.cpp src/rasterizer_validation.cpp tests/test_specular_lighting.cpp
+          git commit -m "M69: integrate specular textures through shading"
+          git push origin HEAD:milestone-69-map-ks-specular-textures
