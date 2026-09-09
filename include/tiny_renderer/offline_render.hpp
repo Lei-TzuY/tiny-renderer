@@ -21,7 +21,7 @@
 
 namespace tiny_renderer {
 
-// Headless reflection intentionally omits a viewer position. The fixed preview
+// Headless reflection intentionally omits a viewer position. The active preview
 // camera is authoritative, so render_model_preview/render_scene_preview bind
 // the M58 reflection light to the exact same camera eye used to build the view
 // matrix.
@@ -30,10 +30,10 @@ struct OfflineEnvironmentReflectionState {
     EnvironmentReflectionState environment{};
 };
 
-// Deterministic headless preview settings. The preview camera is fixed at
-// +Z looking at the origin; model/scene geometry is translated/scaled from its
-// finite world-space bounds so the complete bounding sphere fits the limiting
-// horizontal/vertical field of view.
+// Deterministic headless preview settings. Model preview and the default flat-
+// scene path keep the historical fixed +Z camera plus finite-bounds auto-fit.
+// An explicit flat-scene camera is supplied separately so the default settings
+// remain source- and byte-compatible.
 struct OfflineRenderSettings {
     std::size_t width{512U};
     std::size_t height{512U};
@@ -42,7 +42,7 @@ struct OfflineRenderSettings {
     float vertical_fov_radians{radians(50.0F)};
     float framing_margin{1.10F};
     // Optional borrowed linear-HDR environment background. When present it is
-    // rendered before geometry using the exact same fixed preview camera/FOV/aspect.
+    // rendered before geometry using the same active preview camera/FOV/aspect.
     std::optional<EnvironmentBackgroundState> environment{};
     // Optional borrowed diffuse environment light. Background visibility and
     // lighting are independent; callers may enable either, both, or neither.
@@ -60,6 +60,21 @@ enum class OfflineSceneOrdering {
     BackToFront,
 };
 
+// Optional explicit world-space perspective camera for flat-scene rendering.
+// When absent, render_scene_preview preserves the historical combined-bounds
+// auto-fit path. When present, model transforms remain in caller world space
+// and no auto-fit transform is injected.
+struct OfflineSceneCamera {
+    Vec3 eye{0.0F, 0.0F, 3.0F};
+    Vec3 target{0.0F, 0.0F, 0.0F};
+    Vec3 up{0.0F, 1.0F, 0.0F};
+    float vertical_fov_radians{radians(50.0F)};
+    float near_plane{0.1F};
+    float far_plane{100.0F};
+};
+
+void validate_offline_scene_camera(const OfflineSceneCamera& camera);
+
 // One borrowed entry in a bounded flat scene. The asset and render options are
 // snapshotted into PreparedModelSubmission objects before any returned render
 // can exist; there is deliberately no hierarchy, persistent scene graph, or
@@ -71,9 +86,9 @@ struct OfflineSceneEntry {
 };
 
 // Parsed CLI-facing flat-scene description. Paths are resolved as sibling OBJ
-// files of the manifest itself. The manifest contains only transforms and
-// ordering; render/material/environment policy remains owned by existing
-// OfflineRenderSettings / ModelRenderOptions state.
+// files of the manifest itself. Material/environment policy remains owned by
+// existing OfflineRenderSettings / ModelRenderOptions state; the optional
+// camera only selects explicit world-space framing versus historical auto-fit.
 struct OfflineSceneManifestEntry {
     std::filesystem::path model_path{};
     Mat4 model{Mat4::identity()};
@@ -81,6 +96,7 @@ struct OfflineSceneManifestEntry {
 
 struct OfflineSceneManifest {
     OfflineSceneOrdering ordering{OfflineSceneOrdering::InputOrder};
+    std::optional<OfflineSceneCamera> camera{};
     std::vector<OfflineSceneManifestEntry> entries{};
 };
 
@@ -167,6 +183,7 @@ inline void reject_offline_scene_extra_tokens(
 // Strict bounded text format:
 //   tiny-renderer-scene-v1
 //   ordering input|back-to-front        # optional, at most once
+//   camera EX EY EZ TX TY TZ UX UY UZ VFOV NEAR FAR  # optional, at most once
 //   model FILE.obj TX TY TZ SCALE RY    # repeat, max 256 entries
 // Blank lines and full-line '#' comments are ignored. FILE.obj must be a
 // sibling filename (no absolute path, parent traversal, or subdirectory).
@@ -180,6 +197,7 @@ inline void reject_offline_scene_extra_tokens(
     OfflineSceneManifest manifest;
     bool header_seen = false;
     bool ordering_seen = false;
+    bool camera_seen = false;
     std::string line_text;
     std::size_t line_number = 0U;
 
@@ -228,6 +246,53 @@ inline void reject_offline_scene_extra_tokens(
             }
             detail::reject_offline_scene_extra_tokens(path, line_number, line);
             ordering_seen = true;
+            continue;
+        }
+
+        if (directive == "camera") {
+            if (camera_seen) {
+                detail::offline_scene_manifest_error(path, line_number, "camera may be specified at most once");
+            }
+            std::array<std::string, 12> tokens{};
+            for (std::string& token : tokens) {
+                if (!(line >> token)) {
+                    detail::offline_scene_manifest_error(
+                        path,
+                        line_number,
+                        "camera requires EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR");
+                }
+            }
+            detail::reject_offline_scene_extra_tokens(path, line_number, line);
+
+            OfflineSceneCamera camera;
+            camera.eye = {
+                detail::parse_offline_scene_float(path, line_number, tokens[0], "camera eye X"),
+                detail::parse_offline_scene_float(path, line_number, tokens[1], "camera eye Y"),
+                detail::parse_offline_scene_float(path, line_number, tokens[2], "camera eye Z"),
+            };
+            camera.target = {
+                detail::parse_offline_scene_float(path, line_number, tokens[3], "camera target X"),
+                detail::parse_offline_scene_float(path, line_number, tokens[4], "camera target Y"),
+                detail::parse_offline_scene_float(path, line_number, tokens[5], "camera target Z"),
+            };
+            camera.up = {
+                detail::parse_offline_scene_float(path, line_number, tokens[6], "camera up X"),
+                detail::parse_offline_scene_float(path, line_number, tokens[7], "camera up Y"),
+                detail::parse_offline_scene_float(path, line_number, tokens[8], "camera up Z"),
+            };
+            camera.vertical_fov_radians = detail::parse_offline_scene_float(
+                path, line_number, tokens[9], "camera vertical field of view");
+            camera.near_plane = detail::parse_offline_scene_float(
+                path, line_number, tokens[10], "camera near plane");
+            camera.far_plane = detail::parse_offline_scene_float(
+                path, line_number, tokens[11], "camera far plane");
+            try {
+                validate_offline_scene_camera(camera);
+            } catch (const std::invalid_argument& error) {
+                detail::offline_scene_manifest_error(path, line_number, error.what());
+            }
+            manifest.camera = camera;
+            camera_seen = true;
             continue;
         }
 
@@ -304,11 +369,14 @@ inline void reject_offline_scene_extra_tokens(
 // Renders an ordered heterogeneous flat scene using the canonical prepared
 // model list executor. InputOrder preserves caller entry order. BackToFront
 // delegates to the established deterministic painter-order helper and inherits
-// its bounded entry-level semantics and vertex-program rejection. Empty scenes
-// are valid clear/environment-only renders.
+// its bounded entry-level semantics and vertex-program rejection. A supplied
+// camera preserves entry transforms in world space; absent camera preserves the
+// combined-bounds auto-fit contract. Empty scenes are valid clear/environment-
+// only renders.
 [[nodiscard]] Framebuffer render_scene_preview(
     std::span<const OfflineSceneEntry> entries,
     const OfflineRenderSettings& settings = {},
-    OfflineSceneOrdering ordering = OfflineSceneOrdering::InputOrder);
+    OfflineSceneOrdering ordering = OfflineSceneOrdering::InputOrder,
+    std::optional<OfflineSceneCamera> camera = std::nullopt);
 
 }  // namespace tiny_renderer
