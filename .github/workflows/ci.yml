@@ -21,6 +21,18 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Render sample
         run: ./build/tiny_renderer_sample build/milestone1.ppm
+      - name: Render deterministic flat-scene manifest
+        run: |
+          ./build/tiny_renderer_render tests/fixtures/flat_scene.trscene build/flat_scene_a.ppm 96 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene.trscene build/flat_scene_b.ppm 96 64 4
+          cmp build/flat_scene_a.ppm build/flat_scene_b.ppm
+      - name: Reject unsafe flat-scene manifest
+        run: |
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_unsafe.trscene build/unsafe_scene.ppm 64 64 4; then
+            echo "unsafe scene manifest unexpectedly rendered" >&2
+            exit 1
+          fi
+          test ! -e build/unsafe_scene.ppm
 
   sanitizers:
     runs-on: ubuntu-latest
@@ -40,3 +52,18 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ./build/tiny_renderer_sample build/milestone1.ppm
+      - name: Render flat-scene manifest under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ./build/tiny_renderer_render tests/fixtures/flat_scene.trscene build/flat_scene.ppm 96 64 4
+      - name: Reject unsafe flat-scene manifest under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_unsafe.trscene build/unsafe_scene.ppm 64 64 4; then
+            echo "unsafe scene manifest unexpectedly rendered" >&2
+            exit 1
+          fi
+          test ! -e build/unsafe_scene.ppm
