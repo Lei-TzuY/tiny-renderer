@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "tiny_renderer/environment.hpp"
 #include "tiny_renderer/framebuffer.hpp"
@@ -59,6 +61,29 @@ struct OfflineSceneEntry {
     Mat4 model{Mat4::identity()};
     ModelRenderOptions options{};
 };
+
+// Parsed CLI-facing flat-scene description. Paths are resolved as sibling OBJ
+// files of the manifest itself. The manifest contains only transforms and
+// ordering; render/material/environment policy remains owned by existing
+// OfflineRenderSettings / ModelRenderOptions state.
+struct OfflineSceneManifestEntry {
+    std::filesystem::path model_path{};
+    Mat4 model{Mat4::identity()};
+};
+
+struct OfflineSceneManifest {
+    OfflineSceneOrdering ordering{OfflineSceneOrdering::InputOrder};
+    std::vector<OfflineSceneManifestEntry> entries{};
+};
+
+// Strict bounded text format:
+//   tiny-renderer-scene-v1
+//   ordering input|back-to-front        # optional, at most once
+//   model FILE.obj TX TY TZ SCALE RY    # repeat, max 256 entries
+// Blank lines and full-line '#' comments are ignored. FILE.obj must be a
+// sibling filename (no absolute path, parent traversal, or subdirectory).
+[[nodiscard]] OfflineSceneManifest load_offline_scene_manifest_file(
+    const std::filesystem::path& path);
 
 // Renders a bounded, auto-framed preview through the existing model/raster
 // path. ModelRenderOptions are forwarded unchanged except that optional
