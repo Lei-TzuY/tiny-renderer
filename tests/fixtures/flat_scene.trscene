@@ -1,0 +1,5 @@
+# Two copies of one canonical textured asset under distinct transforms.
+tiny-renderer-scene-v1
+ordering back-to-front
+model material_texture_sequence.obj -0.65 0 -0.30 0.70 0
+model material_texture_sequence.obj 0.65 0 0.30 0.70 0.20
