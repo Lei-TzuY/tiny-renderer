@@ -226,6 +226,147 @@ void test_limiting_axis_framing() {
     check(differs_from_clear(landscape_frame, landscape), "landscape preview remains visibly framed");
 }
 
+void test_flat_scene_determinism_and_global_fit_invariance() {
+    ModelAsset left = triangle_asset();
+    ModelAsset right = triangle_asset();
+    left.draws.front().material.albedo = {0.9F, 0.1F, 0.1F};
+    right.draws.front().material.albedo = {0.1F, 0.2F, 0.9F};
+
+    std::array<OfflineSceneEntry, 2> scene{
+        OfflineSceneEntry{&left, Mat4::translation({-1.4F, 0.0F, -0.1F}), {}},
+        OfflineSceneEntry{&right, Mat4::translation({1.4F, 0.0F, 0.1F}), {}},
+    };
+    OfflineRenderSettings settings{};
+    settings.width = 96U;
+    settings.height = 64U;
+    settings.sample_count = SampleCount::Four;
+
+    const Framebuffer first = render_scene_preview(scene, settings);
+    const Framebuffer second = render_scene_preview(scene, settings);
+    check(first.rgb8() == second.rgb8(), "flat-scene preview is deterministic across repeated 4x submissions");
+    check(differs_from_clear(first, settings), "flat-scene preview rasterizes heterogeneous model entries");
+
+    const Mat4 global = Mat4::translation({8.0F, -12.0F, 5.0F})
+        * Mat4::scale({4.0F, 4.0F, 4.0F});
+    std::array<OfflineSceneEntry, 2> transformed = scene;
+    for (OfflineSceneEntry& entry : transformed) {
+        entry.model = global * entry.model;
+    }
+    const Framebuffer transformed_frame = render_scene_preview(transformed, settings);
+    check(
+        first.rgb8() == transformed_frame.rgb8(),
+        "combined scene auto-fit normalizes a global uniform scale and translation");
+}
+
+ModelRenderOptions transparent_scene_options() {
+    ModelRenderOptions options;
+    options.depth_state.write_enabled = false;
+    options.blend_state.enabled = true;
+    options.blend_state.source_factor = BlendFactor::SourceAlpha;
+    options.blend_state.destination_factor = BlendFactor::OneMinusSourceAlpha;
+    options.blend_state.operation = BlendOp::Add;
+    return options;
+}
+
+void test_flat_scene_back_to_front_delegates_to_painter_order() {
+    ModelAsset near_asset = triangle_asset();
+    ModelAsset far_asset = triangle_asset();
+    near_asset.draws.front().material.albedo = {1.0F, 0.0F, 0.0F};
+    far_asset.draws.front().material.albedo = {0.0F, 0.0F, 1.0F};
+    near_asset.draws.front().material.opacity = 0.5F;
+    far_asset.draws.front().material.opacity = 0.5F;
+    const ModelRenderOptions transparent = transparent_scene_options();
+
+    const OfflineSceneEntry near_entry{
+        &near_asset,
+        Mat4::translation({0.0F, 0.0F, 0.35F}),
+        transparent,
+    };
+    const OfflineSceneEntry far_entry{
+        &far_asset,
+        Mat4::translation({0.0F, 0.0F, -0.35F}),
+        transparent,
+    };
+    const std::array<OfflineSceneEntry, 2> near_first{near_entry, far_entry};
+    const std::array<OfflineSceneEntry, 2> far_first{far_entry, near_entry};
+
+    OfflineRenderSettings settings{};
+    settings.width = 65U;
+    settings.height = 65U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.0F, 0.0F, 0.0F};
+
+    const Framebuffer sorted = render_scene_preview(
+        near_first,
+        settings,
+        OfflineSceneOrdering::BackToFront);
+    const Framebuffer manual_far_first = render_scene_preview(
+        far_first,
+        settings,
+        OfflineSceneOrdering::InputOrder);
+    const Framebuffer unsorted_near_first = render_scene_preview(
+        near_first,
+        settings,
+        OfflineSceneOrdering::InputOrder);
+
+    check(
+        sorted.rgb8() == manual_far_first.rgb8()
+            && sorted.fnv1a64() == manual_far_first.fnv1a64(),
+        "flat-scene back-to-front ordering is byte/hash-equivalent to explicit far-then-near input");
+    check(
+        sorted.rgb8() != unsorted_near_first.rgb8(),
+        "flat-scene painter ordering observably changes non-commutative source-alpha composition");
+}
+
+void test_flat_scene_empty_environment_and_invalid_entries() {
+    OfflineRenderSettings settings{};
+    settings.width = 32U;
+    settings.height = 24U;
+    settings.sample_count = SampleCount::One;
+    settings.clear_color = {0.11F, 0.22F, 0.33F};
+    const std::vector<OfflineSceneEntry> empty;
+    const Framebuffer empty_frame = render_scene_preview(empty, settings);
+    Framebuffer clear(settings.width, settings.height, settings.sample_count);
+    clear.clear(settings.clear_color);
+    check(
+        empty_frame.rgb8() == clear.rgb8(),
+        "empty flat scene is a deterministic clear-only render");
+
+    const Texture2D environment_texture = quadrant_environment();
+    settings.environment = nearest_environment(environment_texture);
+    const Framebuffer environment_only = render_scene_preview(empty, settings);
+    check(
+        environment_only.rgb8() != clear.rgb8(),
+        "empty flat scene can render the existing environment background without geometry");
+
+    const ModelAsset valid = triangle_asset();
+    std::array<OfflineSceneEntry, 2> null_later{
+        OfflineSceneEntry{&valid, Mat4::identity(), {}},
+        OfflineSceneEntry{},
+    };
+    check_throws<std::invalid_argument>(
+        [&] { (void)render_scene_preview(null_later, OfflineRenderSettings{}); },
+        "later null flat-scene asset is rejected before a render is returned");
+
+    std::array<OfflineSceneEntry, 2> invalid_transform{
+        OfflineSceneEntry{&valid, Mat4::translation({-0.5F, 0.0F, 0.0F}), {}},
+        OfflineSceneEntry{&valid, Mat4::translation({0.5F, 0.0F, 0.0F}), {}},
+    };
+    invalid_transform[1].model(0U, 3U) = std::numeric_limits<float>::infinity();
+    check_throws<std::invalid_argument>(
+        [&] { (void)render_scene_preview(invalid_transform, OfflineRenderSettings{}); },
+        "later non-finite scene transform is rejected during combined bounds validation");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)render_scene_preview(
+                empty,
+                OfflineRenderSettings{},
+                static_cast<OfflineSceneOrdering>(99));
+        },
+        "unknown flat-scene ordering policy is rejected deterministically");
+}
+
 void test_invalid_requests_fail_closed() {
     const ModelAsset asset = triangle_asset();
 
@@ -266,9 +407,9 @@ void test_invalid_requests_fail_closed() {
         [&] { (void)render_model_preview(asset, invalid_margin); },
         "invalid preview framing margin is rejected");
 
-    ModelAsset empty;
+    ModelAsset empty_asset;
     check_throws<std::invalid_argument>(
-        [&] { (void)render_model_preview(empty); },
+        [&] { (void)render_model_preview(empty_asset); },
         "empty model preview is rejected");
 
     ModelAsset zero_extent = triangle_asset();
@@ -619,6 +760,9 @@ int main(int argc, char** argv) {
     test_deterministic_rendering();
     test_auto_fit_is_translation_and_uniform_scale_invariant();
     test_limiting_axis_framing();
+    test_flat_scene_determinism_and_global_fit_invariance();
+    test_flat_scene_back_to_front_delegates_to_painter_order();
+    test_flat_scene_empty_environment_and_invalid_entries();
     test_invalid_requests_fail_closed();
     test_equirectangular_mapping_contract();
     test_environment_per_sample_reconstruction_and_attachment_preservation();
