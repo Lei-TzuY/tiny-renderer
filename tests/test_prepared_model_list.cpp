@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -54,6 +55,20 @@ ModelRenderOptions transparent_options() {
     options.blend_state.destination_factor = BlendFactor::OneMinusSourceAlpha;
     return options;
 }
+
+class ShiftZProgram final : public VertexProgram {
+public:
+    explicit ShiftZProgram(float delta) : delta_(delta) {}
+
+    VertexProgramOutput process(const VertexProgramInput& input) const noexcept override {
+        VertexProgramOutput output{input.position, input.varyings};
+        output.position.z += delta_;
+        return output;
+    }
+
+private:
+    float delta_{};
+};
 
 ModelAsset one_triangle_asset(const Vec3& albedo) {
     ModelAsset asset;
@@ -257,6 +272,35 @@ void test_back_to_front_nonfinite_sort_key_fails_before_write() {
     check_unchanged(framebuffer, before, "non-finite back-to-front sort rejection");
 }
 
+void test_back_to_front_vertex_program_fails_before_write() {
+    ModelRenderOptions options = transparent_options();
+    options.vertex_program = std::make_shared<ShiftZProgram>(1.0F);
+    PreparedModelSubmission programmed = prepare_model_asset(
+        transparent_triangle_asset({0.2F, 0.8F, 0.2F}),
+        options);
+    const std::array<PreparedModelListEntry, 1U> entries{{
+        {&programmed, Mat4::translation({0.0F, 0.0F, -3.0F})},
+    }};
+
+    Framebuffer framebuffer(65U, 65U);
+    framebuffer.clear({0.25F, 0.125F, 0.375F});
+    const std::vector<std::uint8_t> before = framebuffer.rgb8();
+
+    bool threw = false;
+    try {
+        draw_prepared_model_list_back_to_front(
+            framebuffer,
+            std::span<const PreparedModelListEntry>{entries},
+            Mat4::identity(),
+            Mat4::perspective(1.0F, 1.0F, 0.1F, 10.0F));
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+
+    check(threw, "back-to-front prepared list rejects vertex-program entries");
+    check_unchanged(framebuffer, before, "vertex-program back-to-front rejection");
+}
+
 void test_later_singular_entry_fails_before_earlier_write() {
     PreparedModelSubmission first = prepare_model_asset(
         load_obj_model_asset_file(fixture_path("material_sequence.obj")),
@@ -343,6 +387,7 @@ int main() {
         test_back_to_front_list_matches_manual_transparent_order();
         test_back_to_front_equal_depth_is_stable();
         test_back_to_front_nonfinite_sort_key_fails_before_write();
+        test_back_to_front_vertex_program_fails_before_write();
         test_later_singular_entry_fails_before_earlier_write();
         test_null_entry_fails_before_any_write();
         test_empty_list_is_noop();
