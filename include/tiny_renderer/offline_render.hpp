@@ -1,9 +1,17 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <span>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "tiny_renderer/environment.hpp"
@@ -76,14 +84,212 @@ struct OfflineSceneManifest {
     std::vector<OfflineSceneManifestEntry> entries{};
 };
 
+namespace detail {
+
+inline constexpr std::size_t kMaxOfflineSceneEntries = 256U;
+inline constexpr std::string_view kOfflineSceneManifestHeader = "tiny-renderer-scene-v1";
+
+[[noreturn]] inline void offline_scene_manifest_error(
+    const std::filesystem::path& path,
+    std::size_t line,
+    const std::string& message) {
+    throw std::invalid_argument(
+        "offline scene manifest " + path.string() + ": line "
+        + std::to_string(line) + ": " + message);
+}
+
+[[nodiscard]] inline bool offline_scene_ignorable_line(const std::string& line) {
+    const std::size_t first = line.find_first_not_of(" \t\r");
+    return first == std::string::npos || line[first] == '#';
+}
+
+[[nodiscard]] inline float parse_offline_scene_float(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::string_view token,
+    const char* label) {
+    std::size_t consumed = 0U;
+    float value = 0.0F;
+    try {
+        value = std::stof(std::string(token), &consumed);
+    } catch (const std::exception&) {
+        offline_scene_manifest_error(path, line, std::string(label) + " must be a finite number");
+    }
+    if (consumed != token.size() || !std::isfinite(value)) {
+        offline_scene_manifest_error(path, line, std::string(label) + " must be a finite number");
+    }
+    return value;
+}
+
+[[nodiscard]] inline std::filesystem::path resolve_offline_scene_model_path(
+    const std::filesystem::path& manifest_path,
+    std::size_t line,
+    const std::string& token) {
+    const std::filesystem::path relative(token);
+    if (token.empty()
+        || relative.is_absolute()
+        || relative.has_root_name()
+        || relative.has_root_directory()
+        || !relative.parent_path().empty()
+        || relative.filename().empty()
+        || relative.filename() == "."
+        || relative.filename() == "..") {
+        offline_scene_manifest_error(
+            manifest_path,
+            line,
+            "model path must name one sibling OBJ file without traversal or subdirectories");
+    }
+
+    std::string extension = relative.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (extension != ".obj") {
+        offline_scene_manifest_error(manifest_path, line, "model path must use the .obj extension");
+    }
+    return (manifest_path.parent_path() / relative).lexically_normal();
+}
+
+inline void reject_offline_scene_extra_tokens(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::istringstream& input) {
+    std::string extra;
+    if (input >> extra) {
+        offline_scene_manifest_error(path, line, "unexpected trailing token '" + extra + "'");
+    }
+}
+
+}  // namespace detail
+
 // Strict bounded text format:
 //   tiny-renderer-scene-v1
 //   ordering input|back-to-front        # optional, at most once
 //   model FILE.obj TX TY TZ SCALE RY    # repeat, max 256 entries
 // Blank lines and full-line '#' comments are ignored. FILE.obj must be a
 // sibling filename (no absolute path, parent traversal, or subdirectory).
-[[nodiscard]] OfflineSceneManifest load_offline_scene_manifest_file(
-    const std::filesystem::path& path);
+[[nodiscard]] inline OfflineSceneManifest load_offline_scene_manifest_file(
+    const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open offline scene manifest: " + path.string());
+    }
+
+    OfflineSceneManifest manifest;
+    bool header_seen = false;
+    bool ordering_seen = false;
+    std::string line_text;
+    std::size_t line_number = 0U;
+
+    while (std::getline(input, line_text)) {
+        ++line_number;
+        if (detail::offline_scene_ignorable_line(line_text)) {
+            continue;
+        }
+
+        std::istringstream line(line_text);
+        std::string directive;
+        line >> directive;
+
+        if (!header_seen) {
+            if (directive != detail::kOfflineSceneManifestHeader) {
+                detail::offline_scene_manifest_error(
+                    path,
+                    line_number,
+                    "first non-comment line must be tiny-renderer-scene-v1");
+            }
+            detail::reject_offline_scene_extra_tokens(path, line_number, line);
+            header_seen = true;
+            continue;
+        }
+
+        if (directive == "ordering") {
+            if (ordering_seen) {
+                detail::offline_scene_manifest_error(path, line_number, "ordering may be specified at most once");
+            }
+            std::string value;
+            if (!(line >> value)) {
+                detail::offline_scene_manifest_error(
+                    path,
+                    line_number,
+                    "ordering requires input or back-to-front");
+            }
+            if (value == "input") {
+                manifest.ordering = OfflineSceneOrdering::InputOrder;
+            } else if (value == "back-to-front") {
+                manifest.ordering = OfflineSceneOrdering::BackToFront;
+            } else {
+                detail::offline_scene_manifest_error(
+                    path,
+                    line_number,
+                    "ordering must be input or back-to-front");
+            }
+            detail::reject_offline_scene_extra_tokens(path, line_number, line);
+            ordering_seen = true;
+            continue;
+        }
+
+        if (directive == "model") {
+            if (manifest.entries.size() >= detail::kMaxOfflineSceneEntries) {
+                detail::offline_scene_manifest_error(path, line_number, "scene exceeds the 256-entry limit");
+            }
+
+            std::string model_token;
+            std::string tx_token;
+            std::string ty_token;
+            std::string tz_token;
+            std::string scale_token;
+            std::string yaw_token;
+            if (!(line >> model_token >> tx_token >> ty_token >> tz_token >> scale_token >> yaw_token)) {
+                detail::offline_scene_manifest_error(
+                    path,
+                    line_number,
+                    "model requires FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS");
+            }
+            detail::reject_offline_scene_extra_tokens(path, line_number, line);
+
+            const float tx = detail::parse_offline_scene_float(
+                path, line_number, tx_token, "model translation X");
+            const float ty = detail::parse_offline_scene_float(
+                path, line_number, ty_token, "model translation Y");
+            const float tz = detail::parse_offline_scene_float(
+                path, line_number, tz_token, "model translation Z");
+            const float scale = detail::parse_offline_scene_float(
+                path, line_number, scale_token, "model uniform scale");
+            const float yaw = detail::parse_offline_scene_float(
+                path, line_number, yaw_token, "model Y rotation");
+            if (scale <= 0.0F) {
+                detail::offline_scene_manifest_error(
+                    path,
+                    line_number,
+                    "model uniform scale must be greater than zero");
+            }
+
+            const Mat4 model = Mat4::translation({tx, ty, tz})
+                * Mat4::rotation_y(yaw)
+                * Mat4::scale({scale, scale, scale});
+            manifest.entries.push_back({
+                detail::resolve_offline_scene_model_path(path, line_number, model_token),
+                model,
+            });
+            continue;
+        }
+
+        detail::offline_scene_manifest_error(
+            path,
+            line_number,
+            "unknown directive '" + directive + "'");
+    }
+
+    if (!header_seen) {
+        throw std::invalid_argument(
+            "offline scene manifest " + path.string()
+            + ": missing tiny-renderer-scene-v1 header");
+    }
+    return manifest;
+}
 
 // Renders a bounded, auto-framed preview through the existing model/raster
 // path. ModelRenderOptions are forwarded unchanged except that optional
