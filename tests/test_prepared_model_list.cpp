@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,15 @@ ModelRenderOptions lit_options() {
     return options;
 }
 
+ModelRenderOptions transparent_options() {
+    ModelRenderOptions options;
+    options.depth_state.write_enabled = false;
+    options.blend_state.enabled = true;
+    options.blend_state.source_factor = BlendFactor::SourceAlpha;
+    options.blend_state.destination_factor = BlendFactor::OneMinusSourceAlpha;
+    return options;
+}
+
 ModelAsset one_triangle_asset(const Vec3& albedo) {
     ModelAsset asset;
     asset.mesh.vertices = {
@@ -58,6 +68,12 @@ ModelAsset one_triangle_asset(const Vec3& albedo) {
     draw.range = {0U, 1U};
     draw.material.albedo = albedo;
     asset.draws = {draw};
+    return asset;
+}
+
+ModelAsset transparent_triangle_asset(const Vec3& albedo) {
+    ModelAsset asset = one_triangle_asset(albedo);
+    asset.draws[0].material.opacity = 0.5F;
     return asset;
 }
 
@@ -132,6 +148,115 @@ void test_caller_entry_order_is_observable() {
           "reversing equal-depth heterogeneous entries changes ownership, proving caller order is preserved");
 }
 
+void test_back_to_front_list_matches_manual_transparent_order() {
+    const ModelRenderOptions options = transparent_options();
+    PreparedModelSubmission near_red = prepare_model_asset(
+        transparent_triangle_asset({1.0F, 0.0F, 0.0F}), options);
+    PreparedModelSubmission far_blue = prepare_model_asset(
+        transparent_triangle_asset({0.0F, 0.0F, 1.0F}), options);
+
+    const Mat4 near_model = Mat4::translation({0.0F, 0.0F, -2.0F});
+    const Mat4 far_model = Mat4::translation({0.0F, 0.0F, -4.0F});
+    const Mat4 view = Mat4::identity();
+    const Mat4 projection = Mat4::perspective(1.0F, 1.0F, 0.1F, 10.0F);
+
+    const std::array<PreparedModelListEntry, 2U> near_first{{
+        {&near_red, near_model},
+        {&far_blue, far_model},
+    }};
+    const std::array<PreparedModelListEntry, 2U> manual_far_first{{
+        {&far_blue, far_model},
+        {&near_red, near_model},
+    }};
+
+    Framebuffer unsorted(65U, 65U);
+    draw_prepared_model_list(
+        unsorted,
+        std::span<const PreparedModelListEntry>{near_first},
+        view,
+        projection);
+
+    Framebuffer manual(65U, 65U);
+    draw_prepared_model_list(
+        manual,
+        std::span<const PreparedModelListEntry>{manual_far_first},
+        view,
+        projection);
+
+    Framebuffer sorted(65U, 65U);
+    draw_prepared_model_list_back_to_front(
+        sorted,
+        std::span<const PreparedModelListEntry>{near_first},
+        view,
+        projection);
+
+    check(sorted.rgb8() == manual.rgb8(),
+          "back-to-front prepared list matches explicit far-then-near transparent submission");
+    check(sorted.fnv1a64() == manual.fnv1a64(),
+          "back-to-front prepared list preserves deterministic manual-order hash");
+    check(sorted.rgb8() != unsorted.rgb8(),
+          "back-to-front prepared list changes non-commutative source-alpha composition from near-first caller order");
+}
+
+void test_back_to_front_equal_depth_is_stable() {
+    const ModelRenderOptions options = transparent_options();
+    PreparedModelSubmission red = prepare_model_asset(
+        transparent_triangle_asset({1.0F, 0.0F, 0.0F}), options);
+    PreparedModelSubmission green = prepare_model_asset(
+        transparent_triangle_asset({0.0F, 1.0F, 0.0F}), options);
+    const Mat4 model = Mat4::translation({0.0F, 0.0F, -3.0F});
+    const Mat4 projection = Mat4::perspective(1.0F, 1.0F, 0.1F, 10.0F);
+    const std::array<PreparedModelListEntry, 2U> entries{{
+        {&red, model},
+        {&green, model},
+    }};
+
+    Framebuffer sequential(65U, 65U);
+    draw_prepared_model_list(
+        sequential,
+        std::span<const PreparedModelListEntry>{entries},
+        Mat4::identity(),
+        projection);
+
+    Framebuffer sorted(65U, 65U);
+    draw_prepared_model_list_back_to_front(
+        sorted,
+        std::span<const PreparedModelListEntry>{entries},
+        Mat4::identity(),
+        projection);
+
+    check(sorted.rgb8() == sequential.rgb8(),
+          "equal-depth back-to-front sort preserves caller order stably");
+}
+
+void test_back_to_front_nonfinite_sort_key_fails_before_write() {
+    PreparedModelSubmission valid = prepare_model_asset(
+        transparent_triangle_asset({0.8F, 0.2F, 0.2F}), transparent_options());
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::array<PreparedModelListEntry, 2U> entries{{
+        {&valid, Mat4::translation({0.0F, 0.0F, -2.0F})},
+        {&valid, Mat4::translation({0.0F, 0.0F, nan})},
+    }};
+
+    Framebuffer framebuffer(65U, 65U);
+    framebuffer.clear({0.25F, 0.125F, 0.375F});
+    const std::vector<std::uint8_t> before = framebuffer.rgb8();
+
+    bool threw = false;
+    try {
+        draw_prepared_model_list_back_to_front(
+            framebuffer,
+            std::span<const PreparedModelListEntry>{entries},
+            Mat4::identity(),
+            Mat4::perspective(1.0F, 1.0F, 0.1F, 10.0F));
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+
+    check(threw, "non-finite back-to-front sort transform is rejected");
+    check_unchanged(framebuffer, before, "non-finite back-to-front sort rejection");
+}
+
 void test_later_singular_entry_fails_before_earlier_write() {
     PreparedModelSubmission first = prepare_model_asset(
         load_obj_model_asset_file(fixture_path("material_sequence.obj")),
@@ -200,6 +325,11 @@ void test_empty_list_is_noop() {
         std::span<const PreparedModelListEntry>{},
         Mat4::identity(),
         Mat4::identity());
+    draw_prepared_model_list_back_to_front(
+        framebuffer,
+        std::span<const PreparedModelListEntry>{},
+        Mat4::identity(),
+        Mat4::identity());
 
     check_unchanged(framebuffer, before, "empty heterogeneous prepared list");
 }
@@ -210,6 +340,9 @@ int main() {
     try {
         test_heterogeneous_list_matches_sequential_submission();
         test_caller_entry_order_is_observable();
+        test_back_to_front_list_matches_manual_transparent_order();
+        test_back_to_front_equal_depth_is_stable();
+        test_back_to_front_nonfinite_sort_key_fails_before_write();
         test_later_singular_entry_fails_before_earlier_write();
         test_null_entry_fails_before_any_write();
         test_empty_list_is_noop();
