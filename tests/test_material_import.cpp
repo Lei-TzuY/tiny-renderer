@@ -97,7 +97,7 @@ void test_mtl_diffuse_subset_and_rejections() {
     expect_mtl_error(
         "newmtl a\nKd 1 1 1\nnewmtl a\nKd 0 0 0\n",
         "duplicate material names are rejected");
-    expect_mtl_error("newmtl a\nKd 1 1 1\nillum 2\n", "unsupported MTL directives fail closed");
+    expect_mtl_error("newmtl a\nKd 1 1 1\nNi 1.5\n", "unsupported MTL directives fail closed");
 }
 
 std::filesystem::path fixture_path(const char* name);

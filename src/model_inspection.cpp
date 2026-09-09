@@ -10,6 +10,14 @@
 namespace tiny_renderer {
 namespace {
 
+const char* shading_model_name(MaterialShadingModel model) {
+    switch (model) {
+        case MaterialShadingModel::BlinnPhong: return "blinn-phong";
+        case MaterialShadingModel::Lambert: return "lambert";
+    }
+    return "unknown";
+}
+
 void append_texture_summary(
     std::ostringstream& output,
     const char* field,
@@ -45,6 +53,8 @@ std::string inspect_model_asset(const ModelAsset& asset) {
         output << "draw[" << index << "].first_triangle=" << draw.range.first_triangle << '\n';
         output << "draw[" << index << "].triangle_count=" << draw.range.triangle_count << '\n';
         output << "draw[" << index << "].material=" << draw.material_name << '\n';
+        output << "draw[" << index << "].shading_model="
+               << shading_model_name(draw.material.shading_model) << '\n';
         const std::string prefix = "draw[" + std::to_string(index) + "].";
         append_texture_summary(output, (prefix + "diffuse_texture").c_str(), draw.diffuse_texture);
         append_texture_summary(output, (prefix + "opacity_texture").c_str(), draw.opacity_texture);

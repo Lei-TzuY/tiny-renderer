@@ -187,6 +187,22 @@ inline void model_fingerprint_texture(
         }
     }
 
+    bool has_nondefault_shading_model = false;
+    for (const MaterialDraw& draw : asset.draws) {
+        if (draw.material.shading_model != MaterialShadingModel::BlinnPhong) {
+            has_nondefault_shading_model = true;
+            break;
+        }
+    }
+    if (has_nondefault_shading_model) {
+        detail::model_fingerprint_string(hash, "material-shading-model-v1");
+        for (const MaterialDraw& draw : asset.draws) {
+            detail::model_fingerprint_u64(
+                hash,
+                static_cast<std::uint64_t>(draw.material.shading_model));
+        }
+    }
+
     bool has_emissive_material = false;
     for (const MaterialDraw& draw : asset.draws) {
         if (draw.material.emissive.x != 0.0F

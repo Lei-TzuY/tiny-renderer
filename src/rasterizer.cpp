@@ -412,7 +412,12 @@ MaterialState prepare_material_state(const MaterialState& material) {
         || material.emissive.z < 0.0F || material.emissive.z > 1.0F) {
         throw std::invalid_argument("material emissive components must be finite and within [0, 1]");
     }
-    return material;
+    switch (material.shading_model) {
+        case MaterialShadingModel::BlinnPhong:
+        case MaterialShadingModel::Lambert:
+            return material;
+    }
+    throw std::invalid_argument("material uses an unknown shading model");
 }
 
 void validate_layout_match(const VaryingPack& reference, const VaryingPack& candidate) {
@@ -1408,19 +1413,24 @@ ShadedFragment shade_fragment(
     // environment, and multi-light paths share identical emission semantics.
     const Vec3 emissive_radiance = fragment_emissive_radiance(
         varyings, gradients, texture_binding, material);
-    // Resolve map_Ks exactly once; direct and environment specular share this value.
-    const Vec3 specular_reflectance = fragment_specular_reflectance(
-        varyings, gradients, texture_binding, material);
-    // Resolve map_Ns exactly once. The same fragment-local exponent feeds
-    // every direct Blinn-Phong record and material-coupled environment LOD.
-    const float shininess = fragment_shininess(
-        varyings, gradients, texture_binding, material);
+    // The material model owns whether specular semantics participate at all.
+    // Lambert deliberately does not sample map_Ks/map_Ns and contributes no
+    // direct or environment specular term. BlinnPhong preserves the historical
+    // path and resolves both values exactly once per fragment.
+    Vec3 specular_reflectance{};
+    float shininess = material.shininess;
+    if (material.shading_model == MaterialShadingModel::BlinnPhong) {
+        specular_reflectance = fragment_specular_reflectance(
+            varyings, gradients, texture_binding, material);
+        shininess = fragment_shininess(
+            varyings, gradients, texture_binding, material);
+    }
     if (reflection_is_only_zero_contribution(
             directional_light, point_light, fixed_lights, specular_reflectance)) {
         return {add_emissive(base, emissive_radiance), opacity, false};
     }
     const NormalBinding* normal_binding = detail::active_normal_binding(
-        directional_light, point_light, fixed_lights);
+        directional_light, point_light, fixed_lights, material);
     if (normal_binding == nullptr) {
         return {add_emissive(base, emissive_radiance), opacity, false};
     }
@@ -1877,7 +1887,7 @@ void Rasterizer::draw_triangle(const Triangle& triangle, const Mat4& model, cons
     const PointLight point_light = prepare_point_light(point_light_);
     const FixedLightCollection fixed_lights = prepare_fixed_lights(fixed_lights_);
     const NormalBinding* normal_binding = detail::active_normal_binding(
-        directional_light, point_light, fixed_lights);
+        directional_light, point_light, fixed_lights, material);
     validate_triangle_varyings(programmed, color_binding_, texture_binding_, source, normal_binding);
     validate_fragment_program(fragment_program_, programmed[0].varyings.count);
     if (texture_binding_.normal_texture != nullptr && normal_binding == nullptr) {
@@ -2005,7 +2015,7 @@ void Rasterizer::draw_mesh(const Mesh& mesh, const Mat4& model, const Mat4& view
     const PointLight point_light = prepare_point_light(point_light_);
     const FixedLightCollection fixed_lights = prepare_fixed_lights(fixed_lights_);
     const NormalBinding* normal_binding = detail::active_normal_binding(
-        directional_light, point_light, fixed_lights);
+        directional_light, point_light, fixed_lights, material);
     validate_mesh(vertex_mesh, color_binding_, texture_binding_, source, normal_binding);
     validate_fragment_program(fragment_program_, mesh_varying_count(vertex_mesh));
     if (texture_binding_.normal_texture != nullptr && normal_binding == nullptr) {

@@ -22,6 +22,7 @@ struct PendingMaterial {
     bool has_ks{false};
     bool has_ke{false};
     bool has_ns{false};
+    bool has_illum{false};
     bool has_map_kd{false};
     bool has_map_ks{false};
     bool has_map_ns{false};
@@ -60,6 +61,24 @@ float parse_shininess(const std::string& token, std::size_t line) {
         fail(line, "Ns shininess must be within [1, 1000]");
     }
     return value;
+}
+
+MaterialShadingModel parse_illumination_model(
+    const std::string& token,
+    std::size_t line) {
+    int value{};
+    const char* const begin = token.data();
+    const char* const end = begin + token.size();
+    const auto [ptr, error] = std::from_chars(begin, end, value);
+    if (error != std::errc{} || ptr != end) {
+        fail(line, "illum must be integer 1 (Lambert) or 2 (Blinn-Phong)");
+    }
+    switch (value) {
+        case 1: return MaterialShadingModel::Lambert;
+        case 2: return MaterialShadingModel::BlinnPhong;
+        default:
+            fail(line, "illum supports only 1 (Lambert) or 2 (Blinn-Phong)");
+    }
 }
 
 void validate_sibling_texture_filename(
@@ -206,6 +225,24 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
             }
             pending->asset.material.shininess = parse_shininess(exponent_token, line_number);
             pending->has_ns = true;
+            continue;
+        }
+
+        if (directive == "illum") {
+            if (!pending) {
+                fail(line_number, "illum requires a preceding newmtl");
+            }
+            if (pending->has_illum) {
+                fail(line_number, "material '" + pending->name + "' defines illum more than once");
+            }
+            std::string illum_token;
+            std::string extra;
+            if (!(line >> illum_token) || (line >> extra)) {
+                fail(line_number, "illum must contain exactly one illumination-model integer");
+            }
+            pending->asset.material.shading_model =
+                parse_illumination_model(illum_token, line_number);
+            pending->has_illum = true;
             continue;
         }
 
