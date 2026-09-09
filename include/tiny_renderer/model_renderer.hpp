@@ -110,7 +110,7 @@ inline void draw_prepared_model_list_back_to_front(
     const Mat4& projection) {
     struct SortRecord {
         PreparedModelListEntry entry;
-        float view_depth{};
+        double view_depth{};
     };
 
     if (entries.empty()) {
@@ -123,14 +123,15 @@ inline void draw_prepared_model_list_back_to_front(
         if (entry.prepared == nullptr) {
             throw std::invalid_argument("back-to-front prepared list entry requires a prepared plan");
         }
+
+        const ModelAsset& asset = entry.prepared->asset();
+        const Mesh& mesh = asset.mesh;
+        if (asset.draws.empty()) {
+            continue;
+        }
         if (entry.prepared->options().vertex_program) {
             throw std::invalid_argument(
                 "back-to-front prepared list does not support position-changing vertex programs");
-        }
-
-        const Mesh& mesh = entry.prepared->asset().mesh;
-        if (entry.prepared->asset().draws.empty()) {
-            continue;
         }
         if (mesh.vertices.empty()) {
             throw std::logic_error("non-empty prepared draw list requires canonical mesh vertices");
@@ -171,7 +172,7 @@ inline void draw_prepared_model_list_back_to_front(
             throw std::invalid_argument(
                 "back-to-front prepared list produced a non-finite mean sort depth");
         }
-        records.push_back({entry, static_cast<float>(mean_depth)});
+        records.push_back({entry, mean_depth});
     }
 
     std::stable_sort(
