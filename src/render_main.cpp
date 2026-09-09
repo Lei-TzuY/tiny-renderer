@@ -384,9 +384,53 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     return parsed;
 }
 
+void apply_texture_sampler_options(
+    tiny_renderer::ModelRenderOptions& options,
+    const ParsedArguments& parsed) {
+    if (parsed.texture_mip) {
+        options.sampler.mip_filter = *parsed.texture_mip;
+    }
+    if (parsed.texture_anisotropy) {
+        options.sampler.max_anisotropy = *parsed.texture_anisotropy;
+    }
+    tiny_renderer::validate_sampler_state(options.sampler);
+}
+
+bool same_normal_binding(
+    const tiny_renderer::NormalBinding& a,
+    const tiny_renderer::NormalBinding& b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+tiny_renderer::NormalBinding common_scene_normal_binding(
+    const std::vector<tiny_renderer::ModelAsset>& assets) {
+    if (assets.empty()) {
+        throw std::logic_error("cannot infer a normal binding for an empty scene");
+    }
+    const tiny_renderer::NormalBinding binding = preview_normal_binding(assets.front());
+    for (std::size_t i = 1U; i < assets.size(); ++i) {
+        const tiny_renderer::NormalBinding candidate = preview_normal_binding(assets[i]);
+        if (!same_normal_binding(binding, candidate)) {
+            throw std::invalid_argument(
+                "scene environment lighting/reflection requires one shared canonical normal layout across all models");
+        }
+    }
+    return binding;
+}
+
+const char* ordering_name(tiny_renderer::OfflineSceneOrdering ordering) {
+    switch (ordering) {
+        case tiny_renderer::OfflineSceneOrdering::InputOrder:
+            return "input";
+        case tiny_renderer::OfflineSceneOrdering::BackToFront:
+            return "back-to-front";
+    }
+    throw std::logic_error("unknown offline scene ordering after manifest validation");
+}
+
 void print_usage() {
     std::cerr
-        << "usage: tiny_renderer_render INPUT.obj OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
+        << "usage: tiny_renderer_render INPUT.(obj|trscene) OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
            " [--texture-mip base|nearest|linear] [--texture-anisotropy 1|2|4]"
            " [--display-exposure VALUE] [--output-transfer linear|srgb]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
@@ -399,6 +443,8 @@ void print_usage() {
            " [--environment-reflection-anisotropy 1|2|4]"
            " [--environment-reflection-footprint RADIANS]"
            " [--environment-reflection-material-shininess]\n"
+        << "  .trscene format: tiny-renderer-scene-v1; optional 'ordering input|back-to-front';"
+           " repeat 'model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS' (max 256 sibling OBJ files)\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
            " display-exposure=1 output-transfer=srgb"
            " environment-intensity=1 environment-yaw=0 environment-mip=base"
@@ -419,6 +465,10 @@ int main(int argc, char** argv) {
 
         const std::filesystem::path input_path = argv[1];
         const std::filesystem::path output_path = argv[2];
+        const std::string input_extension = lowercase_extension(input_path);
+        if (input_extension != ".obj" && input_extension != ".trscene") {
+            throw std::invalid_argument("input extension must be .obj or .trscene");
+        }
         const std::string extension = lowercase_extension(output_path);
         if (extension != ".ppm" && extension != ".pfm") {
             throw std::invalid_argument("output extension must be .ppm or .pfm");
@@ -547,32 +597,77 @@ int main(int argc, char** argv) {
             reflection_environment = environment_reflection;
         }
 
-        const tiny_renderer::ModelAsset asset = tiny_renderer::load_obj_model_asset_file(input_path);
-        tiny_renderer::ModelRenderOptions options = preview_options(asset);
-        if (parsed.texture_mip) {
-            options.sampler.mip_filter = *parsed.texture_mip;
-        }
-        if (parsed.texture_anisotropy) {
-            options.sampler.max_anisotropy = *parsed.texture_anisotropy;
-        }
-        tiny_renderer::validate_sampler_state(options.sampler);
-        if (diffuse_environment) {
-            tiny_renderer::EnvironmentDiffuseLight light;
-            light.normal = preview_normal_binding(asset);
-            light.environment = *diffuse_environment;
-            parsed.settings.environment_lighting = light;
-        }
-        if (reflection_environment) {
-            tiny_renderer::OfflineEnvironmentReflectionState reflection;
-            reflection.normal = preview_normal_binding(asset);
-            reflection.environment = *reflection_environment;
-            parsed.settings.environment_reflection = reflection;
-        }
+        tiny_renderer::Framebuffer framebuffer(1U, 1U);
+        std::size_t rendered_models = 0U;
+        tiny_renderer::OfflineSceneOrdering rendered_ordering =
+            tiny_renderer::OfflineSceneOrdering::InputOrder;
+        bool rendered_scene = false;
 
-        const tiny_renderer::Framebuffer framebuffer = tiny_renderer::render_model_preview(
-            asset,
-            parsed.settings,
-            options);
+        if (input_extension == ".obj") {
+            const tiny_renderer::ModelAsset asset = tiny_renderer::load_obj_model_asset_file(input_path);
+            tiny_renderer::ModelRenderOptions options = preview_options(asset);
+            apply_texture_sampler_options(options, parsed);
+            if (diffuse_environment) {
+                tiny_renderer::EnvironmentDiffuseLight light;
+                light.normal = preview_normal_binding(asset);
+                light.environment = *diffuse_environment;
+                parsed.settings.environment_lighting = light;
+            }
+            if (reflection_environment) {
+                tiny_renderer::OfflineEnvironmentReflectionState reflection;
+                reflection.normal = preview_normal_binding(asset);
+                reflection.environment = *reflection_environment;
+                parsed.settings.environment_reflection = reflection;
+            }
+            framebuffer = tiny_renderer::render_model_preview(asset, parsed.settings, options);
+            rendered_models = 1U;
+        } else {
+            rendered_scene = true;
+            const tiny_renderer::OfflineSceneManifest manifest =
+                tiny_renderer::load_offline_scene_manifest_file(input_path);
+            rendered_ordering = manifest.ordering;
+
+            std::vector<tiny_renderer::ModelAsset> assets;
+            std::vector<tiny_renderer::ModelRenderOptions> options;
+            assets.reserve(manifest.entries.size());
+            options.reserve(manifest.entries.size());
+            for (const tiny_renderer::OfflineSceneManifestEntry& entry : manifest.entries) {
+                assets.push_back(tiny_renderer::load_obj_model_asset_file(entry.model_path));
+                options.push_back(preview_options(assets.back()));
+                apply_texture_sampler_options(options.back(), parsed);
+            }
+
+            if (!assets.empty() && (diffuse_environment || reflection_environment)) {
+                const tiny_renderer::NormalBinding normal = common_scene_normal_binding(assets);
+                if (diffuse_environment) {
+                    tiny_renderer::EnvironmentDiffuseLight light;
+                    light.normal = normal;
+                    light.environment = *diffuse_environment;
+                    parsed.settings.environment_lighting = light;
+                }
+                if (reflection_environment) {
+                    tiny_renderer::OfflineEnvironmentReflectionState reflection;
+                    reflection.normal = normal;
+                    reflection.environment = *reflection_environment;
+                    parsed.settings.environment_reflection = reflection;
+                }
+            }
+
+            std::vector<tiny_renderer::OfflineSceneEntry> scene_entries;
+            scene_entries.reserve(manifest.entries.size());
+            for (std::size_t i = 0U; i < manifest.entries.size(); ++i) {
+                scene_entries.push_back({
+                    &assets[i],
+                    manifest.entries[i].model,
+                    options[i],
+                });
+            }
+            framebuffer = tiny_renderer::render_scene_preview(
+                scene_entries,
+                parsed.settings,
+                manifest.ordering);
+            rendered_models = scene_entries.size();
+        }
 
         if (extension == ".ppm") {
             framebuffer.write_ppm(
@@ -583,6 +678,12 @@ int main(int argc, char** argv) {
                 << "rendered format=ppm width=" << parsed.settings.width
                 << " height=" << parsed.settings.height
                 << " samples=" << framebuffer.samples_per_pixel()
+                << " source=" << (rendered_scene ? "scene" : "model")
+                << " models=" << rendered_models;
+            if (rendered_scene) {
+                std::cout << " ordering=" << ordering_name(rendered_ordering);
+            }
+            std::cout
                 << " display_fnv1a64=0x" << std::hex
                 << framebuffer.fnv1a64(display_mapping, output_transfer)
                 << '\n';
@@ -592,7 +693,12 @@ int main(int argc, char** argv) {
                 << "rendered format=pfm width=" << parsed.settings.width
                 << " height=" << parsed.settings.height
                 << " samples=" << framebuffer.samples_per_pixel()
-                << '\n';
+                << " source=" << (rendered_scene ? "scene" : "model")
+                << " models=" << rendered_models;
+            if (rendered_scene) {
+                std::cout << " ordering=" << ordering_name(rendered_ordering);
+            }
+            std::cout << '\n';
         }
         return 0;
     } catch (const std::exception& error) {
