@@ -420,7 +420,8 @@ bool texture_coordinates_required(
         || texture_binding.opacity_texture != nullptr
         || texture_binding.normal_texture != nullptr
         || texture_binding.specular_texture != nullptr
-        || texture_binding.emissive_texture != nullptr;
+        || texture_binding.emissive_texture != nullptr
+        || texture_binding.shininess_texture != nullptr;
 }
 
 void validate_output_binding(
@@ -437,6 +438,11 @@ void validate_output_binding(
         && !texture_binding.emissive_texture->texels_nonnegative()) {
         throw std::invalid_argument(
             "emissive texture texels must be finite and non-negative");
+    }
+    if (texture_binding.shininess_texture != nullptr
+        && !texture_binding.shininess_texture->texels_within_unit_range()) {
+        throw std::invalid_argument(
+            "shininess texture texels must be finite and within [0, 1]");
     }
     switch (source) {
         case BaseColorSource::VaryingColor:

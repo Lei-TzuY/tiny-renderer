@@ -33,6 +33,9 @@ struct MaterialDraw {
     // Optional linear/HDR emissive-radiance multiplier sharing the
     // canonical material UV/sampler path.
     std::shared_ptr<const Texture2D> emissive_texture;
+    // Optional linear data map resolved to one per-fragment shininess
+    // value shared by direct and environment specular consumers.
+    std::shared_ptr<const Texture2D> shininess_texture;
 };
 
 struct ModelAsset {

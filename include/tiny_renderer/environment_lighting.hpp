@@ -336,10 +336,9 @@ inline void validate_environment_reflection_state(const EnvironmentReflectionSta
 
 namespace environment_lighting_detail {
 
-inline EnvironmentReflectionState resolve_material_reflection_state(
+inline EnvironmentReflectionState resolve_material_reflection_state_unchecked(
     const EnvironmentReflectionState& state,
     float material_shininess) {
-    validate_environment_reflection_state(state);
     if (state.mip_policy != EnvironmentReflectionMipPolicy::MaterialShininess) {
         return state;
     }
@@ -355,6 +354,13 @@ inline EnvironmentReflectionState resolve_material_reflection_state(
     resolved.angular_footprint_radians =
         state.angular_footprint_radians / material_shininess;
     return resolved;
+}
+
+inline EnvironmentReflectionState resolve_material_reflection_state(
+    const EnvironmentReflectionState& state,
+    float material_shininess) {
+    validate_environment_reflection_state(state);
+    return resolve_material_reflection_state_unchecked(state, material_shininess);
 }
 
 }  // namespace environment_lighting_detail

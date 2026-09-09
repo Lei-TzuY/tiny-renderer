@@ -76,11 +76,12 @@ struct MaterialAssetBatch {
     // Trailing for aggregate source compatibility with earlier material batches.
     std::shared_ptr<const Texture2D> specular_texture;
     std::shared_ptr<const Texture2D> emissive_texture;
+    std::shared_ptr<const Texture2D> shininess_texture;
 };
 
 // Texture-transfer interpretation for material asset import. Only the diffuse
-// color role is caller-selectable; opacity, normal, specular, and emissive maps
-// are treated as linear data textures. Linear preserves historical import
+// color role is caller-selectable; opacity, normal, specular, emissive, and
+// shininess maps are treated as linear data textures. Linear preserves historical import
 // byte/float semantics.
 struct ModelAssetLoadOptions {
     TextureTransferFunction diffuse_transfer{TextureTransferFunction::Linear};

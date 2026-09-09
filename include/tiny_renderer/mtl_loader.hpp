@@ -25,6 +25,9 @@ struct MaterialAssetDefinition {
     // Linear/HDR emissive radiance texture. Values may exceed one but
     // must remain finite and non-negative when submitted for rendering.
     std::optional<std::string> emissive_map_filename;
+    // Optional linear data texture mapped deterministically into the
+    // renderer's bounded [1, 1000] shininess exponent domain.
+    std::optional<std::string> shininess_map_filename;
 };
 
 using MaterialAssetLibrary = std::map<std::string, MaterialAssetDefinition>;

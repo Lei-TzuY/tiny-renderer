@@ -238,7 +238,8 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
         && binding.opacity_texture == nullptr
         && binding.normal_texture == nullptr
         && binding.specular_texture == nullptr
-        && binding.emissive_texture == nullptr) {
+        && binding.emissive_texture == nullptr
+        && binding.shininess_texture == nullptr) {
         return;
     }
     validate_sampler_state(binding.sampler);
@@ -251,6 +252,11 @@ void validate_texture_binding(const TextureBinding& binding, std::size_t varying
         && !binding.emissive_texture->texels_nonnegative()) {
         throw std::invalid_argument(
             "emissive texture texels must be finite and non-negative");
+    }
+    if (binding.shininess_texture != nullptr
+        && !binding.shininess_texture->texels_within_unit_range()) {
+        throw std::invalid_argument(
+            "shininess texture texels must be finite and within [0, 1]");
     }
     if (binding.u_channel >= varying_count || binding.v_channel >= varying_count) {
         throw std::out_of_range("texture binding references unavailable varying channel");
@@ -311,7 +317,8 @@ void validate_output_binding(
         || texture_binding.opacity_texture != nullptr
         || texture_binding.normal_texture != nullptr
         || texture_binding.specular_texture != nullptr
-        || texture_binding.emissive_texture != nullptr) {
+        || texture_binding.emissive_texture != nullptr
+        || texture_binding.shininess_texture != nullptr) {
         validate_texture_binding(texture_binding, varying_count);
     }
 }
@@ -323,7 +330,9 @@ void validate_texture_coordinates(
     if (source != BaseColorSource::Texture
         && binding.opacity_texture == nullptr
         && binding.normal_texture == nullptr
-        && binding.specular_texture == nullptr) {
+        && binding.specular_texture == nullptr
+        && binding.emissive_texture == nullptr
+        && binding.shininess_texture == nullptr) {
         return;
     }
     const float u = pack.values[binding.u_channel];
@@ -811,7 +820,8 @@ TextureGradients texture_gradients(
             && binding.opacity_texture == nullptr
             && binding.normal_texture == nullptr
             && binding.specular_texture == nullptr
-        && binding.emissive_texture == nullptr)) {
+            && binding.emissive_texture == nullptr
+            && binding.shininess_texture == nullptr)) {
         return {};
     }
     return {
@@ -1013,6 +1023,35 @@ Vec3 fragment_specular_reflectance(
     return modulate_rgb(material.specular, sampled);
 }
 
+float fragment_shininess(
+    const VaryingPack& varyings,
+    const TextureGradients& gradients,
+    const TextureBinding& texture_binding,
+    const MaterialState& material) {
+    if (texture_binding.shininess_texture == nullptr) {
+        return material.shininess;
+    }
+    const Vec3 sampled = texture_binding.shininess_texture->sample_grad(
+        {varyings.values[texture_binding.u_channel], varyings.values[texture_binding.v_channel]},
+        gradients,
+        texture_binding.sampler);
+    if (!finite_vec3(sampled)
+        || sampled.x < 0.0F || sampled.x > 1.0F
+        || sampled.y < 0.0F || sampled.y > 1.0F
+        || sampled.z < 0.0F || sampled.z > 1.0F) {
+        throw std::logic_error("validated shininess texture produced an invalid sample");
+    }
+    // Bounded teaching rule: arithmetic-mean linear RGB maps [0,1]
+    // monotonically to the existing MTL Ns exponent domain [1,1000].
+    // This is a scalar data mapping, not luminance, roughness, or PBR.
+    const float scalar = (sampled.x + sampled.y + sampled.z) / 3.0F;
+    const float shininess = 1.0F + scalar * 999.0F;
+    if (!std::isfinite(shininess) || shininess < 1.0F || shininess > 1000.0F) {
+        throw std::logic_error("shininess texture mapping escaped the bounded exponent domain");
+    }
+    return shininess;
+}
+
 Vec3 fragment_emissive_radiance(
     const VaryingPack& varyings,
     const TextureGradients& gradients,
@@ -1209,7 +1248,7 @@ Vec3 ambient_sum(
 Vec3 light_contribution(
     const Vec3& base,
     const Vec3& normal,
-    const MaterialState& material,
+    float shininess,
     const Vec3& specular_reflectance,
     const DirectionalLight* directional_light,
     const PointLight* point_light,
@@ -1275,7 +1314,7 @@ Vec3 light_contribution(
                 const Vec3 half_direction = half_sum / half_length;
                 const float nh = std::clamp(dot(normal, half_direction), 0.0F, 1.0F);
                 const float specular_strength = diffuse * direct_factor
-                    * std::pow(nh, material.shininess);
+                    * std::pow(nh, shininess);
                 shaded = {
                     shaded.x + specular_reflectance.x * light_color.x * specular_strength,
                     shaded.y + specular_reflectance.y * light_color.y * specular_strength,
@@ -1304,6 +1343,7 @@ Vec3 environment_reflection_contribution(
     const Vec3& normal,
     const Vec3& world_position,
     const Vec3& specular_reflectance,
+    float shininess,
     const FixedLightCollection& fixed_lights) {
     if (!fixed_lights.environment_reflection || !has_specular_reflectance(specular_reflectance)) {
         return {};
@@ -1317,8 +1357,13 @@ Vec3 environment_reflection_contribution(
     const Vec3 view_direction = to_viewer / view_length;
     const Vec3 incident = view_direction * -1.0F;
     const Vec3 reflected = incident - normal * (2.0F * dot(incident, normal));
+    EnvironmentReflectionState environment = reflection.environment;
+    if (environment.mip_policy == EnvironmentReflectionMipPolicy::MaterialShininess) {
+        environment = environment_lighting_detail::resolve_material_reflection_state_unchecked(
+            environment, shininess);
+    }
     const Vec3 radiance = environment_lighting_detail::reflection_environment_radiance_unchecked(
-        reflection.environment,
+        environment,
         reflected);
     return modulate_rgb(specular_reflectance, radiance);
 }
@@ -1366,6 +1411,10 @@ ShadedFragment shade_fragment(
     // Resolve map_Ks exactly once; direct and environment specular share this value.
     const Vec3 specular_reflectance = fragment_specular_reflectance(
         varyings, gradients, texture_binding, material);
+    // Resolve map_Ns exactly once. The same fragment-local exponent feeds
+    // every direct Blinn-Phong record and material-coupled environment LOD.
+    const float shininess = fragment_shininess(
+        varyings, gradients, texture_binding, material);
     if (reflection_is_only_zero_contribution(
             directional_light, point_light, fixed_lights, specular_reflectance)) {
         return {add_emissive(base, emissive_radiance), opacity, false};
@@ -1403,14 +1452,14 @@ ShadedFragment shade_fragment(
         if (directional_light.enabled) {
             const float visibility = shadow_visibility(shadow, light_clip);
             shaded = light_contribution(
-                base, normal, material, specular_reflectance, &directional_light, nullptr, nullptr, visibility, world_position);
+                base, normal, shininess, specular_reflectance, &directional_light, nullptr, nullptr, visibility, world_position);
         } else if (point_light.enabled) {
             shaded = light_contribution(
-                base, normal, material, specular_reflectance, nullptr, &point_light, nullptr, 1.0F, world_position);
+                base, normal, shininess, specular_reflectance, nullptr, &point_light, nullptr, 1.0F, world_position);
         }
         shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
         shaded = shaded + environment_reflection_contribution(
-            normal, world_position, specular_reflectance, fixed_lights);
+            normal, world_position, specular_reflectance, shininess, fixed_lights);
         return {add_emissive(shaded, emissive_radiance), opacity, false};
     }
 
@@ -1434,7 +1483,7 @@ ShadedFragment shade_fragment(
                 shaded = shaded + light_contribution(
                     base,
                     normal,
-                    material,
+                    shininess,
                     specular_reflectance,
                     &light.directional,
                     nullptr,
@@ -1464,7 +1513,7 @@ ShadedFragment shade_fragment(
                 shaded = shaded + light_contribution(
                     base,
                     normal,
-                    material,
+                    shininess,
                     specular_reflectance,
                     nullptr,
                     &light.point,
@@ -1492,7 +1541,7 @@ ShadedFragment shade_fragment(
                 shaded = shaded + light_contribution(
                     base,
                     normal,
-                    material,
+                    shininess,
                     specular_reflectance,
                     nullptr,
                     nullptr,
@@ -1505,7 +1554,7 @@ ShadedFragment shade_fragment(
     }
     shaded = shaded + environment_diffuse_contribution(base, normal, fixed_lights);
     shaded = shaded + environment_reflection_contribution(
-        normal, world_position, specular_reflectance, fixed_lights);
+        normal, world_position, specular_reflectance, shininess, fixed_lights);
     return {add_emissive(shaded, emissive_radiance), opacity, false};
 }
 

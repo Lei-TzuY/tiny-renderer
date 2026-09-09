@@ -68,6 +68,7 @@ struct LoadedMaterialAssetDefinition {
     std::shared_ptr<const Texture2D> normal_texture;
     std::shared_ptr<const Texture2D> specular_texture;
     std::shared_ptr<const Texture2D> emissive_texture;
+    std::shared_ptr<const Texture2D> shininess_texture;
 };
 
 bool requires_texture_coordinates(const MaterialAssetDefinition& definition) {
@@ -75,7 +76,8 @@ bool requires_texture_coordinates(const MaterialAssetDefinition& definition) {
         || definition.opacity_map_filename.has_value()
         || definition.normal_map_filename.has_value()
         || definition.specular_map_filename.has_value()
-        || definition.emissive_map_filename.has_value();
+        || definition.emissive_map_filename.has_value()
+        || definition.shininess_map_filename.has_value();
 }
 
 }  // namespace
@@ -163,6 +165,11 @@ ModelAsset load_obj_model_asset_file(
             resolved.definition.emissive_map_filename,
             TextureTransferFunction::Linear,
             texture_cache);
+        loaded.shininess_texture = load_owned_texture(
+            resolved.library_directory,
+            resolved.definition.shininess_map_filename,
+            TextureTransferFunction::Linear,
+            texture_cache);
         materials.emplace(name, std::move(loaded));
     }
 
@@ -179,6 +186,7 @@ ModelAsset load_obj_model_asset_file(
             draw.normal_texture = definition.normal_texture;
             draw.specular_texture = definition.specular_texture;
             draw.emissive_texture = definition.emissive_texture;
+            draw.shininess_texture = definition.shininess_texture;
             asset.draws.push_back(std::move(draw));
         }
         ++asset.draws.back().range.triangle_count;
@@ -210,6 +218,7 @@ std::vector<MaterialAssetBatch> load_obj_material_asset_batches_file(
         batch.vertex_color_channels = asset.vertex_color_channels;
         batch.specular_texture = draw.specular_texture;
         batch.emissive_texture = draw.emissive_texture;
+        batch.shininess_texture = draw.shininess_texture;
         batches.push_back(std::move(batch));
     }
 

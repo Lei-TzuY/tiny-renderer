@@ -24,6 +24,7 @@ struct PendingMaterial {
     bool has_ns{false};
     bool has_map_kd{false};
     bool has_map_ks{false};
+    bool has_map_ns{false};
     bool has_map_ke{false};
     bool has_d{false};
     bool has_map_d{false};
@@ -258,6 +259,24 @@ MaterialAssetLibrary parse_material_assets(std::istream& input, bool allow_maps)
             validate_sibling_texture_filename(filename, line_number, "map_Ks");
             pending->asset.specular_map_filename = filename;
             pending->has_map_ks = true;
+            continue;
+        }
+
+        if (directive == "map_Ns" && allow_maps) {
+            if (!pending) {
+                fail(line_number, "map_Ns requires a preceding newmtl");
+            }
+            if (pending->has_map_ns) {
+                fail(line_number, "material '" + pending->name + "' defines map_Ns more than once");
+            }
+            std::string filename;
+            std::string extra;
+            if (!(line >> filename) || (line >> extra)) {
+                fail(line_number, "map_Ns must contain exactly one filename and no options");
+            }
+            validate_sibling_texture_filename(filename, line_number, "map_Ns");
+            pending->asset.shininess_map_filename = filename;
+            pending->has_map_ns = true;
             continue;
         }
 

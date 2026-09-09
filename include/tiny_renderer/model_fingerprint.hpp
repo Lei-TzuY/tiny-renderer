@@ -173,6 +173,20 @@ inline void model_fingerprint_texture(
         }
     }
 
+    bool has_shininess_texture = false;
+    for (const MaterialDraw& draw : asset.draws) {
+        if (draw.shininess_texture) {
+            has_shininess_texture = true;
+            break;
+        }
+    }
+    if (has_shininess_texture) {
+        detail::model_fingerprint_string(hash, "material-shininess-texture-v1");
+        for (const MaterialDraw& draw : asset.draws) {
+            detail::model_fingerprint_texture(hash, draw.shininess_texture);
+        }
+    }
+
     bool has_emissive_material = false;
     for (const MaterialDraw& draw : asset.draws) {
         if (draw.material.emissive.x != 0.0F
