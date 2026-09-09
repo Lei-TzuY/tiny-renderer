@@ -444,6 +444,7 @@ void print_usage() {
            " [--environment-reflection-footprint RADIANS]"
            " [--environment-reflection-material-shininess]\n"
         << "  .trscene format: tiny-renderer-scene-v1; optional 'ordering input|back-to-front';"
+           " optional 'camera EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR';"
            " repeat 'model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS' (max 256 sibling OBJ files)\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
            " display-exposure=1 output-transfer=srgb"
@@ -602,6 +603,7 @@ int main(int argc, char** argv) {
         tiny_renderer::OfflineSceneOrdering rendered_ordering =
             tiny_renderer::OfflineSceneOrdering::InputOrder;
         bool rendered_scene = false;
+        bool rendered_explicit_camera = false;
 
         if (input_extension == ".obj") {
             const tiny_renderer::ModelAsset asset = tiny_renderer::load_obj_model_asset_file(input_path);
@@ -626,6 +628,7 @@ int main(int argc, char** argv) {
             const tiny_renderer::OfflineSceneManifest manifest =
                 tiny_renderer::load_offline_scene_manifest_file(input_path);
             rendered_ordering = manifest.ordering;
+            rendered_explicit_camera = manifest.camera.has_value();
 
             std::vector<tiny_renderer::ModelAsset> assets;
             std::vector<tiny_renderer::ModelRenderOptions> options;
@@ -665,7 +668,8 @@ int main(int argc, char** argv) {
             framebuffer = tiny_renderer::render_scene_preview(
                 scene_entries,
                 parsed.settings,
-                manifest.ordering);
+                manifest.ordering,
+                manifest.camera);
             rendered_models = scene_entries.size();
         }
 
@@ -681,7 +685,9 @@ int main(int argc, char** argv) {
                 << " source=" << (rendered_scene ? "scene" : "model")
                 << " models=" << rendered_models;
             if (rendered_scene) {
-                std::cout << " ordering=" << ordering_name(rendered_ordering);
+                std::cout
+                    << " ordering=" << ordering_name(rendered_ordering)
+                    << " camera=" << (rendered_explicit_camera ? "explicit" : "auto-fit");
             }
             std::cout
                 << " display_fnv1a64=0x" << std::hex
@@ -696,7 +702,9 @@ int main(int argc, char** argv) {
                 << " source=" << (rendered_scene ? "scene" : "model")
                 << " models=" << rendered_models;
             if (rendered_scene) {
-                std::cout << " ordering=" << ordering_name(rendered_ordering);
+                std::cout
+                    << " ordering=" << ordering_name(rendered_ordering)
+                    << " camera=" << (rendered_explicit_camera ? "explicit" : "auto-fit");
             }
             std::cout << '\n';
         }

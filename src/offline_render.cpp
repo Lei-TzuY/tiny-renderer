@@ -6,6 +6,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "tiny_renderer/math.hpp"
@@ -72,7 +73,8 @@ void validate_scene_ordering(OfflineSceneOrdering ordering) {
 
 ModelRenderOptions inject_offline_environment(
     const OfflineRenderSettings& settings,
-    ModelRenderOptions options) {
+    ModelRenderOptions options,
+    const Vec3& viewer_position) {
     if (settings.environment_lighting) {
         if (options.fixed_lights.environment_diffuse) {
             throw std::invalid_argument(
@@ -87,7 +89,7 @@ ModelRenderOptions inject_offline_environment(
         }
         EnvironmentReflectionLight reflection;
         reflection.normal = settings.environment_reflection->normal;
-        reflection.viewer_position = kCameraEye;
+        reflection.viewer_position = viewer_position;
         reflection.environment = settings.environment_reflection->environment;
         options.fixed_lights.environment_reflection = reflection;
     }
@@ -291,12 +293,30 @@ std::optional<ModelBounds> scene_bounds(
     return ModelBounds{center, radius_float};
 }
 
+bool scene_has_geometry(const std::vector<PreparedModelSubmission>& prepared) {
+    return std::any_of(
+        prepared.begin(),
+        prepared.end(),
+        [](const PreparedModelSubmission& submission) {
+            return !submission.asset().draws.empty();
+        });
+}
+
 struct PreviewGeometryState {
     Mat4 fit{};
     Mat4 view{};
     Mat4 projection{};
-    float aspect{};
+    PerspectiveCameraState camera{};
 };
+
+float preview_aspect(const OfflineRenderSettings& settings) {
+    const double aspect = static_cast<double>(settings.width) / static_cast<double>(settings.height);
+    const float result = static_cast<float>(aspect);
+    if (!std::isfinite(result) || result <= 0.0F) {
+        throw std::invalid_argument("offline render aspect ratio is not representable");
+    }
+    return result;
+}
 
 PreviewGeometryState preview_geometry_state(
     const ModelBounds& bounds,
@@ -340,49 +360,109 @@ PreviewGeometryState preview_geometry_state(
         aspect_float,
         static_cast<float>(near_plane),
         static_cast<float>(far_plane));
-    return {fit, view, projection, aspect_float};
-}
-
-float preview_aspect(const OfflineRenderSettings& settings) {
-    const double aspect = static_cast<double>(settings.width) / static_cast<double>(settings.height);
-    const float result = static_cast<float>(aspect);
-    if (!std::isfinite(result) || result <= 0.0F) {
-        throw std::invalid_argument("offline render aspect ratio is not representable");
-    }
-    return result;
-}
-
-void draw_preview_environment(
-    Framebuffer& framebuffer,
-    const OfflineRenderSettings& settings,
-    float aspect) {
-    if (!settings.environment) {
-        return;
-    }
     const PerspectiveCameraState camera{
         kCameraEye,
         kCameraTarget,
         kCameraUp,
         settings.vertical_fov_radians,
+        aspect_float,
+    };
+    return {fit, view, projection, camera};
+}
+
+PreviewGeometryState explicit_scene_geometry_state(
+    const OfflineSceneCamera& camera,
+    const OfflineRenderSettings& settings) {
+    validate_offline_scene_camera(camera);
+    const float aspect = preview_aspect(settings);
+    const PerspectiveCameraState perspective{
+        camera.eye,
+        camera.target,
+        camera.up,
+        camera.vertical_fov_radians,
         aspect,
     };
+    return {
+        Mat4::identity(),
+        Mat4::look_at(camera.eye, camera.target, camera.up),
+        Mat4::perspective(
+            camera.vertical_fov_radians,
+            aspect,
+            camera.near_plane,
+            camera.far_plane),
+        perspective,
+    };
+}
+
+PerspectiveCameraState default_preview_camera(const OfflineRenderSettings& settings) {
+    return {
+        kCameraEye,
+        kCameraTarget,
+        kCameraUp,
+        settings.vertical_fov_radians,
+        preview_aspect(settings),
+    };
+}
+
+void draw_preview_environment(
+    Framebuffer& framebuffer,
+    const OfflineRenderSettings& settings,
+    const PerspectiveCameraState& camera) {
+    if (!settings.environment) {
+        return;
+    }
     draw_environment_background(framebuffer, camera, *settings.environment);
 }
 
 }  // namespace
+
+void validate_offline_scene_camera(const OfflineSceneCamera& camera) {
+    if (!finite_vec3(camera.eye) || !finite_vec3(camera.target) || !finite_vec3(camera.up)) {
+        throw std::invalid_argument("offline scene camera vectors must be finite");
+    }
+    const Vec3 forward = camera.target - camera.eye;
+    const float forward_length = length(forward);
+    if (!finite_vec3(forward)
+        || !std::isfinite(forward_length)
+        || forward_length <= kEpsilon) {
+        throw std::invalid_argument("offline scene camera eye and target must define a finite non-zero forward vector");
+    }
+    const float up_length = length(camera.up);
+    if (!std::isfinite(up_length) || up_length <= kEpsilon) {
+        throw std::invalid_argument("offline scene camera up vector must be finite and non-zero");
+    }
+    const Vec3 right = cross(forward, camera.up);
+    const float right_length = length(right);
+    if (!finite_vec3(right)
+        || !std::isfinite(right_length)
+        || right_length <= kEpsilon) {
+        throw std::invalid_argument("offline scene camera up vector must not be parallel to the view direction");
+    }
+    if (!std::isfinite(camera.vertical_fov_radians)
+        || camera.vertical_fov_radians <= 0.0F
+        || camera.vertical_fov_radians >= kPi) {
+        throw std::invalid_argument("offline scene camera vertical field of view must be finite and within (0, pi)");
+    }
+    if (!std::isfinite(camera.near_plane) || camera.near_plane <= 0.0F) {
+        throw std::invalid_argument("offline scene camera near plane must be finite and greater than zero");
+    }
+    if (!std::isfinite(camera.far_plane) || camera.far_plane <= camera.near_plane) {
+        throw std::invalid_argument("offline scene camera far plane must be finite and greater than the near plane");
+    }
+}
 
 Framebuffer render_model_preview(
     const ModelAsset& asset,
     const OfflineRenderSettings& settings,
     ModelRenderOptions options) {
     validate_settings(settings);
-    options = inject_offline_environment(settings, std::move(options));
     const ModelBounds bounds = model_bounds(asset);
     const PreviewGeometryState geometry = preview_geometry_state(bounds, settings);
+    options = inject_offline_environment(settings, std::move(options), geometry.camera.eye);
 
     Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
     framebuffer.clear(settings.clear_color);
-    draw_preview_environment(framebuffer, settings, geometry.aspect);
+    draw_preview_environment(framebuffer, settings, geometry.camera);
     draw_model_asset(
         framebuffer,
         asset,
@@ -396,9 +476,23 @@ Framebuffer render_model_preview(
 Framebuffer render_scene_preview(
     std::span<const OfflineSceneEntry> entries,
     const OfflineRenderSettings& settings,
-    OfflineSceneOrdering ordering) {
+    OfflineSceneOrdering ordering,
+    std::optional<OfflineSceneCamera> camera) {
     validate_settings(settings);
     validate_scene_ordering(ordering);
+    if (camera) {
+        validate_offline_scene_camera(*camera);
+    }
+
+    const PerspectiveCameraState active_camera = camera
+        ? PerspectiveCameraState{
+            camera->eye,
+            camera->target,
+            camera->up,
+            camera->vertical_fov_radians,
+            preview_aspect(settings),
+        }
+        : default_preview_camera(settings);
 
     std::vector<PreparedModelSubmission> prepared;
     prepared.reserve(entries.size());
@@ -408,19 +502,24 @@ Framebuffer render_scene_preview(
         }
         prepared.push_back(prepare_model_asset(
             *entry.asset,
-            inject_offline_environment(settings, entry.options)));
+            inject_offline_environment(settings, entry.options, active_camera.eye)));
     }
 
-    const std::optional<ModelBounds> bounds = scene_bounds(prepared, entries);
-    const float aspect = preview_aspect(settings);
+    std::optional<ModelBounds> bounds;
+    if (!camera) {
+        bounds = scene_bounds(prepared, entries);
+    }
+
     Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
     framebuffer.clear(settings.clear_color);
-    draw_preview_environment(framebuffer, settings, aspect);
-    if (!bounds) {
+    draw_preview_environment(framebuffer, settings, active_camera);
+    if (camera ? !scene_has_geometry(prepared) : !bounds.has_value()) {
         return framebuffer;
     }
 
-    const PreviewGeometryState geometry = preview_geometry_state(*bounds, settings);
+    const PreviewGeometryState geometry = camera
+        ? explicit_scene_geometry_state(*camera, settings)
+        : preview_geometry_state(*bounds, settings);
     std::vector<PreparedModelListEntry> render_entries;
     render_entries.reserve(entries.size());
     for (std::size_t i = 0U; i < entries.size(); ++i) {
