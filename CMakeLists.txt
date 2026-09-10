@@ -176,6 +176,10 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_shared_preflight_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_shared_preflight_tests COMMAND tiny_renderer_shared_preflight_tests)
 
+    add_executable(tiny_renderer_prepared_visibility_tests tests/test_prepared_visibility.cpp)
+    target_link_libraries(tiny_renderer_prepared_visibility_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_prepared_visibility_tests COMMAND tiny_renderer_prepared_visibility_tests)
+
     add_executable(tiny_renderer_model_instance_tests tests/test_model_instances.cpp)
     target_link_libraries(tiny_renderer_model_instance_tests PRIVATE tiny_renderer)
     target_compile_definitions(tiny_renderer_model_instance_tests PRIVATE

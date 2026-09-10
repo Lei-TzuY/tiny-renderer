@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -77,7 +78,7 @@ namespace detail {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
-inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label) {
+inline void validate_spatial_matrix_finite(const Mat4& matrix, const char* label) {
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
             if (!std::isfinite(matrix(row, column))) {
@@ -85,6 +86,10 @@ inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label
             }
         }
     }
+}
+
+inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label) {
+    validate_spatial_matrix_finite(matrix, label);
     if (std::fabs(matrix(3U, 0U)) > kEpsilon
         || std::fabs(matrix(3U, 1U)) > kEpsilon
         || std::fabs(matrix(3U, 2U)) > kEpsilon
@@ -150,6 +155,133 @@ inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label
         throw std::logic_error("prepared draw spatial metadata found no referenced geometry");
     }
     return {draw.range, min, max, safe_spatial_midpoint(min, max)};
+}
+
+[[nodiscard]] inline const PreparedDrawSpatialMetadata& validate_prepared_draw_spatial_entry(
+    const PreparedDrawOrderEntry& entry) {
+    if (entry.prepared == nullptr) {
+        throw std::invalid_argument("prepared draw order entry requires a prepared spatial submission");
+    }
+    if (!std::isfinite(entry.view_depth)) {
+        throw std::invalid_argument("prepared draw order entry requires a finite view depth");
+    }
+    validate_spatial_affine_matrix(
+        entry.model,
+        "prepared draw execution model transform");
+
+    const PreparedModelSubmission& prepared = entry.prepared->prepared();
+    if (prepared.options().vertex_program) {
+        throw std::invalid_argument(
+            "prepared draw execution does not support position-changing vertex programs");
+    }
+    const auto metadata = entry.prepared->draws();
+    const ModelAsset& asset = prepared.asset();
+    if (entry.draw_index >= metadata.size() || entry.draw_index >= asset.draws.size()) {
+        throw std::out_of_range("prepared draw order entry references an unavailable material draw");
+    }
+    const MaterialDraw& draw = asset.draws[entry.draw_index];
+    const PreparedDrawSpatialMetadata& spatial = metadata[entry.draw_index];
+    if (spatial.range.first_triangle != draw.range.first_triangle
+        || spatial.range.triangle_count != draw.range.triangle_count) {
+        throw std::logic_error("prepared draw spatial metadata is inconsistent with the owned material draw");
+    }
+    return spatial;
+}
+
+[[nodiscard]] inline std::array<Vec3, 8> spatial_bounds_corners(
+    const PreparedDrawSpatialMetadata& metadata) {
+    return {{
+        {metadata.min.x, metadata.min.y, metadata.min.z},
+        {metadata.max.x, metadata.min.y, metadata.min.z},
+        {metadata.min.x, metadata.max.y, metadata.min.z},
+        {metadata.max.x, metadata.max.y, metadata.min.z},
+        {metadata.min.x, metadata.min.y, metadata.max.z},
+        {metadata.max.x, metadata.min.y, metadata.max.z},
+        {metadata.min.x, metadata.max.y, metadata.max.z},
+        {metadata.max.x, metadata.max.y, metadata.max.z},
+    }};
+}
+
+[[nodiscard]] inline double clip_plane_distance(const Vec4& clip, std::size_t plane) {
+    const double x = static_cast<double>(clip.x);
+    const double y = static_cast<double>(clip.y);
+    const double z = static_cast<double>(clip.z);
+    const double w = static_cast<double>(clip.w);
+    switch (plane) {
+        case 0U: return w + x;
+        case 1U: return w - x;
+        case 2U: return w + y;
+        case 3U: return w - y;
+        case 4U: return w + z;
+        case 5U: return w - z;
+        default: throw std::logic_error("unknown homogeneous clip plane");
+    }
+}
+
+[[nodiscard]] inline double clip_plane_scale(const Vec4& clip, std::size_t plane) {
+    double component = 0.0;
+    switch (plane) {
+        case 0U:
+        case 1U:
+            component = std::fabs(static_cast<double>(clip.x));
+            break;
+        case 2U:
+        case 3U:
+            component = std::fabs(static_cast<double>(clip.y));
+            break;
+        case 4U:
+        case 5U:
+            component = std::fabs(static_cast<double>(clip.z));
+            break;
+        default:
+            throw std::logic_error("unknown homogeneous clip plane");
+    }
+    return std::max({1.0, std::fabs(static_cast<double>(clip.w)), component});
+}
+
+[[nodiscard]] inline bool prepared_draw_fully_outside_clip_volume(
+    const PreparedDrawSpatialMetadata& metadata,
+    const Mat4& model,
+    const Mat4& view,
+    const Mat4& projection) {
+    const Mat4 clip_from_object = projection * view * model;
+    validate_spatial_matrix_finite(
+        clip_from_object,
+        "prepared draw clip transform");
+
+    std::array<Vec4, 8> clip_corners{};
+    const auto corners = spatial_bounds_corners(metadata);
+    for (std::size_t i = 0U; i < corners.size(); ++i) {
+        const Vec3 corner = corners[i];
+        clip_corners[i] = clip_from_object * Vec4{corner.x, corner.y, corner.z, 1.0F};
+        const Vec4& clip = clip_corners[i];
+        if (!std::isfinite(clip.x)
+            || !std::isfinite(clip.y)
+            || !std::isfinite(clip.z)
+            || !std::isfinite(clip.w)) {
+            throw std::invalid_argument(
+                "prepared draw visibility produced a non-finite clip-space bound corner");
+        }
+    }
+
+    // The transformed AABB is convex. If every corner is strictly outside the
+    // same homogeneous clip half-space then the complete box, and therefore
+    // every referenced triangle inside it, is outside that plane. A relative
+    // epsilon deliberately biases boundary/uncertain cases toward retention.
+    for (std::size_t plane = 0U; plane < 6U; ++plane) {
+        const bool all_outside = std::all_of(
+            clip_corners.begin(),
+            clip_corners.end(),
+            [&](const Vec4& clip) {
+                const double tolerance = static_cast<double>(kEpsilon)
+                    * clip_plane_scale(clip, plane);
+                return clip_plane_distance(clip, plane) < -tolerance;
+            });
+        if (all_outside) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace detail
@@ -239,6 +371,40 @@ order_prepared_model_draws_back_to_front(
             return left.view_depth < right.view_depth;
         });
     return ordered;
+}
+
+// Returns the input draw plan with only draws that are provably outside one
+// homogeneous clip half-space removed. Retained records preserve exact caller
+// order. The test transforms all eight prepared AABB corners and rejects only
+// when every corner is beyond the same clip plane; boundary and ambiguous cases
+// remain visible. Model/view must stay affine under the prepared spatial
+// contract while projection may be a finite perspective matrix.
+[[nodiscard]] inline std::vector<PreparedDrawOrderEntry>
+filter_prepared_draw_order_to_frustum(
+    std::span<const PreparedDrawOrderEntry> entries,
+    const Mat4& view,
+    const Mat4& projection) {
+    detail::validate_spatial_affine_matrix(
+        view,
+        "prepared draw visibility view transform");
+    detail::validate_spatial_matrix_finite(
+        projection,
+        "prepared draw visibility projection transform");
+
+    std::vector<PreparedDrawOrderEntry> visible;
+    visible.reserve(entries.size());
+    for (const PreparedDrawOrderEntry& entry : entries) {
+        const PreparedDrawSpatialMetadata& metadata =
+            detail::validate_prepared_draw_spatial_entry(entry);
+        if (!detail::prepared_draw_fully_outside_clip_volume(
+                metadata,
+                entry.model,
+                view,
+                projection)) {
+            visible.push_back(entry);
+        }
+    }
+    return visible;
 }
 
 // Validates every selected prepared draw without submitting fragments. This is
