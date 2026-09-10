@@ -86,12 +86,14 @@ struct OfflineSceneEntry {
 };
 
 // Parsed CLI-facing flat-scene description. Paths are resolved as sibling OBJ
-// files of the manifest itself. Material/environment policy remains owned by
-// existing OfflineRenderSettings / ModelRenderOptions state; the optional
-// camera only selects explicit world-space framing versus historical auto-fit.
+// files of the manifest itself. Each record may optionally request one bounded
+// material-model override for its scene-owned asset snapshot. The override is
+// tooling configuration only: canonical ModelAsset/MaterialState semantics and
+// render_scene_preview remain the execution path.
 struct OfflineSceneManifestEntry {
     std::filesystem::path model_path{};
     Mat4 model{Mat4::identity()};
+    std::optional<MaterialShadingModel> shading_model_override{};
 };
 
 struct OfflineSceneManifest {
@@ -168,6 +170,25 @@ inline constexpr std::string_view kOfflineSceneManifestHeader = "tiny-renderer-s
     return (manifest_path.parent_path() / relative).lexically_normal();
 }
 
+[[nodiscard]] inline std::optional<MaterialShadingModel> parse_offline_scene_shading_model(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::string_view token) {
+    if (token == "inherit") {
+        return std::nullopt;
+    }
+    if (token == "lambert") {
+        return MaterialShadingModel::Lambert;
+    }
+    if (token == "blinn-phong") {
+        return MaterialShadingModel::BlinnPhong;
+    }
+    offline_scene_manifest_error(
+        path,
+        line,
+        "model shading mode must be inherit, lambert, or blinn-phong");
+}
+
 inline void reject_offline_scene_extra_tokens(
     const std::filesystem::path& path,
     std::size_t line,
@@ -184,9 +205,11 @@ inline void reject_offline_scene_extra_tokens(
 //   tiny-renderer-scene-v1
 //   ordering input|back-to-front        # optional, at most once
 //   camera EX EY EZ TX TY TZ UX UY UZ VFOV NEAR FAR  # optional, at most once
-//   model FILE.obj TX TY TZ SCALE RY    # repeat, max 256 entries
+//   model FILE.obj TX TY TZ SCALE RY [inherit|lambert|blinn-phong]
+//                                      # repeat, max 256 entries
 // Blank lines and full-line '#' comments are ignored. FILE.obj must be a
 // sibling filename (no absolute path, parent traversal, or subdirectory).
+// Omitting the final shading token is identical to explicit `inherit`.
 [[nodiscard]] inline OfflineSceneManifest load_offline_scene_manifest_file(
     const std::filesystem::path& path) {
     std::ifstream input(path);
@@ -311,7 +334,14 @@ inline void reject_offline_scene_extra_tokens(
                 detail::offline_scene_manifest_error(
                     path,
                     line_number,
-                    "model requires FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS");
+                    "model requires FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [SHADING_MODE]");
+            }
+
+            std::optional<MaterialShadingModel> shading_model_override;
+            std::string shading_token;
+            if (line >> shading_token) {
+                shading_model_override = detail::parse_offline_scene_shading_model(
+                    path, line_number, shading_token);
             }
             detail::reject_offline_scene_extra_tokens(path, line_number, line);
 
@@ -338,6 +368,7 @@ inline void reject_offline_scene_extra_tokens(
             manifest.entries.push_back({
                 detail::resolve_offline_scene_model_path(path, line_number, model_token),
                 model,
+                shading_model_override,
             });
             continue;
         }

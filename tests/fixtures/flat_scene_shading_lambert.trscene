@@ -1,0 +1,3 @@
+# Explicit Lambert must match inherited MTL illum 1.
+tiny-renderer-scene-v1
+model shading_model.obj 0 0 0 1 0 lambert

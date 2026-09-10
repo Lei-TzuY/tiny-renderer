@@ -145,6 +145,17 @@ tiny_renderer::ModelRenderOptions preview_options(const tiny_renderer::ModelAsse
     return options;
 }
 
+void apply_scene_material_shading_override(
+    tiny_renderer::ModelAsset& asset,
+    const std::optional<tiny_renderer::MaterialShadingModel>& shading_model_override) {
+    if (!shading_model_override) {
+        return;
+    }
+    for (tiny_renderer::MaterialDraw& draw : asset.draws) {
+        draw.material.shading_model = *shading_model_override;
+    }
+}
+
 struct ParsedArguments {
     tiny_renderer::OfflineRenderSettings settings{};
     std::optional<tiny_renderer::MipFilterMode> texture_mip{};
@@ -445,7 +456,8 @@ void print_usage() {
            " [--environment-reflection-material-shininess]\n"
         << "  .trscene format: tiny-renderer-scene-v1; optional 'ordering input|back-to-front';"
            " optional 'camera EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR';"
-           " repeat 'model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS' (max 256 sibling OBJ files)\n"
+           " repeat 'model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [inherit|lambert|blinn-phong]'"
+           " (max 256 sibling OBJ files)\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
            " display-exposure=1 output-transfer=srgb"
            " environment-intensity=1 environment-yaw=0 environment-mip=base"
@@ -636,6 +648,8 @@ int main(int argc, char** argv) {
             options.reserve(manifest.entries.size());
             for (const tiny_renderer::OfflineSceneManifestEntry& entry : manifest.entries) {
                 assets.push_back(tiny_renderer::load_obj_model_asset_file(entry.model_path));
+                apply_scene_material_shading_override(
+                    assets.back(), entry.shading_model_override);
                 options.push_back(preview_options(assets.back()));
                 apply_texture_sampler_options(options.back(), parsed);
             }
