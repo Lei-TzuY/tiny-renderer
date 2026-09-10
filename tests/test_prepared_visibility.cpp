@@ -43,6 +43,30 @@ ModelAsset unit_triangle_asset(
     return asset;
 }
 
+ModelAsset two_draw_asset() {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-0.5F, -0.5F, -0.25F}, VaryingPack{}),
+        Vertex::with_varyings({0.5F, -0.5F, -0.25F}, VaryingPack{}),
+        Vertex::with_varyings({0.0F, 0.5F, -0.25F}, VaryingPack{}),
+        Vertex::with_varyings({-0.5F, -0.5F, 0.25F}, VaryingPack{}),
+        Vertex::with_varyings({0.5F, -0.5F, 0.25F}, VaryingPack{}),
+        Vertex::with_varyings({0.0F, 0.5F, 0.25F}, VaryingPack{}),
+    };
+    asset.mesh.triangles = {{{0U, 1U, 2U}}, {{3U, 4U, 5U}}};
+
+    MaterialDraw first;
+    first.range = {0U, 1U};
+    first.material.albedo = {0.8F, 0.2F, 0.1F};
+    asset.draws.push_back(first);
+
+    MaterialDraw second;
+    second.range = {1U, 1U};
+    second.material.albedo = {0.1F, 0.7F, 0.3F};
+    asset.draws.push_back(second);
+    return asset;
+}
+
 class IdentityVisibilityVertexProgram final : public VertexProgram {
 public:
     VertexProgramOutput process(const VertexProgramInput& input) const noexcept override {
@@ -124,6 +148,31 @@ void test_boundary_crossing_and_caller_order_are_conservative() {
                   && visible[1].view_depth == -3.0
                   && visible[2].view_depth == -2.0,
               "prepared visibility preserves exact caller order and planning records for retained draws");
+    }
+}
+
+void test_flatten_preserves_caller_and_canonical_draw_order() {
+    const PreparedSpatialSubmission first = prepare_spatial_model(two_draw_asset());
+    const PreparedSpatialSubmission second = prepare_spatial_model(two_draw_asset());
+    const std::array<PreparedSpatialListEntry, 2> entries{{
+        {&first, Mat4::identity()},
+        {&second, Mat4::translation({0.0F, 0.0F, -2.0F})},
+    }};
+
+    const std::vector<PreparedDrawOrderEntry> plan =
+        flatten_prepared_model_draws(entries, Mat4::identity());
+    check(plan.size() == 4U, "caller-order flatten emits every canonical material draw exactly once");
+    if (plan.size() == 4U) {
+        check(plan[0].prepared == &first && plan[0].draw_index == 0U
+                  && plan[1].prepared == &first && plan[1].draw_index == 1U
+                  && plan[2].prepared == &second && plan[2].draw_index == 0U
+                  && plan[3].prepared == &second && plan[3].draw_index == 1U,
+              "caller-order flatten preserves entry order then canonical material-draw order");
+        check(plan[0].view_depth == -0.25
+                  && plan[1].view_depth == 0.25
+                  && plan[2].view_depth == -2.25
+                  && plan[3].view_depth == -1.75,
+              "caller-order flatten records the actual finite view depth for every draw center");
     }
 }
 
@@ -348,6 +397,74 @@ void test_offline_mixed_source_alpha_visibility_preserves_output() {
         "offline mixed-transparency source-alpha visibility integration");
 }
 
+void test_offline_mixed_depth_writing_visibility_preserves_output() {
+    const ModelAsset visible_opaque = unit_triangle_asset({0.1F, 0.3F, 0.8F});
+    const ModelAsset off_frustum_opaque = unit_triangle_asset({0.9F, 0.1F, 0.2F});
+    const ModelAsset visible_a2c = unit_triangle_asset({0.2F, 0.9F, 0.3F}, 0.5F);
+    const ModelAsset off_frustum_a2c = unit_triangle_asset({0.8F, 0.7F, 0.1F}, 0.5F);
+    const ModelAsset visible_alpha = unit_triangle_asset({0.9F, 0.2F, 0.7F}, 0.4F);
+
+    OfflineSceneEntry opaque_entry;
+    opaque_entry.asset = &visible_opaque;
+    opaque_entry.model = Mat4::translation({-0.2F, 0.0F, -0.25F});
+    opaque_entry.transparency_mode = OfflineSceneTransparencyMode::Opaque;
+
+    OfflineSceneEntry off_opaque_entry;
+    off_opaque_entry.asset = &off_frustum_opaque;
+    off_opaque_entry.model = Mat4::translation({20.0F, 0.0F, 0.0F});
+    off_opaque_entry.transparency_mode = OfflineSceneTransparencyMode::Opaque;
+
+    OfflineSceneEntry a2c_entry;
+    a2c_entry.asset = &visible_a2c;
+    a2c_entry.model = Mat4::translation({0.25F, 0.0F, 0.0F});
+    a2c_entry.transparency_mode = OfflineSceneTransparencyMode::AlphaToCoverage;
+
+    OfflineSceneEntry off_a2c_entry;
+    off_a2c_entry.asset = &off_frustum_a2c;
+    off_a2c_entry.model = Mat4::translation({-20.0F, 0.0F, 0.0F});
+    off_a2c_entry.transparency_mode = OfflineSceneTransparencyMode::AlphaToCoverage;
+
+    OfflineSceneEntry alpha_entry;
+    alpha_entry.asset = &visible_alpha;
+    alpha_entry.model = Mat4::translation({0.0F, 0.1F, 0.25F});
+    alpha_entry.transparency_mode = OfflineSceneTransparencyMode::SourceAlpha;
+
+    const std::array<OfflineSceneEntry, 5> with_off_frustum{{
+        opaque_entry,
+        off_opaque_entry,
+        a2c_entry,
+        off_a2c_entry,
+        alpha_entry,
+    }};
+    const std::array<OfflineSceneEntry, 3> manually_visible{{
+        opaque_entry,
+        a2c_entry,
+        alpha_entry,
+    }};
+
+    const OfflineRenderSettings settings = visibility_render_settings();
+    const OfflineSceneCamera camera = explicit_visibility_camera();
+    const Framebuffer filtered_scene = render_scene_preview(
+        with_off_frustum,
+        settings,
+        OfflineSceneOrdering::MixedTransparency,
+        camera);
+    const Framebuffer manual_scene = render_scene_preview(
+        manually_visible,
+        settings,
+        OfflineSceneOrdering::MixedTransparency,
+        camera);
+
+    check(
+        filtered_scene.rgb8() == manual_scene.rgb8()
+            && filtered_scene.fnv1a64() == manual_scene.fnv1a64(),
+        "scene-wide visibility preserves resolved mixed output when off-frustum opaque and A2C draws are removed");
+    check_framebuffers_equal(
+        filtered_scene,
+        manual_scene,
+        "offline mixed depth-writing visibility integration");
+}
+
 void test_off_frustum_source_alpha_still_receives_full_target_preflight() {
     const ModelAsset visible_alpha = unit_triangle_asset({0.9F, 0.2F, 0.1F}, 0.5F);
     const ModelAsset invalid_off_frustum_alpha = unit_triangle_asset({0.2F, 0.8F, 0.3F}, 0.5F);
@@ -381,18 +498,51 @@ void test_off_frustum_source_alpha_still_receives_full_target_preflight() {
         "off-frustum source-alpha draws remain subject to complete target-dependent fail-closed preflight");
 }
 
+void test_off_frustum_depth_writing_draw_still_receives_full_target_preflight() {
+    const ModelAsset visible_alpha = unit_triangle_asset({0.9F, 0.2F, 0.1F}, 0.5F);
+    const ModelAsset invalid_off_frustum_opaque = unit_triangle_asset({0.2F, 0.8F, 0.3F});
+
+    OfflineSceneEntry visible_entry;
+    visible_entry.asset = &visible_alpha;
+    visible_entry.transparency_mode = OfflineSceneTransparencyMode::SourceAlpha;
+
+    OfflineSceneEntry invalid_entry;
+    invalid_entry.asset = &invalid_off_frustum_opaque;
+    invalid_entry.model = Mat4::translation({20.0F, 0.0F, 0.0F});
+    invalid_entry.transparency_mode = OfflineSceneTransparencyMode::Opaque;
+    invalid_entry.options.viewport_state.viewport = RasterRect{0U, 0U, 4096U, 4096U};
+
+    const std::array<OfflineSceneEntry, 2> scene{{visible_entry, invalid_entry}};
+    bool threw = false;
+    try {
+        (void)render_scene_preview(
+            scene,
+            visibility_render_settings(),
+            OfflineSceneOrdering::MixedTransparency,
+            explicit_visibility_camera());
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    check(
+        threw,
+        "off-frustum depth-writing draws remain subject to complete target-dependent fail-closed preflight");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_six_clip_planes_reject_provably_outside_draws();
         test_boundary_crossing_and_caller_order_are_conservative();
+        test_flatten_preserves_caller_and_canonical_draw_order();
         test_perspective_filter_execution_is_attachment_equivalent();
         test_conservative_large_bounds_are_not_false_rejected();
         test_visibility_filter_fails_closed_on_unrepresentable_state();
         test_empty_filter_is_deterministic();
         test_offline_mixed_source_alpha_visibility_preserves_output();
+        test_offline_mixed_depth_writing_visibility_preserves_output();
         test_off_frustum_source_alpha_still_receives_full_target_preflight();
+        test_off_frustum_depth_writing_draw_still_receives_full_target_preflight();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
