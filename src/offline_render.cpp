@@ -549,6 +549,7 @@ Framebuffer render_scene_preview(
     std::vector<PreparedSpatialSubmission> source_alpha_spatial;
     std::vector<PreparedSpatialListEntry> source_alpha_spatial_entries;
     std::vector<PreparedDrawOrderEntry> ordered_source_alpha_draws;
+    std::vector<PreparedDrawOrderEntry> visible_source_alpha_draws;
 
     switch (ordering) {
         case OfflineSceneOrdering::InputOrder:
@@ -588,6 +589,11 @@ Framebuffer render_scene_preview(
                 std::span<const PreparedSpatialListEntry>{
                     source_alpha_spatial_entries.data(), source_alpha_spatial_entries.size()},
                 geometry.view);
+            visible_source_alpha_draws = filter_prepared_draw_order_to_frustum(
+                std::span<const PreparedDrawOrderEntry>{
+                    ordered_source_alpha_draws.data(), ordered_source_alpha_draws.size()},
+                geometry.view,
+                geometry.projection);
             break;
         }
     }
@@ -595,6 +601,10 @@ Framebuffer render_scene_preview(
     Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
     // Complete target-dependent validation for every execution phase before
     // clear, environment background, or geometry can mutate the returned target.
+    // Visibility filtering deliberately does not weaken this contract: the
+    // complete original source-alpha plan is validated even when some draws are
+    // later omitted from raster submission because their prepared bounds prove
+    // they cannot intersect the camera clip volume.
     if (ordering == OfflineSceneOrdering::MixedTransparency) {
         preflight_prepared_model_list(
             framebuffer,
@@ -637,7 +647,7 @@ Framebuffer render_scene_preview(
             draw_prepared_draw_order(
                 framebuffer,
                 std::span<const PreparedDrawOrderEntry>{
-                    ordered_source_alpha_draws.data(), ordered_source_alpha_draws.size()},
+                    visible_source_alpha_draws.data(), visible_source_alpha_draws.size()},
                 geometry.view,
                 geometry.projection);
             break;
