@@ -304,23 +304,17 @@ inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label
         prepare_model_asset(std::move(asset), std::move(options)));
 }
 
-// Flattens every material draw from the supplied prepared models and returns a
-// deterministic stable far-to-near plan. The key is the view-space Z of the
-// prepared object-space AABB center. More-negative view Z sorts first. Equal
-// depths preserve caller entry order and canonical material-draw order.
-//
-// The first spatial slice intentionally accepts affine model/view transforms
-// only. This keeps the prepared AABB-center contract meaningful and avoids
-// pretending a projective model transform has an affine object-space bound.
-// Vertex programs are rejected because their post-program positions are not
-// represented by the prepared canonical bounds.
+// Flattens every canonical material draw in exact caller entry order and draw
+// order while computing the same finite view-depth metadata used by sorting.
+// This is the execution-planning primitive for phases whose raster semantics
+// require stable caller order but still need prepared spatial visibility.
 [[nodiscard]] inline std::vector<PreparedDrawOrderEntry>
-order_prepared_model_draws_back_to_front(
+flatten_prepared_model_draws(
     std::span<const PreparedSpatialListEntry> entries,
     const Mat4& view) {
     detail::validate_spatial_affine_matrix(view, "prepared spatial view transform");
 
-    std::vector<PreparedDrawOrderEntry> ordered;
+    std::vector<PreparedDrawOrderEntry> flattened;
     std::size_t total_draws = 0U;
     for (const PreparedSpatialListEntry& entry : entries) {
         if (entry.prepared == nullptr) {
@@ -328,7 +322,7 @@ order_prepared_model_draws_back_to_front(
         }
         if (entry.prepared->prepared().options().vertex_program) {
             throw std::invalid_argument(
-                "prepared draw spatial ordering does not support position-changing vertex programs");
+                "prepared draw spatial planning does not support position-changing vertex programs");
         }
         detail::validate_spatial_affine_matrix(
             entry.model,
@@ -338,7 +332,7 @@ order_prepared_model_draws_back_to_front(
         }
         total_draws += entry.prepared->draws().size();
     }
-    ordered.reserve(total_draws);
+    flattened.reserve(total_draws);
 
     for (const PreparedSpatialListEntry& entry : entries) {
         const Mat4 view_model = view * entry.model;
@@ -352,18 +346,32 @@ order_prepared_model_draws_back_to_front(
                 || !std::isfinite(position.w)
                 || std::fabs(position.w) <= kEpsilon) {
                 throw std::invalid_argument(
-                    "prepared draw spatial ordering produced a non-finite view-space center");
+                    "prepared draw spatial planning produced a non-finite view-space center");
             }
             const double depth = static_cast<double>(position.z)
                 / static_cast<double>(position.w);
             if (!std::isfinite(depth)) {
                 throw std::invalid_argument(
-                    "prepared draw spatial ordering produced a non-finite view depth");
+                    "prepared draw spatial planning produced a non-finite view depth");
             }
-            ordered.push_back({entry.prepared, entry.model, draw_index, depth});
+            flattened.push_back({entry.prepared, entry.model, draw_index, depth});
         }
     }
+    return flattened;
+}
 
+// Returns the caller/canonical draw plan in deterministic stable far-to-near
+// order. More-negative view Z sorts first. Equal depths preserve the flatten
+// order, so caller entry order and canonical material-draw order remain the tie
+// break. The spatial contract accepts affine model/view transforms only and
+// rejects vertex programs because prepared canonical bounds cannot represent
+// position-changing execution.
+[[nodiscard]] inline std::vector<PreparedDrawOrderEntry>
+order_prepared_model_draws_back_to_front(
+    std::span<const PreparedSpatialListEntry> entries,
+    const Mat4& view) {
+    std::vector<PreparedDrawOrderEntry> ordered =
+        flatten_prepared_model_draws(entries, view);
     std::stable_sort(
         ordered.begin(),
         ordered.end(),
