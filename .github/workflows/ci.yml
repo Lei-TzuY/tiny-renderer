@@ -35,7 +35,18 @@ jobs:
             echo "explicit scene camera did not change the rendered view" >&2
             exit 1
           fi
-      - name: Reject unsafe or invalid-camera flat-scene manifests
+      - name: Render material shading overrides through flat-scene CLI
+        run: |
+          COMMON_ARGS="64 64 4 --environment-reflection tests/fixtures/environment_hdr.pfm"
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_inherit.trscene build/shading_inherit.ppm $COMMON_ARGS
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_lambert.trscene build/shading_lambert.ppm $COMMON_ARGS
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_blinn.trscene build/shading_blinn.ppm $COMMON_ARGS
+          cmp build/shading_inherit.ppm build/shading_lambert.ppm
+          if cmp -s build/shading_lambert.ppm build/shading_blinn.ppm; then
+            echo "Blinn-Phong scene override did not change reflection rendering" >&2
+            exit 1
+          fi
+      - name: Reject unsafe, invalid-camera, or invalid-shading flat-scene manifests
         run: |
           if ./build/tiny_renderer_render tests/fixtures/flat_scene_unsafe.trscene build/unsafe_scene.ppm 64 64 4; then
             echo "unsafe scene manifest unexpectedly rendered" >&2
@@ -47,6 +58,11 @@ jobs:
             exit 1
           fi
           test ! -e build/invalid_camera_scene.ppm
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_invalid.trscene build/invalid_shading_scene.ppm 64 64 4; then
+            echo "invalid scene shading mode unexpectedly rendered" >&2
+            exit 1
+          fi
+          test ! -e build/invalid_shading_scene.ppm
 
   sanitizers:
     runs-on: ubuntu-latest
@@ -73,7 +89,15 @@ jobs:
         run: |
           ./build/tiny_renderer_render tests/fixtures/flat_scene.trscene build/flat_scene.ppm 96 64 4
           ./build/tiny_renderer_render tests/fixtures/flat_scene_camera.trscene build/flat_scene_camera.ppm 96 64 4
-      - name: Reject unsafe or invalid-camera flat-scene manifests under sanitizers
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_inherit.trscene build/shading_inherit.ppm 64 64 4 --environment-reflection tests/fixtures/environment_hdr.pfm
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_lambert.trscene build/shading_lambert.ppm 64 64 4 --environment-reflection tests/fixtures/environment_hdr.pfm
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_blinn.trscene build/shading_blinn.ppm 64 64 4 --environment-reflection tests/fixtures/environment_hdr.pfm
+          cmp build/shading_inherit.ppm build/shading_lambert.ppm
+          if cmp -s build/shading_lambert.ppm build/shading_blinn.ppm; then
+            echo "Blinn-Phong scene override did not change reflection rendering under sanitizers" >&2
+            exit 1
+          fi
+      - name: Reject unsafe, invalid-camera, or invalid-shading flat-scene manifests under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -88,3 +112,8 @@ jobs:
             exit 1
           fi
           test ! -e build/invalid_camera_scene.ppm
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_shading_invalid.trscene build/invalid_shading_scene.ppm 64 64 4; then
+            echo "invalid scene shading mode unexpectedly rendered" >&2
+            exit 1
+          fi
+          test ! -e build/invalid_shading_scene.ppm
