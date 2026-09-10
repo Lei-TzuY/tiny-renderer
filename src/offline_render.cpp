@@ -545,7 +545,10 @@ Framebuffer render_scene_preview(
         render_entries.data(), render_entries.size()};
 
     std::vector<PreparedModelListEntry> ordered_entries;
-    std::vector<PreparedModelListEntry> depth_writing_entries;
+    std::vector<PreparedSpatialSubmission> depth_writing_spatial;
+    std::vector<PreparedSpatialListEntry> depth_writing_spatial_entries;
+    std::vector<PreparedDrawOrderEntry> depth_writing_draws;
+    std::vector<PreparedDrawOrderEntry> visible_depth_writing_draws;
     std::vector<PreparedSpatialSubmission> source_alpha_spatial;
     std::vector<PreparedSpatialListEntry> source_alpha_spatial_entries;
     std::vector<PreparedDrawOrderEntry> ordered_source_alpha_draws;
@@ -559,13 +562,17 @@ Framebuffer render_scene_preview(
                 render_span, geometry.view);
             break;
         case OfflineSceneOrdering::MixedTransparency: {
-            depth_writing_entries.reserve(entries.size());
+            std::size_t depth_writing_count = 0U;
             std::size_t source_alpha_count = 0U;
             for (const OfflineSceneEntry& entry : entries) {
                 if (*entry.transparency_mode == OfflineSceneTransparencyMode::SourceAlpha) {
                     ++source_alpha_count;
+                } else {
+                    ++depth_writing_count;
                 }
             }
+            depth_writing_spatial.reserve(depth_writing_count);
+            depth_writing_spatial_entries.reserve(depth_writing_count);
             source_alpha_spatial.reserve(source_alpha_count);
             source_alpha_spatial_entries.reserve(source_alpha_count);
 
@@ -573,7 +580,12 @@ Framebuffer render_scene_preview(
                 switch (*entries[i].transparency_mode) {
                     case OfflineSceneTransparencyMode::Opaque:
                     case OfflineSceneTransparencyMode::AlphaToCoverage:
-                        depth_writing_entries.push_back(render_entries[i]);
+                        depth_writing_spatial.push_back(
+                            prepare_spatial_submission(std::move(prepared[i])));
+                        depth_writing_spatial_entries.push_back({
+                            &depth_writing_spatial.back(),
+                            render_entries[i].model,
+                        });
                         break;
                     case OfflineSceneTransparencyMode::SourceAlpha:
                         source_alpha_spatial.push_back(
@@ -585,6 +597,15 @@ Framebuffer render_scene_preview(
                         break;
                 }
             }
+            depth_writing_draws = flatten_prepared_model_draws(
+                std::span<const PreparedSpatialListEntry>{
+                    depth_writing_spatial_entries.data(), depth_writing_spatial_entries.size()},
+                geometry.view);
+            visible_depth_writing_draws = filter_prepared_draw_order_to_frustum(
+                std::span<const PreparedDrawOrderEntry>{
+                    depth_writing_draws.data(), depth_writing_draws.size()},
+                geometry.view,
+                geometry.projection);
             ordered_source_alpha_draws = order_prepared_model_draws_back_to_front(
                 std::span<const PreparedSpatialListEntry>{
                     source_alpha_spatial_entries.data(), source_alpha_spatial_entries.size()},
@@ -601,15 +622,14 @@ Framebuffer render_scene_preview(
     Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
     // Complete target-dependent validation for every execution phase before
     // clear, environment background, or geometry can mutate the returned target.
-    // Visibility filtering deliberately does not weaken this contract: the
-    // complete original source-alpha plan is validated even when some draws are
-    // later omitted from raster submission because their prepared bounds prove
-    // they cannot intersect the camera clip volume.
+    // Visibility filtering is execution selection only: both the complete
+    // caller-ordered depth-writing plan and complete sorted source-alpha plan
+    // remain validated even when off-frustum draws are omitted from submission.
     if (ordering == OfflineSceneOrdering::MixedTransparency) {
-        preflight_prepared_model_list(
+        preflight_prepared_draw_order(
             framebuffer,
-            std::span<const PreparedModelListEntry>{
-                depth_writing_entries.data(), depth_writing_entries.size()});
+            std::span<const PreparedDrawOrderEntry>{
+                depth_writing_draws.data(), depth_writing_draws.size()});
         preflight_prepared_draw_order(
             framebuffer,
             std::span<const PreparedDrawOrderEntry>{
@@ -638,10 +658,10 @@ Framebuffer render_scene_preview(
                 geometry.projection);
             break;
         case OfflineSceneOrdering::MixedTransparency:
-            draw_prepared_model_list(
+            draw_prepared_draw_order(
                 framebuffer,
-                std::span<const PreparedModelListEntry>{
-                    depth_writing_entries.data(), depth_writing_entries.size()},
+                std::span<const PreparedDrawOrderEntry>{
+                    visible_depth_writing_draws.data(), visible_depth_writing_draws.size()},
                 geometry.view,
                 geometry.projection);
             draw_prepared_draw_order(
