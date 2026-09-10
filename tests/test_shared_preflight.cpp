@@ -98,6 +98,48 @@ ModelAsset two_draw_spatial_asset(float first_z = 0.5F, float second_z = -0.5F) 
     return asset;
 }
 
+ModelAsset transparent_triangle_asset(const Vec3& color, float z) {
+    ModelAsset asset = solid_triangle_asset(color, 0.5F);
+    for (Vertex& vertex : asset.mesh.vertices) {
+        vertex.position.z = z;
+    }
+    return asset;
+}
+
+ModelAsset two_draw_transparent_overlap_asset(float near_z = 0.5F, float far_z = -0.5F) {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-0.8F, -0.8F, near_z}, VaryingPack{}),
+        Vertex::with_varyings({0.8F, -0.8F, near_z}, VaryingPack{}),
+        Vertex::with_varyings({0.0F, 0.8F, near_z}, VaryingPack{}),
+        Vertex::with_varyings({-0.8F, -0.8F, far_z}, VaryingPack{}),
+        Vertex::with_varyings({0.8F, -0.8F, far_z}, VaryingPack{}),
+        Vertex::with_varyings({0.0F, 0.8F, far_z}, VaryingPack{}),
+    };
+    asset.mesh.triangles = {{0U, 1U, 2U}, {3U, 4U, 5U}};
+
+    MaterialDraw near_draw;
+    near_draw.range = {0U, 1U};
+    near_draw.material.albedo = {1.0F, 0.0F, 0.0F};
+    near_draw.material.opacity = 0.5F;
+
+    MaterialDraw far_draw;
+    far_draw.range = {1U, 1U};
+    far_draw.material.albedo = {0.0F, 0.0F, 1.0F};
+    far_draw.material.opacity = 0.5F;
+    asset.draws = {near_draw, far_draw};
+    return asset;
+}
+
+ModelRenderOptions source_alpha_options() {
+    ModelRenderOptions options;
+    options.depth_state.write_enabled = false;
+    options.blend_state.enabled = true;
+    options.blend_state.source_factor = BlendFactor::SourceAlpha;
+    options.blend_state.destination_factor = BlendFactor::OneMinusSourceAlpha;
+    return options;
+}
+
 class IdentitySpatialVertexProgram final : public VertexProgram {
 public:
     VertexProgramOutput process(const VertexProgramInput& input) const noexcept override {
@@ -450,6 +492,147 @@ void test_prepared_draw_spatial_empty_plan_is_deterministic() {
     check(ordered.empty(), "empty prepared spatial model contributes no planned draw");
 }
 
+void test_prepared_draw_executor_matches_explicit_far_to_near_ranges() {
+    const ModelRenderOptions options = source_alpha_options();
+    const PreparedSpatialSubmission spatial = prepare_spatial_model(
+        two_draw_transparent_overlap_asset(), options);
+    const std::array<PreparedSpatialListEntry, 1> spatial_entries{
+        PreparedSpatialListEntry{&spatial, Mat4::identity()},
+    };
+    const std::vector<PreparedDrawOrderEntry> plan =
+        order_prepared_model_draws_back_to_front(spatial_entries, Mat4::identity());
+
+    Framebuffer planned(65U, 65U);
+    planned.clear({0.0F, 0.0F, 0.0F});
+    draw_prepared_draw_order(planned, plan, Mat4::identity(), Mat4::identity());
+
+    ModelAsset far = transparent_triangle_asset({0.0F, 0.0F, 1.0F}, -0.5F);
+    ModelAsset near = transparent_triangle_asset({1.0F, 0.0F, 0.0F}, 0.5F);
+    Framebuffer explicit_reference(65U, 65U);
+    explicit_reference.clear({0.0F, 0.0F, 0.0F});
+    draw_model_asset(explicit_reference, far, Mat4::identity(), options);
+    draw_model_asset(explicit_reference, near, Mat4::identity(), options);
+
+    check(plan.size() == 2U && plan[0].draw_index == 1U && plan[1].draw_index == 0U,
+          "prepared draw executor reference plan is globally far-to-near");
+    check(
+        planned.rgb8() == explicit_reference.rgb8()
+            && planned.fnv1a64() == explicit_reference.fnv1a64(),
+        "prepared draw executor is byte/hash-equivalent to explicit far-to-near range submissions");
+}
+
+void test_prepared_draw_executor_preflights_complete_plan_before_writes() {
+    const PreparedSpatialSubmission valid = prepare_spatial_model(
+        solid_triangle_asset({0.8F, 0.2F, 0.1F}));
+
+    ModelRenderOptions invalid_options;
+    invalid_options.alpha_to_coverage_state.enabled = true;
+    const PreparedSpatialSubmission invalid = prepare_spatial_model(
+        solid_triangle_asset({0.1F, 0.2F, 0.8F}, 0.5F), invalid_options);
+
+    const std::array<PreparedDrawOrderEntry, 2> plan{
+        PreparedDrawOrderEntry{&valid, Mat4::identity(), 0U, -2.0},
+        PreparedDrawOrderEntry{&invalid, Mat4::identity(), 0U, -1.0},
+    };
+
+    Framebuffer framebuffer(65U, 65U, SampleCount::One);
+    framebuffer.clear({0.125F, 0.25F, 0.375F});
+    const std::vector<std::uint8_t> before = framebuffer.rgb8();
+    bool threw = false;
+    try {
+        draw_prepared_draw_order(framebuffer, plan, Mat4::identity(), Mat4::identity());
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "prepared draw executor rejects a later target-incompatible draw");
+    check_unchanged(framebuffer, before, "complete prepared draw-plan preflight");
+}
+
+void test_prepared_draw_executor_rejects_invalid_draw_index_before_writes() {
+    const PreparedSpatialSubmission spatial = prepare_spatial_model(
+        solid_triangle_asset({0.4F, 0.6F, 0.2F}));
+    const std::array<PreparedDrawOrderEntry, 1> plan{
+        PreparedDrawOrderEntry{&spatial, Mat4::identity(), 7U, -1.0},
+    };
+
+    Framebuffer framebuffer(65U, 65U);
+    framebuffer.clear({0.25F, 0.125F, 0.375F});
+    const std::vector<std::uint8_t> before = framebuffer.rgb8();
+    bool threw = false;
+    try {
+        draw_prepared_draw_order(framebuffer, plan, Mat4::identity(), Mat4::identity());
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    check(threw, "prepared draw executor rejects an unavailable draw index");
+    check_unchanged(framebuffer, before, "invalid prepared draw index");
+}
+
+void test_mixed_scene_source_alpha_orders_globally_per_draw() {
+    ModelAsset layered = two_draw_transparent_overlap_asset(0.5F, -0.5F);
+    ModelAsset middle = transparent_triangle_asset({0.0F, 1.0F, 0.0F}, 0.0F);
+    ModelAsset far = transparent_triangle_asset({0.0F, 0.0F, 1.0F}, -0.5F);
+    ModelAsset near = transparent_triangle_asset({1.0F, 0.0F, 0.0F}, 0.5F);
+
+    const std::array<OfflineSceneEntry, 2> mixed_input{
+        OfflineSceneEntry{
+            &layered,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha,
+        },
+        OfflineSceneEntry{
+            &middle,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha,
+        },
+    };
+    const std::array<OfflineSceneEntry, 3> explicit_expected{
+        OfflineSceneEntry{&far, Mat4::identity(), {}, OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{&middle, Mat4::identity(), {}, OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{&near, Mat4::identity(), {}, OfflineSceneTransparencyMode::SourceAlpha},
+    };
+    const std::array<OfflineSceneEntry, 2> entry_level_reference = mixed_input;
+
+    OfflineRenderSettings settings;
+    settings.width = 65U;
+    settings.height = 65U;
+    settings.sample_count = SampleCount::One;
+    settings.clear_color = {0.0F, 0.0F, 0.0F};
+    const OfflineSceneCamera camera{
+        {0.0F, 0.0F, 3.0F},
+        {0.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+        radians(60.0F),
+        0.1F,
+        100.0F,
+    };
+
+    const Framebuffer mixed = render_scene_preview(
+        mixed_input,
+        settings,
+        OfflineSceneOrdering::MixedTransparency,
+        camera);
+    const Framebuffer expected = render_scene_preview(
+        explicit_expected,
+        settings,
+        OfflineSceneOrdering::InputOrder,
+        camera);
+    const Framebuffer old_entry_level = render_scene_preview(
+        entry_level_reference,
+        settings,
+        OfflineSceneOrdering::InputOrder,
+        camera);
+
+    check(
+        mixed.rgb8() == expected.rgb8() && mixed.fnv1a64() == expected.fnv1a64(),
+        "mixed scene source-alpha phase is equivalent to explicit global far-to-near draw-range order");
+    check(
+        mixed.rgb8() != old_entry_level.rgb8(),
+        "global draw ordering is observably different from canonical per-model draw order");
+}
+
 }  // namespace
 
 int main() {
@@ -466,6 +649,10 @@ int main() {
         test_prepared_draw_spatial_plan_orders_across_models();
         test_prepared_draw_spatial_rejects_unrepresentable_state();
         test_prepared_draw_spatial_empty_plan_is_deterministic();
+        test_prepared_draw_executor_matches_explicit_far_to_near_ranges();
+        test_prepared_draw_executor_preflights_complete_plan_before_writes();
+        test_prepared_draw_executor_rejects_invalid_draw_index_before_writes();
+        test_mixed_scene_source_alpha_orders_globally_per_draw();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
