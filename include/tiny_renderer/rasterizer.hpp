@@ -233,6 +233,7 @@ public:
           fixed_lights_(std::move(fixed_lights)),
           point_shadow_state_(std::move(point_shadow_state)) {
         if (fixed_lights_.environment_reflection
+            && material_state_.shading_model == MaterialShadingModel::BlinnPhong
             && fixed_lights_.environment_reflection->environment.mip_policy
                 == EnvironmentReflectionMipPolicy::MaterialShininess
             && texture_binding_.shininess_texture == nullptr) {

@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains older detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Integrated architecture through Milestone 76
+## Integrated architecture through Milestone 77
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -20,7 +20,9 @@ Milestone 74 promotes the heterogeneous prepared-list architecture into a bounde
 
 Milestone 76 promotes that flat-scene library transaction into the real headless CLI. `tiny_renderer_render` accepts either one legacy `.obj` input or one bounded `.trscene` manifest. The manifest starts with exact `tiny-renderer-scene-v1`, accepts optional `ordering input|back-to-front`, accepts at most 256 sibling-only OBJ model records with finite translation/uniform-scale/Y-rotation state, rejects traversal/subdirectories/absolute references, loads all referenced assets before pointer-stable scene construction, and delegates the complete scene exactly once to `render_scene_preview`. Global texture sampler and environment controls remain shared with the existing renderer. Linux/macOS CI render the same 4x scene manifest twice byte-identically, ASan/UBSan executes the complete manifest path, and unsafe traversal must fail without creating output.
 
-The exact integrated `main` commit is `34622537a87492bb189095351da9043d0ac6135b` (Milestone 76). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
+Milestone 77 adds one bounded optional perspective-camera directive to the same flat-scene manifest. Explicit eye/target/up/FOV/near/far state is fail-closed validated, preserves caller world-space composition instead of applying auto-fit, and drives geometry, environment-background rays, and reflection viewer position from one authoritative camera. Omitting the directive preserves the historical combined-bounds auto-fit path. Explicit-camera scenes still delegate exactly once to the canonical prepared-list executor; no camera-specific raster path exists.
+
+The exact integrated `main` commit is `83d2440fa2e19119f0fd837f8cc0cfa1bb88f2bf` (Milestone 77). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
 
 The repository also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, bounded PPM/TGA/PFM texture import through the shared image dispatcher, and bounded headless OBJ/flat-scene preview/render tooling.
 
@@ -30,25 +32,23 @@ Milestone numbers describe work streams, not an assertion that every lower-numbe
 
 The branch `milestone-73-prepared-spatial-metadata` remains a reserved concurrent surface. Its current head still corresponds to the earlier M72 line rather than an integrated M73 implementation, so no spatial-metadata contract may be assumed until that work passes normal PR/exact-head/post-merge gates.
 
-The branch `milestone-75-explicit-material-shading-model` is an active concurrent material/BRDF surface rooted before M76 and must not be raced by unrelated scene/tooling work. It is currently divergent from `main` and still contains construction-state commits/files; it is not integration evidence until it is cleaned, synchronized, fully tested, reviewable, and integrated through the normal gates.
+The branch `milestone-75-explicit-material-shading-model` is the active material/BRDF candidate surface. It has been rebuilt directly from the exact green M77 main rather than carrying the earlier construction history; PR #93 is the only implementation PR for this surface. It is not integration evidence until its exact final head and post-merge main pass the normal gates.
 
-## Milestone 77 candidate — explicit flat-scene perspective camera
+## Milestone 75 candidate — explicit material shading model
 
-M77 is deliberately confined to the M74/M76 flat-scene orchestration and CLI surface. It does not modify the reserved M73 spatial-metadata contract or the active M75 material/BRDF boundary. The executable gap is that flat-scene transforms are currently always recentered/rescaled through one fixed +Z auto-fit camera, so a manifest cannot preserve caller world-space composition while choosing a concrete viewpoint.
+M75 closes the fixed-function material-model ambiguity without adding a second lighting or raster path. Historical material state implicitly meant Blinn-Phong whenever specular state was non-zero; the candidate makes that boundary explicit while retaining Blinn-Phong as the compatibility default.
 
 Acceptance surface:
 
-- `.trscene` accepts at most one optional `camera EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR` directive while preserving the existing v1 header, ordering directive, model records, path confinement, and deterministic line diagnostics;
-- eye/target/up vectors and projection scalars must be finite; eye-target separation and up magnitude must be non-zero; up must not be parallel to the viewing direction; vertical FOV must lie in `(0, pi)`; near must be positive and far must be strictly greater than near;
-- no camera directive preserves the historical M74/M76 combined-bounds auto-fit behavior and default output path;
-- an explicit camera keeps every scene entry in caller world space, injects identity global fit, builds view/projection from the supplied camera, and still delegates exactly once to the canonical prepared-list or painter-order executor;
-- environment background ray reconstruction uses the exact same active eye/target/up/FOV/aspect as geometry, and environment reflection uses the same active eye as viewer position;
-- empty explicit-camera scenes remain valid clear/environment-only renders;
-- CLI output identifies `camera=explicit|auto-fit` without changing raster/material semantics;
-- Linux and macOS CI render the same explicit-camera 4x manifest twice byte-identically, require that its result differs from the legacy auto-fit view, and reject a degenerate camera without creating output; ASan/UBSan executes the same explicit-camera and rejection paths;
-- the slice adds no hierarchy, animation, persistent scene graph, spatial-metadata contract, new material/BRDF semantics, alternate raster path, GPU execution, or performance/image-quality claim.
+- `MaterialState` gains trailing `MaterialShadingModel::{BlinnPhong,Lambert}` state with Blinn-Phong as the default so established aggregate initialization and default rendering remain compatible;
+- bounded MTL `illum 1` maps to Lambert and `illum 2` maps to Blinn-Phong, while duplicate, malformed, unsupported, and orphan `illum` directives fail deterministically;
+- Lambert keeps base-color diffuse, emission, direct diffuse, and diffuse-environment lighting but contributes no direct or environment specular term and does not sample `map_Ks` or `map_Ns`;
+- material-aware validation derives normal/world-position requirements from contributions that can actually execute, while unknown runtime shading-model values fail before framebuffer mutation in direct/shared/model/prepared paths;
+- model inspection exposes the selected model, and fingerprints add a versioned material-model extension only when a non-default model exists so historical all-Blinn-Phong fingerprints remain unchanged;
+- file-driven OBJ/MTL state reaches canonical `ModelAsset` material draws and direct/prepared execution remains byte-equivalent for the same Lambert asset;
+- the slice makes no PBR, energy-conservation, arbitrary MTL-illum, BRDF-programmability, GPU, performance, or image-quality claim.
 
-Candidate branch: `milestone-77-explicit-scene-camera`. Its exact final head must pass Ubuntu, macOS, and ASan/UBSan gates before integration; branch commits alone are not completion evidence.
+Candidate branch: `milestone-75-explicit-material-shading-model`; PR #93. Its exact final head must pass Ubuntu, macOS, and ASan/UBSan gates before integration; branch commits alone are not completion evidence.
 
 ## Architectural invariants
 
@@ -64,6 +64,6 @@ Candidate branch: `milestone-77-explicit-scene-camera`. Its exact final head mus
 - Default/trailing state additions preserve historical behavior unless the caller explicitly opts into the new capability.
 - Performance claims require controlled measurements; CI duration is never treated as a benchmark.
 
-## Promotion after Milestone 77
+## Promotion after Milestone 75
 
-Do not race the reserved M73 prepared-spatial-metadata surface or active M75 material/shading surface. After M77 converges, re-read exact live `main` plus those branches before choosing the next implementation slice. Once the material/scene/spatial work streams expose real integrated contracts, prefer a cross-layer integration that consumes them over another parser or map-name feature: for example scene-level tooling for an integrated explicit material mode, or verified draw-granularity transparency ordering only if integrated spatial metadata can represent the required post-transform geometry. Keep hierarchy, animation, persistent scene storage, and broader camera/scene formats deferred until a concrete executable requirement justifies them.
+After M75 converges, re-read exact live `main`, open PRs, and the reserved M73 prepared-spatial-metadata branch before selecting the next slice. Prefer a cross-layer executable integration that consumes the now-integrated material and scene contracts over another parser-name feature. If M73 becomes a real integrated spatial contract, draw-granularity transparency ordering becomes a higher-value candidate. Keep hierarchy, animation, persistent scene storage, general MTL illumination models, and broader BRDF/PBR work deferred until a concrete executable requirement justifies them.

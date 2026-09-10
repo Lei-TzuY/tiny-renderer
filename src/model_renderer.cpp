@@ -51,6 +51,12 @@ void validate_material(const MaterialState& material) {
         || emissive.z < 0.0F || emissive.z > 1.0F) {
         throw std::invalid_argument("model material emissive components must be finite and within [0, 1]");
     }
+    switch (material.shading_model) {
+        case MaterialShadingModel::BlinnPhong:
+        case MaterialShadingModel::Lambert:
+            return;
+    }
+    throw std::invalid_argument("model material uses an unknown shading model");
 }
 
 void validate_vertex_color_channels(const ModelAsset& asset) {

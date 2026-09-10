@@ -36,7 +36,8 @@ void validate_point_shadow_state_definition(
 [[nodiscard]] const NormalBinding* active_normal_binding(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
-    const FixedLightCollection& fixed_lights);
+    const FixedLightCollection& fixed_lights,
+    const MaterialState& material);
 [[nodiscard]] bool fixed_lighting_world_position_required(
     const DirectionalLight& directional_light,
     const PointLight& point_light,

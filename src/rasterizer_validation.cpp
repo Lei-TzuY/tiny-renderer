@@ -25,9 +25,10 @@ bool finite_vec3(const Vec3& value) {
 }
 
 bool material_has_specular(const MaterialState& material) {
-    return material.specular.x > 0.0F
-        || material.specular.y > 0.0F
-        || material.specular.z > 0.0F;
+    return material.shading_model == MaterialShadingModel::BlinnPhong
+        && (material.specular.x > 0.0F
+            || material.specular.y > 0.0F
+            || material.specular.z > 0.0F);
 }
 
 bool same_normal_binding(const NormalBinding& a, const NormalBinding& b) {
@@ -393,6 +394,12 @@ void validate_material_state(const MaterialState& material) {
         || material.emissive.z < 0.0F || material.emissive.z > 1.0F) {
         throw std::invalid_argument("material emissive components must be finite and within [0, 1]");
     }
+    switch (material.shading_model) {
+        case MaterialShadingModel::BlinnPhong:
+        case MaterialShadingModel::Lambert:
+            return;
+    }
+    throw std::invalid_argument("material uses an unknown shading model");
 }
 
 void validate_pack(const VaryingPack& pack) {
@@ -697,7 +704,8 @@ bool fixed_lighting_enabled(
 const NormalBinding* active_normal_binding(
     const DirectionalLight& directional_light,
     const PointLight& point_light,
-    const FixedLightCollection& fixed_lights) {
+    const FixedLightCollection& fixed_lights,
+    const MaterialState& material) {
     if (fixed_lights.count != 0U) {
         if (fixed_lights.count > kMaxFixedLights) {
             return nullptr;
@@ -713,7 +721,8 @@ const NormalBinding* active_normal_binding(
     if (fixed_lights.environment_diffuse) {
         return &fixed_lights.environment_diffuse->normal;
     }
-    if (fixed_lights.environment_reflection) {
+    if (fixed_lights.environment_reflection
+        && material.shading_model == MaterialShadingModel::BlinnPhong) {
         return &fixed_lights.environment_reflection->normal;
     }
     return nullptr;
@@ -1050,7 +1059,7 @@ void preflight_mesh_range_submission(
     const BaseColorSource source = prepare_base_color_source(base_color_source, texture_binding);
     validate_material_state(material_state);
     const NormalBinding* normal_binding = active_normal_binding(
-        directional_light, point_light, fixed_lights);
+        directional_light, point_light, fixed_lights, material_state);
     validate_mesh_range(mesh, range, color_binding, texture_binding, source, normal_binding);
 
     if (normal_binding != nullptr && !mesh.vertices.empty()) {

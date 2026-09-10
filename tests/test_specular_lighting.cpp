@@ -13,6 +13,7 @@
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/math.hpp"
 #include "tiny_renderer/model_fingerprint.hpp"
+#include "tiny_renderer/model_inspection.hpp"
 #include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/mtl_loader.hpp"
 #include "tiny_renderer/obj_loader.hpp"
@@ -553,6 +554,180 @@ void test_specular_texture_prepared_lifetime_sampler_and_list_preflight() {
     check(framebuffer.stencil_at(32U, 32U) == before_stencil,
           "later map_Ks UV rejection occurs before earlier list stencil writes");
 }
+
+
+void test_explicit_material_shading_model_contract() {
+    MaterialState legacy = glossy_material();
+    MaterialState explicit_blinn = legacy;
+    explicit_blinn.shading_model = MaterialShadingModel::BlinnPhong;
+    MaterialState lambert = legacy;
+    lambert.shading_model = MaterialShadingModel::Lambert;
+
+    const float legacy_highlight = render_center_red(legacy, {0.0F, 0.0F, 4.0F});
+    const float explicit_highlight = render_center_red(explicit_blinn, {0.0F, 0.0F, 4.0F});
+    const float lambert_specular = render_center_red(lambert, {0.0F, 0.0F, 4.0F});
+    check_near(legacy_highlight, explicit_highlight,
+               "default material model remains explicit Blinn-Phong compatible");
+    check(legacy_highlight > 0.9F,
+          "default Blinn-Phong keeps the historical aligned highlight");
+    check_near(lambert_specular, 0.0F,
+               "Lambert disables direct specular even when Ks remains non-zero");
+
+    MaterialState diffuse_lambert;
+    diffuse_lambert.albedo = {0.4F, 0.2F, 0.1F};
+    diffuse_lambert.specular = {1.0F, 1.0F, 1.0F};
+    diffuse_lambert.shading_model = MaterialShadingModel::Lambert;
+    check_near(render_center_red(diffuse_lambert, {0.0F, 0.0F, 4.0F}), 0.4F,
+               "Lambert remains a lit diffuse model rather than becoming unlit");
+}
+
+void test_bounded_mtl_illum_contract() {
+    {
+        std::istringstream input("newmtl defaulted\nKd 1 1 1\n");
+        check(load_mtl(input).at("defaulted").shading_model
+                  == MaterialShadingModel::BlinnPhong,
+              "missing illum preserves the historical Blinn-Phong model");
+    }
+    {
+        std::istringstream input("newmtl matte\nKd 1 1 1\nillum 1\n");
+        check(load_mtl(input).at("matte").shading_model == MaterialShadingModel::Lambert,
+              "bounded MTL illum 1 maps to Lambert");
+    }
+    {
+        std::istringstream input("newmtl glossy\nKd 1 1 1\nillum 2\n");
+        check(load_mtl(input).at("glossy").shading_model
+                  == MaterialShadingModel::BlinnPhong,
+              "bounded MTL illum 2 maps to Blinn-Phong");
+    }
+
+    const auto rejected = [](const std::string& text) {
+        std::istringstream input(text);
+        try {
+            (void)load_mtl(input);
+        } catch (const MtlParseError&) {
+            return true;
+        }
+        return false;
+    };
+    check(rejected("newmtl x\nKd 1 1 1\nillum 1\nillum 2\n"),
+          "duplicate illum is rejected deterministically");
+    check(rejected("newmtl x\nKd 1 1 1\nillum 1.0\n"),
+          "non-integer illum is rejected deterministically");
+    check(rejected("newmtl x\nKd 1 1 1\nillum 0\n"),
+          "unsupported illum 0 is rejected by the bounded contract");
+    check(rejected("newmtl x\nKd 1 1 1\nillum 3\n"),
+          "unsupported illum 3 is rejected by the bounded contract");
+}
+
+void test_file_driven_illum_reaches_model_asset() {
+    const std::filesystem::path fixture =
+        std::filesystem::path(TINY_RENDERER_SOURCE_DIR)
+        / "tests" / "fixtures" / "shading_model.obj";
+    const ModelAsset imported = load_obj_model_asset_file(fixture);
+    check(imported.draws.size() == 1U,
+          "illum fixture produces one canonical material draw");
+    if (imported.draws.empty()) {
+        return;
+    }
+    check(imported.draws[0].material.shading_model == MaterialShadingModel::Lambert,
+          "MTL illum semantic survives into canonical ModelAsset material state");
+    check(inspect_model_asset(imported).find("shading_model=lambert") != std::string::npos,
+          "asset inspection exposes the imported shading model");
+
+    ModelAsset explicit_blinn = imported;
+    explicit_blinn.draws[0].material.shading_model = MaterialShadingModel::BlinnPhong;
+    check(model_asset_fnv1a64(imported) != model_asset_fnv1a64(explicit_blinn),
+          "model fingerprint distinguishes non-default Lambert semantics");
+    ModelAsset explicit_default = explicit_blinn;
+    explicit_default.draws[0].material.shading_model = MaterialShadingModel::BlinnPhong;
+    check(model_asset_fnv1a64(explicit_blinn) == model_asset_fnv1a64(explicit_default),
+          "explicit default Blinn-Phong does not perturb default fingerprint semantics");
+}
+
+void test_lambert_suppresses_environment_reflection_and_preserves_prepared_execution() {
+    Texture2D environment(1U, 1U, std::vector<Vec3>{{0.8F, 0.4F, 0.2F}});
+    ModelRenderOptions options;
+    EnvironmentReflectionLight reflection;
+    reflection.normal = {0U, 1U, 2U};
+    reflection.viewer_position = {0.0F, 0.0F, 4.0F};
+    reflection.environment.texture = &environment;
+    options.fixed_lights.environment_reflection = reflection;
+
+    MaterialState lambert;
+    lambert.albedo = {0.2F, 0.3F, 0.4F};
+    lambert.specular = {1.0F, 1.0F, 1.0F};
+    lambert.shading_model = MaterialShadingModel::Lambert;
+
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex{{-0.7F, -0.7F, 0.0F}, {1.0F, 1.0F, 1.0F}},
+        Vertex{{0.7F, -0.7F, 0.0F}, {1.0F, 1.0F, 1.0F}},
+        Vertex{{0.0F, 0.7F, 0.0F}, {1.0F, 1.0F, 1.0F}},
+    };
+    asset.mesh.triangles = {{{0U, 1U, 2U}}};
+    MaterialDraw draw;
+    draw.range = {0U, 1U};
+    draw.material_name = "lambert-reflection-suppressed";
+    draw.material = lambert;
+    asset.draws.push_back(draw);
+
+    Framebuffer direct(65U, 65U, SampleCount::Four);
+    draw_model_asset(
+        direct, asset,
+        Mat4::identity(), Mat4::identity(), Mat4::identity(), options);
+    const Vec3 center = direct.color_at(32U, 32U);
+    check_near(center.x, 0.2F, "Lambert ignores environment specular red");
+    check_near(center.y, 0.3F, "Lambert ignores environment specular green");
+    check_near(center.z, 0.4F, "Lambert ignores environment specular blue");
+
+    const PreparedModelSubmission prepared = prepare_model_asset(asset, options);
+    Framebuffer prepared_framebuffer(65U, 65U, SampleCount::Four);
+    draw_prepared_model(
+        prepared_framebuffer, prepared,
+        Mat4::identity(), Mat4::identity(), Mat4::identity());
+    check(direct.rgb8() == prepared_framebuffer.rgb8(),
+          "Lambert direct and prepared execution remain byte-identical");
+    for (std::size_t sample = 0U; sample < 4U; ++sample) {
+        check(direct.sample_color_at(32U, 32U, sample).x
+                  == prepared_framebuffer.sample_color_at(32U, 32U, sample).x,
+              "Lambert prepared execution preserves per-sample color ownership");
+    }
+}
+
+void test_unknown_shading_model_fails_closed() {
+    MaterialState invalid;
+    invalid.albedo = {0.7F, 0.2F, 0.1F};
+    invalid.shading_model = static_cast<MaterialShadingModel>(255);
+    bool prepared_threw = false;
+    try {
+        (void)prepare_model_asset(model_from_triangle(invalid));
+    } catch (const std::invalid_argument&) {
+        prepared_threw = true;
+    }
+    check(prepared_threw,
+          "prepared construction rejects an unknown material shading model");
+
+    Framebuffer framebuffer(65U, 65U);
+    framebuffer.clear({0.13F, 0.17F, 0.19F}, 0.8F, 9U);
+    const auto before = framebuffer.rgb8();
+    const float before_depth = framebuffer.depth_at(32U, 32U);
+    bool direct_threw = false;
+    try {
+        Rasterizer rasterizer(
+            framebuffer, {}, {}, {}, invalid, BaseColorSource::ConstantWhite);
+        rasterizer.draw_triangle(
+            canonical_triangle(), Mat4::identity(), Mat4::identity(), Mat4::identity());
+    } catch (const std::invalid_argument&) {
+        direct_threw = true;
+    }
+    check(direct_threw,
+          "direct raster rejects an unknown material shading model");
+    check(framebuffer.rgb8() == before,
+          "unknown shading model rejects before color mutation");
+    check(framebuffer.depth_at(32U, 32U) == before_depth,
+          "unknown shading model rejects before depth mutation");
+}
+
 }  // namespace
 
 int main() {
@@ -566,6 +741,11 @@ int main() {
         test_map_ks_import_and_shared_linear_cache();
         test_specular_texture_modulates_direct_and_environment_specular();
         test_specular_texture_prepared_lifetime_sampler_and_list_preflight();
+        test_explicit_material_shading_model_contract();
+        test_bounded_mtl_illum_contract();
+        test_file_driven_illum_reaches_model_asset();
+        test_lambert_suppresses_environment_reflection_and_preserves_prepared_execution();
+        test_unknown_shading_model_fails_closed();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
