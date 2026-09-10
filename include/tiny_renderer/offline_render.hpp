@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -58,6 +59,7 @@ struct OfflineRenderSettings {
 enum class OfflineSceneOrdering {
     InputOrder,
     BackToFront,
+    MixedTransparency,
 };
 
 // Bounded tooling-level transparency policies. They only configure existing
@@ -119,11 +121,15 @@ void validate_offline_scene_camera(const OfflineSceneCamera& camera);
 // One borrowed entry in a bounded flat scene. The asset and render options are
 // snapshotted into PreparedModelSubmission objects before any returned render
 // can exist; there is deliberately no hierarchy, persistent scene graph, or
-// alternate model/raster ownership path.
+// alternate model/raster ownership path. An optional declared transparency
+// mode applies the bounded tooling policy to the snapshot. A missing declaration
+// preserves caller-owned ModelRenderOptions and remains valid for legacy input
+// and back-to-front ordering; mixed ordering requires an explicit declaration.
 struct OfflineSceneEntry {
     const ModelAsset* asset{nullptr};
     Mat4 model{Mat4::identity()};
     ModelRenderOptions options{};
+    std::optional<OfflineSceneTransparencyMode> transparency_mode{};
 };
 
 // Parsed CLI-facing flat-scene description. Paths are resolved as sibling OBJ
@@ -265,7 +271,7 @@ inline void reject_offline_scene_extra_tokens(
 
 // Strict bounded text format:
 //   tiny-renderer-scene-v1
-//   ordering input|back-to-front        # optional, at most once
+//   ordering input|back-to-front|mixed-transparency  # optional, at most once
 //   camera EX EY EZ TX TY TZ UX UY UZ VFOV NEAR FAR  # optional, at most once
 //   model FILE.obj TX TY TZ SCALE RY [inherit|lambert|blinn-phong]
 //        [opaque|source-alpha|alpha-to-coverage]       # repeat, max 256 entries
@@ -319,17 +325,19 @@ inline void reject_offline_scene_extra_tokens(
                 detail::offline_scene_manifest_error(
                     path,
                     line_number,
-                    "ordering requires input or back-to-front");
+                    "ordering requires input, back-to-front, or mixed-transparency");
             }
             if (value == "input") {
                 manifest.ordering = OfflineSceneOrdering::InputOrder;
             } else if (value == "back-to-front") {
                 manifest.ordering = OfflineSceneOrdering::BackToFront;
+            } else if (value == "mixed-transparency") {
+                manifest.ordering = OfflineSceneOrdering::MixedTransparency;
             } else {
                 detail::offline_scene_manifest_error(
                     path,
                     line_number,
-                    "ordering must be input or back-to-front");
+                    "ordering must be input, back-to-front, or mixed-transparency");
             }
             detail::reject_offline_scene_extra_tokens(path, line_number, line);
             ordering_seen = true;
@@ -471,10 +479,13 @@ inline void reject_offline_scene_extra_tokens(
 
 // Renders an ordered heterogeneous flat scene using the canonical prepared
 // model list executor. InputOrder preserves caller entry order. BackToFront
-// delegates to the established deterministic painter-order helper and inherits
-// its bounded entry-level semantics and vertex-program rejection. A supplied
-// camera preserves entry transforms in world space; absent camera preserves the
-// combined-bounds auto-fit contract. Empty scenes are valid clear/environment-
+// uses the established deterministic painter order. MixedTransparency requires
+// explicit per-entry transparency declarations, executes Opaque/A2C entries in
+// caller order first, then SourceAlpha entries in stable back-to-front order.
+// All ordering and target-dependent prepared-list validation is completed before
+// the first clear/environment/geometry framebuffer mutation. A supplied camera
+// preserves entry transforms in world space; absent camera preserves the
+// combined-bounds auto-fit contract. Empty scenes remain valid clear/environment-
 // only renders.
 [[nodiscard]] Framebuffer render_scene_preview(
     std::span<const OfflineSceneEntry> entries,

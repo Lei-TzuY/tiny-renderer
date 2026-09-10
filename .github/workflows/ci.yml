@@ -65,6 +65,9 @@ jobs:
             echo "alpha-to-coverage scene mode did not change opacity rendering" >&2
             exit 1
           fi
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_mixed.trscene build/transparency_mixed_a.ppm 96 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_mixed.trscene build/transparency_mixed_b.ppm 96 64 4
+          cmp build/transparency_mixed_a.ppm build/transparency_mixed_b.ppm
       - name: Reject unsafe, invalid-camera, invalid-shading, or invalid-transparency flat-scene manifests
         run: |
           if ./build/tiny_renderer_render tests/fixtures/flat_scene_unsafe.trscene build/unsafe_scene.ppm 64 64 4; then
@@ -129,6 +132,7 @@ jobs:
           ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_opaque.trscene build/transparency_opaque.ppm 64 64 4
           ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_source_alpha.trscene build/transparency_source_alpha.ppm 64 64 4
           ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_a2c.trscene build/transparency_a2c.ppm 64 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_mixed.trscene build/transparency_mixed.ppm 96 64 4
           if cmp -s build/transparency_opaque.ppm build/transparency_source_alpha.ppm; then
             echo "source-alpha scene mode did not change opacity rendering under sanitizers" >&2
             exit 1

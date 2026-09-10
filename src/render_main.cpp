@@ -435,6 +435,8 @@ const char* ordering_name(tiny_renderer::OfflineSceneOrdering ordering) {
             return "input";
         case tiny_renderer::OfflineSceneOrdering::BackToFront:
             return "back-to-front";
+        case tiny_renderer::OfflineSceneOrdering::MixedTransparency:
+            return "mixed-transparency";
     }
     throw std::logic_error("unknown offline scene ordering after manifest validation");
 }
@@ -454,7 +456,7 @@ void print_usage() {
            " [--environment-reflection-anisotropy 1|2|4]"
            " [--environment-reflection-footprint RADIANS]"
            " [--environment-reflection-material-shininess]\n"
-        << "  .trscene format: tiny-renderer-scene-v1; optional 'ordering input|back-to-front';"
+        << "  .trscene format: tiny-renderer-scene-v1; optional 'ordering input|back-to-front|mixed-transparency';"
            " optional 'camera EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR';"
            " repeat 'model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [inherit|lambert|blinn-phong]"
            " [opaque|source-alpha|alpha-to-coverage]' (max 256 sibling OBJ files)\n"
@@ -652,8 +654,6 @@ int main(int argc, char** argv) {
                     assets.back(), entry.shading_model_override);
                 options.push_back(preview_options(assets.back()));
                 apply_texture_sampler_options(options.back(), parsed);
-                tiny_renderer::apply_offline_scene_transparency_mode(
-                    options.back(), entry.transparency_mode);
             }
 
             if (!assets.empty() && (diffuse_environment || reflection_environment)) {
@@ -679,6 +679,7 @@ int main(int argc, char** argv) {
                     &assets[i],
                     manifest.entries[i].model,
                     options[i],
+                    manifest.entries[i].transparency_mode,
                 });
             }
             framebuffer = tiny_renderer::render_scene_preview(

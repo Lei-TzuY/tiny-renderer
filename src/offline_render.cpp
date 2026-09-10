@@ -66,6 +66,7 @@ void validate_scene_ordering(OfflineSceneOrdering ordering) {
     switch (ordering) {
         case OfflineSceneOrdering::InputOrder:
         case OfflineSceneOrdering::BackToFront:
+        case OfflineSceneOrdering::MixedTransparency:
             return;
     }
     throw std::invalid_argument("offline scene uses an unknown ordering policy");
@@ -500,9 +501,18 @@ Framebuffer render_scene_preview(
         if (entry.asset == nullptr) {
             throw std::invalid_argument("offline scene entry requires a model asset");
         }
+        if (ordering == OfflineSceneOrdering::MixedTransparency
+            && !entry.transparency_mode.has_value()) {
+            throw std::invalid_argument(
+                "mixed-transparency scene ordering requires an explicit transparency mode for every entry");
+        }
+        ModelRenderOptions options = entry.options;
+        if (entry.transparency_mode) {
+            apply_offline_scene_transparency_mode(options, *entry.transparency_mode);
+        }
         prepared.push_back(prepare_model_asset(
             *entry.asset,
-            inject_offline_environment(settings, entry.options, active_camera.eye)));
+            inject_offline_environment(settings, std::move(options), active_camera.eye)));
     }
 
     std::optional<ModelBounds> bounds;
@@ -510,10 +520,11 @@ Framebuffer render_scene_preview(
         bounds = scene_bounds(prepared, entries);
     }
 
-    Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
-    framebuffer.clear(settings.clear_color);
-    draw_preview_environment(framebuffer, settings, active_camera);
-    if (camera ? !scene_has_geometry(prepared) : !bounds.has_value()) {
+    const bool has_geometry = camera ? scene_has_geometry(prepared) : bounds.has_value();
+    if (!has_geometry) {
+        Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
+        framebuffer.clear(settings.clear_color);
+        draw_preview_environment(framebuffer, settings, active_camera);
         return framebuffer;
     }
 
@@ -531,6 +542,48 @@ Framebuffer render_scene_preview(
 
     const std::span<const PreparedModelListEntry> render_span{
         render_entries.data(), render_entries.size()};
+
+    std::vector<PreparedModelListEntry> ordered_entries;
+    std::vector<PreparedModelListEntry> depth_writing_entries;
+    std::vector<PreparedModelListEntry> source_alpha_entries;
+    std::vector<PreparedModelListEntry> ordered_source_alpha_entries;
+
+    switch (ordering) {
+        case OfflineSceneOrdering::InputOrder:
+            break;
+        case OfflineSceneOrdering::BackToFront:
+            ordered_entries = order_prepared_model_list_back_to_front(
+                render_span, geometry.view);
+            break;
+        case OfflineSceneOrdering::MixedTransparency:
+            depth_writing_entries.reserve(entries.size());
+            source_alpha_entries.reserve(entries.size());
+            for (std::size_t i = 0U; i < entries.size(); ++i) {
+                switch (*entries[i].transparency_mode) {
+                    case OfflineSceneTransparencyMode::Opaque:
+                    case OfflineSceneTransparencyMode::AlphaToCoverage:
+                        depth_writing_entries.push_back(render_entries[i]);
+                        break;
+                    case OfflineSceneTransparencyMode::SourceAlpha:
+                        source_alpha_entries.push_back(render_entries[i]);
+                        break;
+                }
+            }
+            ordered_source_alpha_entries = order_prepared_model_list_back_to_front(
+                std::span<const PreparedModelListEntry>{
+                    source_alpha_entries.data(), source_alpha_entries.size()},
+                geometry.view);
+            break;
+    }
+
+    Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
+    // Complete target-dependent validation for every entry before clear,
+    // environment background, or geometry can mutate the returned target.
+    preflight_prepared_model_list(framebuffer, render_span);
+
+    framebuffer.clear(settings.clear_color);
+    draw_preview_environment(framebuffer, settings, active_camera);
+
     switch (ordering) {
         case OfflineSceneOrdering::InputOrder:
             draw_prepared_model_list(
@@ -540,9 +593,24 @@ Framebuffer render_scene_preview(
                 geometry.projection);
             break;
         case OfflineSceneOrdering::BackToFront:
-            draw_prepared_model_list_back_to_front(
+            draw_prepared_model_list(
                 framebuffer,
-                render_span,
+                std::span<const PreparedModelListEntry>{
+                    ordered_entries.data(), ordered_entries.size()},
+                geometry.view,
+                geometry.projection);
+            break;
+        case OfflineSceneOrdering::MixedTransparency:
+            draw_prepared_model_list(
+                framebuffer,
+                std::span<const PreparedModelListEntry>{
+                    depth_writing_entries.data(), depth_writing_entries.size()},
+                geometry.view,
+                geometry.projection);
+            draw_prepared_model_list(
+                framebuffer,
+                std::span<const PreparedModelListEntry>{
+                    ordered_source_alpha_entries.data(), ordered_source_alpha_entries.size()},
                 geometry.view,
                 geometry.projection);
             break;

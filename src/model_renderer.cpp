@@ -374,6 +374,33 @@ void draw_validated_model_impl(
     }
 }
 
+std::vector<detail::PreparedVertexMesh> prepare_and_preflight_prepared_model_list(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedModelListEntry> entries) {
+    for (const PreparedModelListEntry& entry : entries) {
+        if (entry.prepared == nullptr) {
+            throw std::invalid_argument("prepared model list entry requires a prepared plan");
+        }
+    }
+
+    std::vector<detail::PreparedVertexMesh> meshes;
+    meshes.reserve(entries.size());
+    for (const PreparedModelListEntry& entry : entries) {
+        meshes.push_back(detail::prepare_vertex_program_mesh(
+            entry.prepared->options().vertex_program,
+            entry.prepared->asset().mesh));
+    }
+
+    for (std::size_t i = 0U; i < entries.size(); ++i) {
+        preflight_prepared_model_transform(
+            framebuffer,
+            *entries[i].prepared,
+            meshes[i].get(),
+            entries[i].model);
+    }
+    return meshes;
+}
+
 }  // namespace
 
 PreparedModelSubmission::PreparedModelSubmission(ModelAsset asset, ModelRenderOptions options)
@@ -446,6 +473,15 @@ void draw_prepared_model_instances(
     }
 }
 
+void preflight_prepared_model_list(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedModelListEntry> entries) {
+    if (entries.empty()) {
+        return;
+    }
+    (void)prepare_and_preflight_prepared_model_list(framebuffer, entries);
+}
+
 void draw_prepared_model_list(
     Framebuffer& framebuffer,
     std::span<const PreparedModelListEntry> entries,
@@ -455,27 +491,8 @@ void draw_prepared_model_list(
         return;
     }
 
-    for (const PreparedModelListEntry& entry : entries) {
-        if (entry.prepared == nullptr) {
-            throw std::invalid_argument("prepared model list entry requires a prepared plan");
-        }
-    }
-
-    std::vector<detail::PreparedVertexMesh> meshes;
-    meshes.reserve(entries.size());
-    for (const PreparedModelListEntry& entry : entries) {
-        meshes.push_back(detail::prepare_vertex_program_mesh(
-            entry.prepared->options().vertex_program,
-            entry.prepared->asset().mesh));
-    }
-
-    for (std::size_t i = 0U; i < entries.size(); ++i) {
-        preflight_prepared_model_transform(
-            framebuffer,
-            *entries[i].prepared,
-            meshes[i].get(),
-            entries[i].model);
-    }
+    std::vector<detail::PreparedVertexMesh> meshes =
+        prepare_and_preflight_prepared_model_list(framebuffer, entries);
 
     for (std::size_t i = 0U; i < entries.size(); ++i) {
         execute_prepared_model_transform(
