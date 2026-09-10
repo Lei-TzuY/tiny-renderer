@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "tiny_renderer/offline_render.hpp"
 #include "tiny_renderer/prepared_spatial.hpp"
 #include "tiny_renderer/vertex_program.hpp"
 
@@ -24,7 +25,9 @@ void check(bool condition, const std::string& message) {
     }
 }
 
-ModelAsset unit_triangle_asset(const Vec3& color = {0.8F, 0.3F, 0.1F}) {
+ModelAsset unit_triangle_asset(
+    const Vec3& color = {0.8F, 0.3F, 0.1F},
+    float opacity = 1.0F) {
     ModelAsset asset;
     asset.mesh.vertices = {
         Vertex::with_varyings({-0.5F, -0.5F, 0.0F}, VaryingPack{}),
@@ -35,6 +38,7 @@ ModelAsset unit_triangle_asset(const Vec3& color = {0.8F, 0.3F, 0.1F}) {
     MaterialDraw draw;
     draw.range = {0U, 1U};
     draw.material.albedo = color;
+    draw.material.opacity = opacity;
     asset.draws.push_back(draw);
     return asset;
 }
@@ -272,6 +276,111 @@ void test_empty_filter_is_deterministic() {
     check(visible.empty(), "empty prepared visibility input is a deterministic empty result");
 }
 
+OfflineSceneCamera explicit_visibility_camera() {
+    OfflineSceneCamera camera;
+    camera.eye = {0.0F, 0.0F, 3.0F};
+    camera.target = {0.0F, 0.0F, 0.0F};
+    camera.up = {0.0F, 1.0F, 0.0F};
+    camera.vertical_fov_radians = radians(60.0F);
+    camera.near_plane = 0.1F;
+    camera.far_plane = 20.0F;
+    return camera;
+}
+
+OfflineRenderSettings visibility_render_settings() {
+    OfflineRenderSettings settings;
+    settings.width = 65U;
+    settings.height = 65U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.125F, 0.25F, 0.375F};
+    return settings;
+}
+
+void test_offline_mixed_source_alpha_visibility_preserves_output() {
+    const ModelAsset opaque = unit_triangle_asset({0.1F, 0.3F, 0.8F});
+    const ModelAsset visible_alpha = unit_triangle_asset({0.9F, 0.2F, 0.1F}, 0.5F);
+    const ModelAsset off_frustum_alpha = unit_triangle_asset({0.1F, 0.9F, 0.2F}, 0.75F);
+
+    OfflineSceneEntry opaque_entry;
+    opaque_entry.asset = &opaque;
+    opaque_entry.model = Mat4::translation({0.0F, 0.0F, -0.25F});
+    opaque_entry.transparency_mode = OfflineSceneTransparencyMode::Opaque;
+
+    OfflineSceneEntry visible_entry;
+    visible_entry.asset = &visible_alpha;
+    visible_entry.transparency_mode = OfflineSceneTransparencyMode::SourceAlpha;
+
+    OfflineSceneEntry off_frustum_entry;
+    off_frustum_entry.asset = &off_frustum_alpha;
+    off_frustum_entry.model = Mat4::translation({20.0F, 0.0F, 0.0F});
+    off_frustum_entry.transparency_mode = OfflineSceneTransparencyMode::SourceAlpha;
+
+    const std::array<OfflineSceneEntry, 3> with_off_frustum{{
+        opaque_entry,
+        visible_entry,
+        off_frustum_entry,
+    }};
+    const std::array<OfflineSceneEntry, 2> manually_visible{{
+        opaque_entry,
+        visible_entry,
+    }};
+
+    const OfflineRenderSettings settings = visibility_render_settings();
+    const OfflineSceneCamera camera = explicit_visibility_camera();
+    const Framebuffer filtered_scene = render_scene_preview(
+        with_off_frustum,
+        settings,
+        OfflineSceneOrdering::MixedTransparency,
+        camera);
+    const Framebuffer manual_scene = render_scene_preview(
+        manually_visible,
+        settings,
+        OfflineSceneOrdering::MixedTransparency,
+        camera);
+
+    check(
+        filtered_scene.rgb8() == manual_scene.rgb8()
+            && filtered_scene.fnv1a64() == manual_scene.fnv1a64(),
+        "offline mixed-transparency visibility preserves resolved output when an off-frustum source-alpha draw is removed");
+    check_framebuffers_equal(
+        filtered_scene,
+        manual_scene,
+        "offline mixed-transparency source-alpha visibility integration");
+}
+
+void test_off_frustum_source_alpha_still_receives_full_target_preflight() {
+    const ModelAsset visible_alpha = unit_triangle_asset({0.9F, 0.2F, 0.1F}, 0.5F);
+    const ModelAsset invalid_off_frustum_alpha = unit_triangle_asset({0.2F, 0.8F, 0.3F}, 0.5F);
+
+    OfflineSceneEntry visible_entry;
+    visible_entry.asset = &visible_alpha;
+    visible_entry.transparency_mode = OfflineSceneTransparencyMode::SourceAlpha;
+
+    OfflineSceneEntry invalid_entry;
+    invalid_entry.asset = &invalid_off_frustum_alpha;
+    invalid_entry.model = Mat4::translation({20.0F, 0.0F, 0.0F});
+    invalid_entry.transparency_mode = OfflineSceneTransparencyMode::SourceAlpha;
+    // This definition is statically valid but cannot fit the actual render
+    // target. M84 must continue to preflight the complete original plan before
+    // executing only its visibility-filtered subset.
+    invalid_entry.options.viewport_state.viewport = RasterRect{0U, 0U, 4096U, 4096U};
+
+    const std::array<OfflineSceneEntry, 2> scene{{visible_entry, invalid_entry}};
+    bool threw = false;
+    try {
+        (void)render_scene_preview(
+            scene,
+            visibility_render_settings(),
+            OfflineSceneOrdering::MixedTransparency,
+            explicit_visibility_camera());
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    check(
+        threw,
+        "off-frustum source-alpha draws remain subject to complete target-dependent fail-closed preflight");
+}
+
 }  // namespace
 
 int main() {
@@ -282,6 +391,8 @@ int main() {
         test_conservative_large_bounds_are_not_false_rejected();
         test_visibility_filter_fails_closed_on_unrepresentable_state();
         test_empty_filter_is_deterministic();
+        test_offline_mixed_source_alpha_visibility_preserves_output();
+        test_off_frustum_source_alpha_still_receives_full_target_preflight();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
