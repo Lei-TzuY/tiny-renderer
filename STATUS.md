@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains older detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Integrated architecture through Milestone 81
+## Integrated architecture through Milestone 82
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -14,51 +14,49 @@ Milestone 72 adds deterministic entry-level painter ordering for caller-selected
 
 Milestones 74–80 promote prepared-list execution into bounded flat-scene and CLI transactions with combined-bounds auto-fit, optional explicit perspective camera, scene material/shading overrides, explicit `opaque` / `source-alpha` / `alpha-to-coverage` policies, and `ordering mixed-transparency`. M80 executes opaque/A2C entries first in caller order and source-alpha entries in stable entry-level far-to-near order. Scene ordering and target-dependent preflight occur before framebuffer clear, environment drawing, or geometry submission.
 
-Milestone 81 establishes the first real prepared per-draw spatial contract. `PreparedSpatialSubmission` owns the same validated `PreparedModelSubmission` snapshot plus one immutable object-space AABB/center record for each canonical `MaterialDraw`. `order_prepared_model_draws_back_to_front` flattens heterogeneous prepared draws and returns a stable global far-to-near plan keyed by affine-transformed prepared centers. Equal-depth records preserve caller entry and canonical draw order. Non-finite/projective transforms, null submissions, plan-size overflow, and vertex-program geometry not represented by canonical bounds fail closed. M81 plans work but deliberately does not execute them.
+Milestone 81 establishes the first real prepared per-draw spatial contract. `PreparedSpatialSubmission` owns the same validated `PreparedModelSubmission` snapshot plus one immutable object-space AABB/center record for each canonical `MaterialDraw`. `order_prepared_model_draws_back_to_front` flattens heterogeneous prepared draws and returns a stable global far-to-near plan keyed by affine-transformed prepared centers. Equal-depth records preserve caller entry and canonical draw order. Non-finite/projective transforms, null submissions, plan-size overflow, and vertex-program geometry not represented by canonical bounds fail closed.
 
-The exact integrated `main` commit is `2c024da96e3e57a67228bb1b46a36b6aac572358` (Milestone 81). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
+Milestone 82 makes that per-draw spatial plan executable. `preflight_prepared_draw_order` validates a complete selected plan before mutation and `draw_prepared_draw_order` delegates each selected record to the canonical prepared material mapping plus `draw_mesh_range`. Mixed-transparency offline rendering keeps opaque/A2C entries in its depth-writing phase while promoting source-alpha work to one global per-draw far-to-near plan across heterogeneous models. Historical input-order and entry-level back-to-front paths remain intact.
+
+The exact integrated `main` commit is `3015009191cf7ad265b87e830982bb9567b3ca45` (Milestone 82). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
 
 The repository also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, bounded PPM/TGA/PFM texture import through the shared image dispatcher, and bounded headless OBJ/flat-scene preview/render tooling.
 
 ### Milestone-number and concurrency note
 
-Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence. The historical `milestone-73-prepared-spatial-metadata` branch contains no newer spatial implementation than its old base and is superseded by integrated M81.
+Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence. The historical `milestone-73-prepared-spatial-metadata` branch is superseded by integrated M81. Milestone 83 is the active implementation surface on branch `milestone-83-prepared-draw-frustum-culling`; no separate parallel M83 implementation should be opened while it is active.
 
-Milestone 82 is the active implementation surface on branch `milestone-82-prepared-draw-executor`.
+## Milestone 83 candidate — conservative prepared-draw frustum visibility rejection
 
-## Milestone 82 candidate — canonical prepared-draw execution and mixed-scene integration
-
-M82 turns the M81 planning contract into executable draw-granularity scheduling without creating a second raster path. The selected draw executor lives beside the existing prepared-model executor so material, texture, lighting, shadow, depth/stencil/blend, alpha-test, and alpha-to-coverage state continue to flow through the same canonical `model_rasterizer` mapping and `draw_mesh_range` path.
+M83 consumes the AABBs already owned by M81 and the executable draw plans added by M82. It adds a bounded visibility filter that can remove a prepared draw only when its complete prepared object-space AABB is provably outside the camera homogeneous clip volume. It does not create a second raster path and does not claim a performance improvement.
 
 Acceptance surface:
 
-- `preflight_prepared_draw_order` validates every selected `PreparedDrawOrderEntry` before any selected draw may mutate the target;
-- `draw_prepared_draw_order` executes the supplied plan exactly in caller order after complete plan preflight and delegates each record to the canonical prepared material/raster mapping plus selected `DrawRange` execution;
-- null spatial submissions, non-finite planning depths, non-affine model transforms, unavailable draw indices, metadata/range inconsistency, and vertex-program geometry outside the M81 spatial contract fail closed;
-- a later target-dependent failure such as alpha-to-coverage on a 1x framebuffer rejects the complete plan before an earlier valid draw can write color/depth/stencil;
-- standalone prepared-draw execution is byte/hash-equivalent to explicit far-to-near submissions of the same selected ranges;
-- `OfflineSceneOrdering::MixedTransparency` preserves opaque/A2C caller order as the depth-writing phase but promotes only its source-alpha phase to one global per-draw far-to-near plan across heterogeneous models;
-- source-alpha spatial preparation moves the already-prepared model snapshots into spatial owners rather than copying a model mesh per draw;
-- mixed-scene ordering plus target-dependent preflight for both depth-writing entries and source-alpha draw records completes before framebuffer clear, environment drawing, or geometry submission;
-- historical `InputOrder` and entry-level `BackToFront` execution remain on their existing prepared-list paths and keep their established semantics;
-- regression coverage includes a source-alpha model whose near/far material draws straddle a middle draw from another model, proving global draw ordering against an explicit far-to-near reference and distinguishing it from canonical per-model draw order;
-- the slice does not sort triangles, infer transparency from materials, support vertex-program spatial bounds, add frustum culling, claim order-independent transparency, or make performance/image-quality claims.
+- `filter_prepared_draw_order_to_frustum` accepts an existing ordered `PreparedDrawOrderEntry` span plus affine view and finite projection transforms and returns retained records in exact caller order;
+- each selected record reuses the prepared draw's immutable AABB; no triangle/index rescan or per-draw mesh copy is introduced;
+- all eight AABB corners are transformed by `projection * view * model`; a draw is rejected only when every corner lies strictly outside the same one of the six homogeneous clip half-spaces;
+- relative epsilon tolerance biases clip-boundary and numerically ambiguous cases toward retention, preventing the visibility layer from claiming visibility it cannot conservatively prove absent;
+- affine model/view constraints remain the same bounded spatial contract used by M81/M82, while finite perspective projection is allowed;
+- null submissions, non-finite inherited planning depth, unavailable draw indices, metadata/range mismatch, non-finite transforms/results, projective model/view transforms, and vertex-program geometry outside canonical prepared bounds fail closed;
+- deterministic regression coverage exercises all six clip planes, exact boundary contact, frustum-crossing bounds, large conservative bounds, stable retained order, empty plans, invalid-state rejection, and perspective execution;
+- executing the retained plan is exact RGB/depth/stencil sample-equivalent to executing the unfiltered plan when removed draws are truly off-frustum, including a 4x framebuffer target;
+- M83 does not add occlusion culling, triangle-level culling, BVHs/spatial trees, scene-wide automatic scheduling, vertex-program bounds, GPU APIs, or performance/image-quality claims.
 
 ## Architectural invariants
 
 - One CPU raster path owns clipping, culling, fixed-point top-left coverage, interpolation, shading/program execution, sample coverage, stencil/depth, blending, and color writes.
 - `Framebuffer` remains the authoritative per-sample ownership primitive; higher layers validate and submit rather than duplicating ownership semantics.
 - Model/prepared/list/draw-plan submission validates complete state before writes when later invalid state could otherwise partially commit earlier work.
-- Prepared draw execution reuses `model_rasterizer` and `draw_mesh_range`; the spatial layer owns metadata/planning, not material or framebuffer semantics.
-- Prepared spatial metadata is derived once from the same owned canonical model snapshot that is later submitted; schedulers consume metadata rather than rescanning triangle/index data for every sort.
-- Spatial ordering and execution reject geometry mutations they cannot represent, including vertex-program position changes and projective model/view transforms in the bounded contract.
+- Prepared draw execution reuses `model_rasterizer` and `draw_mesh_range`; the spatial layer owns metadata/planning/visibility, not material or framebuffer semantics.
+- Prepared spatial metadata is derived once from the same owned canonical model snapshot that is later submitted; schedulers consume metadata rather than rescanning triangle/index data for every sort or visibility test.
+- Spatial ordering, visibility, and execution reject geometry mutations they cannot represent, including vertex-program position changes and projective model/view transforms in the bounded contract.
+- Conservative visibility may retain false positives but must not reject a draw unless its prepared bound proves it cannot intersect the homogeneous clip volume.
 - Offline scene orchestration owns bounded preparation, framing/camera selection, explicit execution classification, environment injection, and executor selection; it does not own raster/material/depth/blend math.
-- Flat-scene manifest import delegates asset import to the canonical OBJ/model loader and rendering to `render_scene_preview`.
 - Texture roles and environment lookups reuse `Texture2D`, sampler validation, mip generation, transfer semantics, and gradient sampling rather than role-specific filters.
 - Imported asset textures use shared ownership; prepared submissions retain resource lifetime independently from source-object lifetime.
-- Default/trailing state additions preserve historical behavior unless the caller explicitly opts into the new capability.
+- Default/trailing state additions preserve historical behavior unless the caller explicitly opts into a new capability.
 - Performance claims require controlled measurements; CI duration is never treated as a benchmark.
 
-## Promotion after Milestone 82
+## Promotion after Milestone 83
 
-After M82 converges, re-read exact live `main`, open PRs/issues, active branches, and the complete prepared-spatial contract before selecting the next slice. The next architectural frontier should be functional prepared-draw visibility rejection using the already-owned AABBs only if a conservative, deterministic affine view-frustum test can be specified and regression-proven without changing visible output for retained draws or claiming a performance win. If that contract is not yet strong enough, promote another integration gap that consumes M81/M82 metadata rather than farming parser or state micro-features.
+After M83 converges, re-read exact live `main`, open PRs/issues, active branches, and the complete prepared-spatial/offline-render contract before selecting the next slice. If the visibility contract remains conservative under integration evidence, the next higher-value promotion should consume the filtered prepared-draw plan in a real scene execution phase before target mutation, rather than farming more geometric corner cases. Any integration must preserve historical output for retained draws and continue to make no performance claim without controlled measurement.
