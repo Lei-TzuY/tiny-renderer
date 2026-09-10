@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "tiny_renderer/math.hpp"
+#include "tiny_renderer/prepared_spatial.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -545,8 +546,9 @@ Framebuffer render_scene_preview(
 
     std::vector<PreparedModelListEntry> ordered_entries;
     std::vector<PreparedModelListEntry> depth_writing_entries;
-    std::vector<PreparedModelListEntry> source_alpha_entries;
-    std::vector<PreparedModelListEntry> ordered_source_alpha_entries;
+    std::vector<PreparedSpatialSubmission> source_alpha_spatial;
+    std::vector<PreparedSpatialListEntry> source_alpha_spatial_entries;
+    std::vector<PreparedDrawOrderEntry> ordered_source_alpha_draws;
 
     switch (ordering) {
         case OfflineSceneOrdering::InputOrder:
@@ -555,9 +557,17 @@ Framebuffer render_scene_preview(
             ordered_entries = order_prepared_model_list_back_to_front(
                 render_span, geometry.view);
             break;
-        case OfflineSceneOrdering::MixedTransparency:
+        case OfflineSceneOrdering::MixedTransparency: {
             depth_writing_entries.reserve(entries.size());
-            source_alpha_entries.reserve(entries.size());
+            std::size_t source_alpha_count = 0U;
+            for (const OfflineSceneEntry& entry : entries) {
+                if (*entry.transparency_mode == OfflineSceneTransparencyMode::SourceAlpha) {
+                    ++source_alpha_count;
+                }
+            }
+            source_alpha_spatial.reserve(source_alpha_count);
+            source_alpha_spatial_entries.reserve(source_alpha_count);
+
             for (std::size_t i = 0U; i < entries.size(); ++i) {
                 switch (*entries[i].transparency_mode) {
                     case OfflineSceneTransparencyMode::Opaque:
@@ -565,21 +575,38 @@ Framebuffer render_scene_preview(
                         depth_writing_entries.push_back(render_entries[i]);
                         break;
                     case OfflineSceneTransparencyMode::SourceAlpha:
-                        source_alpha_entries.push_back(render_entries[i]);
+                        source_alpha_spatial.push_back(
+                            prepare_spatial_submission(std::move(prepared[i])));
+                        source_alpha_spatial_entries.push_back({
+                            &source_alpha_spatial.back(),
+                            render_entries[i].model,
+                        });
                         break;
                 }
             }
-            ordered_source_alpha_entries = order_prepared_model_list_back_to_front(
-                std::span<const PreparedModelListEntry>{
-                    source_alpha_entries.data(), source_alpha_entries.size()},
+            ordered_source_alpha_draws = order_prepared_model_draws_back_to_front(
+                std::span<const PreparedSpatialListEntry>{
+                    source_alpha_spatial_entries.data(), source_alpha_spatial_entries.size()},
                 geometry.view);
             break;
+        }
     }
 
     Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
-    // Complete target-dependent validation for every entry before clear,
-    // environment background, or geometry can mutate the returned target.
-    preflight_prepared_model_list(framebuffer, render_span);
+    // Complete target-dependent validation for every execution phase before
+    // clear, environment background, or geometry can mutate the returned target.
+    if (ordering == OfflineSceneOrdering::MixedTransparency) {
+        preflight_prepared_model_list(
+            framebuffer,
+            std::span<const PreparedModelListEntry>{
+                depth_writing_entries.data(), depth_writing_entries.size()});
+        preflight_prepared_draw_order(
+            framebuffer,
+            std::span<const PreparedDrawOrderEntry>{
+                ordered_source_alpha_draws.data(), ordered_source_alpha_draws.size()});
+    } else {
+        preflight_prepared_model_list(framebuffer, render_span);
+    }
 
     framebuffer.clear(settings.clear_color);
     draw_preview_environment(framebuffer, settings, active_camera);
@@ -607,10 +634,10 @@ Framebuffer render_scene_preview(
                     depth_writing_entries.data(), depth_writing_entries.size()},
                 geometry.view,
                 geometry.projection);
-            draw_prepared_model_list(
+            draw_prepared_draw_order(
                 framebuffer,
-                std::span<const PreparedModelListEntry>{
-                    ordered_source_alpha_entries.data(), ordered_source_alpha_entries.size()},
+                std::span<const PreparedDrawOrderEntry>{
+                    ordered_source_alpha_draws.data(), ordered_source_alpha_draws.size()},
                 geometry.view,
                 geometry.projection);
             break;

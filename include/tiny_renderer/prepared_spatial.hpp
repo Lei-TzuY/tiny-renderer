@@ -241,4 +241,21 @@ order_prepared_model_draws_back_to_front(
     return ordered;
 }
 
+// Validates every selected prepared draw without submitting fragments. This is
+// the transactional gate for higher-level schedulers that must prove a complete
+// draw plan against the target before framebuffer or environment mutation.
+void preflight_prepared_draw_order(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries);
+
+// Executes the supplied draw sequence exactly in caller order. The executor
+// uses the canonical prepared-model material/raster mapping and selected
+// draw_mesh_range path; it does not re-sort or create a parallel raster path.
+// Complete plan preflight occurs before the first fragment submission.
+void draw_prepared_draw_order(
+    Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries,
+    const Mat4& view,
+    const Mat4& projection);
+
 }  // namespace tiny_renderer

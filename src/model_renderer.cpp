@@ -1,4 +1,5 @@
 #include "tiny_renderer/model_renderer.hpp"
+#include "tiny_renderer/prepared_spatial.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -323,6 +324,80 @@ Rasterizer model_rasterizer(
         options.point_shadow_state);
 }
 
+const MaterialDraw& prepared_draw_for(const PreparedDrawOrderEntry& entry) {
+    if (entry.prepared == nullptr) {
+        throw std::invalid_argument("prepared draw order entry requires a prepared spatial submission");
+    }
+    if (!std::isfinite(entry.view_depth)) {
+        throw std::invalid_argument("prepared draw order entry requires a finite view depth");
+    }
+    detail::validate_spatial_affine_matrix(
+        entry.model,
+        "prepared draw execution model transform");
+
+    const PreparedModelSubmission& prepared = entry.prepared->prepared();
+    if (prepared.options().vertex_program) {
+        throw std::invalid_argument(
+            "prepared draw execution does not support position-changing vertex programs");
+    }
+    const auto metadata = entry.prepared->draws();
+    const ModelAsset& asset = prepared.asset();
+    if (entry.draw_index >= metadata.size() || entry.draw_index >= asset.draws.size()) {
+        throw std::out_of_range("prepared draw order entry references an unavailable material draw");
+    }
+    const MaterialDraw& draw = asset.draws[entry.draw_index];
+    const PreparedDrawSpatialMetadata& spatial = metadata[entry.draw_index];
+    if (spatial.range.first_triangle != draw.range.first_triangle
+        || spatial.range.triangle_count != draw.range.triangle_count) {
+        throw std::logic_error("prepared draw spatial metadata is inconsistent with the owned material draw");
+    }
+    return draw;
+}
+
+void preflight_prepared_draw_entry(
+    const Framebuffer& framebuffer,
+    const PreparedDrawOrderEntry& entry) {
+    const MaterialDraw& draw = prepared_draw_for(entry);
+    const PreparedModelSubmission& prepared = entry.prepared->prepared();
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions& options = prepared.options();
+    detail::validate_alpha_test_state(options.alpha_test_state);
+    detail::preflight_mesh_range_submission(
+        framebuffer,
+        asset.mesh,
+        draw.range,
+        color_binding_for(asset),
+        texture_binding_for(draw, options),
+        options.directional_light,
+        options.point_light,
+        options.fixed_lights,
+        draw.material,
+        base_color_source_for(asset, draw),
+        options.cull_mode,
+        options.front_face,
+        options.depth_state,
+        options.viewport_state,
+        options.stencil_state,
+        options.blend_state,
+        options.alpha_to_coverage_state,
+        options.shadow_state,
+        options.point_shadow_state,
+        &entry.model,
+        false);
+}
+
+void execute_prepared_draw_entry(
+    Framebuffer& framebuffer,
+    const PreparedDrawOrderEntry& entry,
+    const Mat4& view,
+    const Mat4& projection) {
+    const MaterialDraw& draw = prepared_draw_for(entry);
+    const PreparedModelSubmission& prepared = entry.prepared->prepared();
+    const ModelAsset& asset = prepared.asset();
+    Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, prepared.options());
+    rasterizer.draw_mesh_range(asset.mesh, draw.range, entry.model, view, projection);
+}
+
 void execute_prepared_model_transform(
     Framebuffer& framebuffer,
     const PreparedModelSubmission& prepared,
@@ -502,6 +577,25 @@ void draw_prepared_model_list(
             entries[i].model,
             view,
             projection);
+    }
+}
+
+void preflight_prepared_draw_order(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries) {
+    for (const PreparedDrawOrderEntry& entry : entries) {
+        preflight_prepared_draw_entry(framebuffer, entry);
+    }
+}
+
+void draw_prepared_draw_order(
+    Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries,
+    const Mat4& view,
+    const Mat4& projection) {
+    preflight_prepared_draw_order(framebuffer, entries);
+    for (const PreparedDrawOrderEntry& entry : entries) {
+        execute_prepared_draw_entry(framebuffer, entry, view, projection);
     }
 }
 
