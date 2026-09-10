@@ -11,8 +11,10 @@
 
 #include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/offline_render.hpp"
+#include "tiny_renderer/prepared_spatial.hpp"
 #include "tiny_renderer/rasterizer.hpp"
 #include "tiny_renderer/texture.hpp"
+#include "tiny_renderer/vertex_program.hpp"
 
 using namespace tiny_renderer;
 
@@ -25,6 +27,10 @@ void check(bool condition, const std::string& message) {
         ++failures;
         std::cerr << "FAIL: " << message << '\n';
     }
+}
+
+void check_near(float actual, float expected, const std::string& message) {
+    check(nearly_equal(actual, expected), message);
 }
 
 void check_unchanged(
@@ -68,6 +74,36 @@ ModelAsset solid_triangle_asset(const Vec3& color, float opacity = 1.0F) {
     asset.draws.push_back(draw);
     return asset;
 }
+
+ModelAsset two_draw_spatial_asset(float first_z = 0.5F, float second_z = -0.5F) {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-2.0F, -1.0F, first_z}, VaryingPack{}),
+        Vertex::with_varyings({0.0F, -1.0F, first_z}, VaryingPack{}),
+        Vertex::with_varyings({-1.0F, 3.0F, first_z}, VaryingPack{}),
+        Vertex::with_varyings({1.0F, -2.0F, second_z}, VaryingPack{}),
+        Vertex::with_varyings({3.0F, -2.0F, second_z}, VaryingPack{}),
+        Vertex::with_varyings({2.0F, 2.0F, second_z}, VaryingPack{}),
+    };
+    asset.mesh.triangles = {{0U, 1U, 2U}, {3U, 4U, 5U}};
+
+    MaterialDraw first;
+    first.range = {0U, 1U};
+    first.material.albedo = {1.0F, 0.0F, 0.0F};
+
+    MaterialDraw second;
+    second.range = {1U, 1U};
+    second.material.albedo = {0.0F, 0.0F, 1.0F};
+    asset.draws = {first, second};
+    return asset;
+}
+
+class IdentitySpatialVertexProgram final : public VertexProgram {
+public:
+    VertexProgramOutput process(const VertexProgramInput& input) const noexcept override {
+        return {input.position, input.varyings};
+    }
+};
 
 void test_later_model_uv_binding_fails_before_earlier_draw_write() {
     ModelAsset asset;
@@ -253,6 +289,167 @@ void test_mixed_scene_requires_explicit_transparency_declarations() {
     check(threw, "mixed scene rejects entries whose transparency class was not explicitly declared");
 }
 
+void test_prepared_draw_spatial_metadata_is_owned_and_exact() {
+    ModelAsset source = two_draw_spatial_asset();
+    const PreparedSpatialSubmission spatial = prepare_spatial_model(source);
+    source.mesh.vertices[0].position = {99.0F, 99.0F, 99.0F};
+
+    const auto draws = spatial.draws();
+    check(draws.size() == 2U, "prepared spatial submission has one metadata record per material draw");
+    if (draws.size() != 2U) {
+        return;
+    }
+
+    check(draws[0].range.first_triangle == 0U && draws[0].range.triangle_count == 1U,
+          "first prepared spatial record retains its canonical draw range");
+    check_near(draws[0].min.x, -2.0F, "first prepared draw min x");
+    check_near(draws[0].min.y, -1.0F, "first prepared draw min y");
+    check_near(draws[0].min.z, 0.5F, "first prepared draw min z");
+    check_near(draws[0].max.x, 0.0F, "first prepared draw max x");
+    check_near(draws[0].max.y, 3.0F, "first prepared draw max y");
+    check_near(draws[0].max.z, 0.5F, "first prepared draw max z");
+    check_near(draws[0].center.x, -1.0F, "first prepared draw center x");
+    check_near(draws[0].center.y, 1.0F, "first prepared draw center y");
+    check_near(draws[0].center.z, 0.5F, "first prepared draw center z");
+
+    check(draws[1].range.first_triangle == 1U && draws[1].range.triangle_count == 1U,
+          "second prepared spatial record retains its canonical draw range");
+    check_near(draws[1].min.x, 1.0F, "second prepared draw min x");
+    check_near(draws[1].min.y, -2.0F, "second prepared draw min y");
+    check_near(draws[1].min.z, -0.5F, "second prepared draw min z");
+    check_near(draws[1].max.x, 3.0F, "second prepared draw max x");
+    check_near(draws[1].max.y, 2.0F, "second prepared draw max y");
+    check_near(draws[1].max.z, -0.5F, "second prepared draw max z");
+    check_near(draws[1].center.x, 2.0F, "second prepared draw center x");
+    check_near(draws[1].center.y, 0.0F, "second prepared draw center y");
+    check_near(draws[1].center.z, -0.5F, "second prepared draw center z");
+
+    check_near(
+        spatial.prepared().asset().mesh.vertices[0].position.x,
+        -2.0F,
+        "prepared spatial metadata remains coupled to its owned model snapshot");
+}
+
+void test_prepared_draw_spatial_plan_flattens_and_sorts_draws() {
+    const PreparedSpatialSubmission spatial = prepare_spatial_model(two_draw_spatial_asset());
+    const std::array<PreparedSpatialListEntry, 1> entries{
+        PreparedSpatialListEntry{&spatial, Mat4::identity()},
+    };
+    const std::vector<PreparedDrawOrderEntry> ordered =
+        order_prepared_model_draws_back_to_front(entries, Mat4::identity());
+
+    check(ordered.size() == 2U, "prepared draw ordering flattens every material draw");
+    if (ordered.size() == 2U) {
+        check(ordered[0].prepared == &spatial && ordered[0].draw_index == 1U,
+              "far prepared material draw sorts first");
+        check(ordered[1].prepared == &spatial && ordered[1].draw_index == 0U,
+              "near prepared material draw sorts last");
+        check(ordered[0].view_depth < ordered[1].view_depth,
+              "prepared draw ordering exposes monotonic far-to-near view depths");
+    }
+}
+
+void test_prepared_draw_spatial_plan_is_stable_at_equal_depth() {
+    const PreparedSpatialSubmission spatial = prepare_spatial_model(
+        two_draw_spatial_asset(0.0F, 0.0F));
+    const std::array<PreparedSpatialListEntry, 1> entries{
+        PreparedSpatialListEntry{&spatial, Mat4::identity()},
+    };
+    const std::vector<PreparedDrawOrderEntry> ordered =
+        order_prepared_model_draws_back_to_front(entries, Mat4::identity());
+
+    check(ordered.size() == 2U, "equal-depth prepared draw plan contains both draws");
+    if (ordered.size() == 2U) {
+        check(ordered[0].draw_index == 0U && ordered[1].draw_index == 1U,
+              "equal-depth prepared draws preserve canonical draw order");
+    }
+}
+
+void test_prepared_draw_spatial_plan_orders_across_models() {
+    const PreparedSpatialSubmission near_model = prepare_spatial_model(
+        solid_triangle_asset({1.0F, 0.0F, 0.0F}));
+    const PreparedSpatialSubmission far_model = prepare_spatial_model(
+        solid_triangle_asset({0.0F, 0.0F, 1.0F}));
+    const std::array<PreparedSpatialListEntry, 2> entries{
+        PreparedSpatialListEntry{&near_model, Mat4::translation({0.0F, 0.0F, 0.75F})},
+        PreparedSpatialListEntry{&far_model, Mat4::translation({0.0F, 0.0F, -0.75F})},
+    };
+    const std::vector<PreparedDrawOrderEntry> ordered =
+        order_prepared_model_draws_back_to_front(entries, Mat4::identity());
+
+    check(ordered.size() == 2U, "prepared draw plan spans multiple prepared models");
+    if (ordered.size() == 2U) {
+        check(ordered[0].prepared == &far_model && ordered[1].prepared == &near_model,
+              "prepared draw plan sorts globally across model transforms");
+    }
+}
+
+void test_prepared_draw_spatial_rejects_unrepresentable_state() {
+    ModelAsset non_finite = two_draw_spatial_asset();
+    non_finite.mesh.vertices[0].position.x = std::numeric_limits<float>::infinity();
+    bool non_finite_threw = false;
+    try {
+        (void)prepare_spatial_model(non_finite);
+    } catch (const std::invalid_argument&) {
+        non_finite_threw = true;
+    }
+    check(non_finite_threw, "prepared spatial metadata rejects non-finite referenced geometry");
+
+    const PreparedSpatialSubmission spatial = prepare_spatial_model(two_draw_spatial_asset());
+    const std::array<PreparedSpatialListEntry, 1> projective_entry{
+        PreparedSpatialListEntry{
+            &spatial,
+            Mat4::perspective(radians(60.0F), 1.0F, 0.1F, 100.0F)},
+    };
+    bool projective_threw = false;
+    try {
+        (void)order_prepared_model_draws_back_to_front(
+            projective_entry, Mat4::identity());
+    } catch (const std::invalid_argument&) {
+        projective_threw = true;
+    }
+    check(projective_threw, "prepared draw ordering rejects projective model transforms");
+
+    ModelRenderOptions programmed_options;
+    programmed_options.vertex_program = std::make_shared<IdentitySpatialVertexProgram>();
+    const PreparedSpatialSubmission programmed = prepare_spatial_model(
+        two_draw_spatial_asset(), programmed_options);
+    const std::array<PreparedSpatialListEntry, 1> programmed_entry{
+        PreparedSpatialListEntry{&programmed, Mat4::identity()},
+    };
+    bool programmed_threw = false;
+    try {
+        (void)order_prepared_model_draws_back_to_front(
+            programmed_entry, Mat4::identity());
+    } catch (const std::invalid_argument&) {
+        programmed_threw = true;
+    }
+    check(programmed_threw,
+          "prepared draw ordering rejects vertex-program geometry not represented by canonical bounds");
+
+    const std::array<PreparedSpatialListEntry, 1> null_entry{
+        PreparedSpatialListEntry{nullptr, Mat4::identity()},
+    };
+    bool null_threw = false;
+    try {
+        (void)order_prepared_model_draws_back_to_front(null_entry, Mat4::identity());
+    } catch (const std::invalid_argument&) {
+        null_threw = true;
+    }
+    check(null_threw, "prepared draw ordering rejects null prepared spatial entries");
+}
+
+void test_prepared_draw_spatial_empty_plan_is_deterministic() {
+    const PreparedSpatialSubmission empty = prepare_spatial_model(ModelAsset{});
+    check(empty.draws().empty(), "empty prepared spatial model owns no draw metadata");
+    const std::array<PreparedSpatialListEntry, 1> entries{
+        PreparedSpatialListEntry{&empty, Mat4::identity()},
+    };
+    const std::vector<PreparedDrawOrderEntry> ordered =
+        order_prepared_model_draws_back_to_front(entries, Mat4::identity());
+    check(ordered.empty(), "empty prepared spatial model contributes no planned draw");
+}
+
 }  // namespace
 
 int main() {
@@ -263,6 +460,12 @@ int main() {
         test_prepared_list_preflight_rejects_later_a2c_without_writes();
         test_mixed_scene_matches_explicit_depth_then_sorted_transparency();
         test_mixed_scene_requires_explicit_transparency_declarations();
+        test_prepared_draw_spatial_metadata_is_owned_and_exact();
+        test_prepared_draw_spatial_plan_flattens_and_sorts_draws();
+        test_prepared_draw_spatial_plan_is_stable_at_equal_depth();
+        test_prepared_draw_spatial_plan_orders_across_models();
+        test_prepared_draw_spatial_rejects_unrepresentable_state();
+        test_prepared_draw_spatial_empty_plan_is_deterministic();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         return 2;
