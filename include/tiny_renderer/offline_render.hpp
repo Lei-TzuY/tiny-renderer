@@ -60,6 +60,47 @@ enum class OfflineSceneOrdering {
     BackToFront,
 };
 
+// Bounded tooling-level transparency policies. They only configure existing
+// verified raster state; material d/map_d remains the source of fragment
+// opacity and render_scene_preview remains the canonical execution path.
+enum class OfflineSceneTransparencyMode {
+    Opaque,
+    SourceAlpha,
+    AlphaToCoverage,
+};
+
+// Applies one flat-scene transparency policy to existing model render state.
+// SourceAlpha uses the renderer's established source-alpha RGB blend factors
+// with depth writes disabled for caller-ordered transparency. AlphaToCoverage
+// uses the established deterministic 4x coverage gate and leaves blending off.
+// Target-specific A2C compatibility is still validated by canonical preflight.
+inline void apply_offline_scene_transparency_mode(
+    ModelRenderOptions& options,
+    OfflineSceneTransparencyMode mode) {
+    switch (mode) {
+        case OfflineSceneTransparencyMode::Opaque:
+            options.blend_state = {};
+            options.depth_state.write_enabled = true;
+            options.alpha_to_coverage_state = {};
+            return;
+        case OfflineSceneTransparencyMode::SourceAlpha:
+            options.blend_state = {};
+            options.blend_state.enabled = true;
+            options.blend_state.source_factor = BlendFactor::SourceAlpha;
+            options.blend_state.destination_factor = BlendFactor::OneMinusSourceAlpha;
+            options.blend_state.operation = BlendOp::Add;
+            options.depth_state.write_enabled = false;
+            options.alpha_to_coverage_state = {};
+            return;
+        case OfflineSceneTransparencyMode::AlphaToCoverage:
+            options.blend_state = {};
+            options.depth_state.write_enabled = true;
+            options.alpha_to_coverage_state.enabled = true;
+            return;
+    }
+    throw std::invalid_argument("unknown offline scene transparency mode");
+}
+
 // Optional explicit world-space perspective camera for flat-scene rendering.
 // When absent, render_scene_preview preserves the historical combined-bounds
 // auto-fit path. When present, model transforms remain in caller world space
@@ -87,13 +128,15 @@ struct OfflineSceneEntry {
 
 // Parsed CLI-facing flat-scene description. Paths are resolved as sibling OBJ
 // files of the manifest itself. Each record may optionally request one bounded
-// material-model override for its scene-owned asset snapshot. The override is
-// tooling configuration only: canonical ModelAsset/MaterialState semantics and
-// render_scene_preview remain the execution path.
+// material-model override and one bounded transparency execution policy for its
+// scene-owned snapshot. Both are tooling configuration only: canonical
+// ModelAsset/MaterialState/ModelRenderOptions semantics and render_scene_preview
+// remain the execution path.
 struct OfflineSceneManifestEntry {
     std::filesystem::path model_path{};
     Mat4 model{Mat4::identity()};
     std::optional<MaterialShadingModel> shading_model_override{};
+    OfflineSceneTransparencyMode transparency_mode{OfflineSceneTransparencyMode::Opaque};
 };
 
 struct OfflineSceneManifest {
@@ -189,6 +232,25 @@ inline constexpr std::string_view kOfflineSceneManifestHeader = "tiny-renderer-s
         "model shading mode must be inherit, lambert, or blinn-phong");
 }
 
+[[nodiscard]] inline OfflineSceneTransparencyMode parse_offline_scene_transparency_mode(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::string_view token) {
+    if (token == "opaque") {
+        return OfflineSceneTransparencyMode::Opaque;
+    }
+    if (token == "source-alpha") {
+        return OfflineSceneTransparencyMode::SourceAlpha;
+    }
+    if (token == "alpha-to-coverage") {
+        return OfflineSceneTransparencyMode::AlphaToCoverage;
+    }
+    offline_scene_manifest_error(
+        path,
+        line,
+        "model transparency mode must be opaque, source-alpha, or alpha-to-coverage");
+}
+
 inline void reject_offline_scene_extra_tokens(
     const std::filesystem::path& path,
     std::size_t line,
@@ -206,10 +268,12 @@ inline void reject_offline_scene_extra_tokens(
 //   ordering input|back-to-front        # optional, at most once
 //   camera EX EY EZ TX TY TZ UX UY UZ VFOV NEAR FAR  # optional, at most once
 //   model FILE.obj TX TY TZ SCALE RY [inherit|lambert|blinn-phong]
-//                                      # repeat, max 256 entries
+//        [opaque|source-alpha|alpha-to-coverage]       # repeat, max 256 entries
 // Blank lines and full-line '#' comments are ignored. FILE.obj must be a
 // sibling filename (no absolute path, parent traversal, or subdirectory).
-// Omitting the final shading token is identical to explicit `inherit`.
+// Omitting shading is identical to `inherit`; omitting transparency is
+// identical to `opaque`. To set only transparency, spell the shading token as
+// `inherit` before the transparency token.
 [[nodiscard]] inline OfflineSceneManifest load_offline_scene_manifest_file(
     const std::filesystem::path& path) {
     std::ifstream input(path);
@@ -334,7 +398,7 @@ inline void reject_offline_scene_extra_tokens(
                 detail::offline_scene_manifest_error(
                     path,
                     line_number,
-                    "model requires FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [SHADING_MODE]");
+                    "model requires FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [SHADING_MODE] [TRANSPARENCY_MODE]");
             }
 
             std::optional<MaterialShadingModel> shading_model_override;
@@ -342,6 +406,13 @@ inline void reject_offline_scene_extra_tokens(
             if (line >> shading_token) {
                 shading_model_override = detail::parse_offline_scene_shading_model(
                     path, line_number, shading_token);
+            }
+
+            OfflineSceneTransparencyMode transparency_mode = OfflineSceneTransparencyMode::Opaque;
+            std::string transparency_token;
+            if (line >> transparency_token) {
+                transparency_mode = detail::parse_offline_scene_transparency_mode(
+                    path, line_number, transparency_token);
             }
             detail::reject_offline_scene_extra_tokens(path, line_number, line);
 
@@ -369,6 +440,7 @@ inline void reject_offline_scene_extra_tokens(
                 detail::resolve_offline_scene_model_path(path, line_number, model_token),
                 model,
                 shading_model_override,
+                transparency_mode,
             });
             continue;
         }
