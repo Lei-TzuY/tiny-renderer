@@ -86,36 +86,35 @@ void draw_prepared_model_instances(
     const PreparedModelSubmission& prepared,
     std::span<const Mat4> mvps);
 
+// Runs the complete target-dependent list preparation and dynamic validation
+// without submitting fragments. This is useful for higher-level transactions
+// that must validate several execution phases before the first framebuffer
+// mutation. It uses the same vertex-program preparation and per-draw preflight
+// path as draw_prepared_model_list.
+void preflight_prepared_model_list(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedModelListEntry> entries);
+
 void draw_prepared_model_list(
     Framebuffer& framebuffer,
     std::span<const PreparedModelListEntry> entries,
     const Mat4& view,
     const Mat4& projection);
 
-// Stable painter-order submission for a caller-selected transparent prepared
-// list. Each non-empty entry is sorted by the mean view-space Z of its
-// canonical mesh vertices after the entry model transform; more-negative Z is
-// submitted first, matching the right-handed camera convention used by
-// Mat4::look_at/perspective. Equal-depth entries preserve caller order.
-//
-// This bounded entry-level pass deliberately does not classify opaque vs
-// transparent materials, split mixed-material models, sort individual
-// triangles, or claim order-independent transparency. The caller retains
-// ownership of blend/depth state. Vertex programs are rejected because they
-// may move geometry after the canonical sort key has been computed.
-inline void draw_prepared_model_list_back_to_front(
-    Framebuffer& framebuffer,
+// Computes the same stable painter order used by
+// draw_prepared_model_list_back_to_front without executing the list. Each
+// non-empty entry is keyed by mean view-space Z of canonical mesh vertices;
+// more-negative Z is first and equal-depth entries preserve caller order.
+// Vertex programs are rejected because they may move geometry after the
+// canonical key has been computed.
+[[nodiscard]] inline std::vector<PreparedModelListEntry>
+order_prepared_model_list_back_to_front(
     std::span<const PreparedModelListEntry> entries,
-    const Mat4& view,
-    const Mat4& projection) {
+    const Mat4& view) {
     struct SortRecord {
         PreparedModelListEntry entry;
         double view_depth{};
     };
-
-    if (entries.empty()) {
-        return;
-    }
 
     std::vector<SortRecord> records;
     records.reserve(entries.size());
@@ -187,7 +186,21 @@ inline void draw_prepared_model_list_back_to_front(
     for (const SortRecord& record : records) {
         ordered.push_back(record.entry);
     }
+    return ordered;
+}
 
+// Stable painter-order submission for a caller-selected transparent prepared
+// list. This bounded entry-level pass deliberately does not classify opaque vs
+// transparent materials, split mixed-material models, sort individual
+// triangles, or claim order-independent transparency. The caller retains
+// ownership of blend/depth state.
+inline void draw_prepared_model_list_back_to_front(
+    Framebuffer& framebuffer,
+    std::span<const PreparedModelListEntry> entries,
+    const Mat4& view,
+    const Mat4& projection) {
+    const std::vector<PreparedModelListEntry> ordered =
+        order_prepared_model_list_back_to_front(entries, view);
     draw_prepared_model_list(
         framebuffer,
         std::span<const PreparedModelListEntry>{ordered.data(), ordered.size()},
