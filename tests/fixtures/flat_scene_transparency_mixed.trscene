@@ -1,0 +1,6 @@
+tiny-renderer-scene-v1
+ordering mixed-transparency
+camera 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+model opacity_texture_sequence.obj 0.55 0 0.25 0.8 0 inherit source-alpha
+model opacity_texture_sequence.obj -0.65 0 0 0.8 0 inherit opaque
+model opacity_texture_sequence.obj 0.55 0 -0.25 0.8 0 inherit source-alpha
