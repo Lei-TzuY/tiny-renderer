@@ -46,7 +46,26 @@ jobs:
             echo "Blinn-Phong scene override did not change reflection rendering" >&2
             exit 1
           fi
-      - name: Reject unsafe, invalid-camera, or invalid-shading flat-scene manifests
+      - name: Render transparency modes through flat-scene CLI
+        run: |
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_opaque.trscene build/transparency_opaque_a.ppm 64 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_opaque.trscene build/transparency_opaque_b.ppm 64 64 4
+          cmp build/transparency_opaque_a.ppm build/transparency_opaque_b.ppm
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_source_alpha.trscene build/transparency_source_alpha_a.ppm 64 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_source_alpha.trscene build/transparency_source_alpha_b.ppm 64 64 4
+          cmp build/transparency_source_alpha_a.ppm build/transparency_source_alpha_b.ppm
+          if cmp -s build/transparency_opaque_a.ppm build/transparency_source_alpha_a.ppm; then
+            echo "source-alpha scene mode did not change opacity rendering" >&2
+            exit 1
+          fi
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_a2c.trscene build/transparency_a2c_a.ppm 64 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_a2c.trscene build/transparency_a2c_b.ppm 64 64 4
+          cmp build/transparency_a2c_a.ppm build/transparency_a2c_b.ppm
+          if cmp -s build/transparency_opaque_a.ppm build/transparency_a2c_a.ppm; then
+            echo "alpha-to-coverage scene mode did not change opacity rendering" >&2
+            exit 1
+          fi
+      - name: Reject unsafe, invalid-camera, invalid-shading, or invalid-transparency flat-scene manifests
         run: |
           if ./build/tiny_renderer_render tests/fixtures/flat_scene_unsafe.trscene build/unsafe_scene.ppm 64 64 4; then
             echo "unsafe scene manifest unexpectedly rendered" >&2
@@ -63,6 +82,16 @@ jobs:
             exit 1
           fi
           test ! -e build/invalid_shading_scene.ppm
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_invalid.trscene build/invalid_transparency_scene.ppm 64 64 4; then
+            echo "invalid scene transparency mode unexpectedly rendered" >&2
+            exit 1
+          fi
+          test ! -e build/invalid_transparency_scene.ppm
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_a2c.trscene build/a2c_single_sample_scene.ppm 64 64 1; then
+            echo "alpha-to-coverage scene unexpectedly rendered on a single-sample target" >&2
+            exit 1
+          fi
+          test ! -e build/a2c_single_sample_scene.ppm
 
   sanitizers:
     runs-on: ubuntu-latest
@@ -97,7 +126,18 @@ jobs:
             echo "Blinn-Phong scene override did not change reflection rendering under sanitizers" >&2
             exit 1
           fi
-      - name: Reject unsafe, invalid-camera, or invalid-shading flat-scene manifests under sanitizers
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_opaque.trscene build/transparency_opaque.ppm 64 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_source_alpha.trscene build/transparency_source_alpha.ppm 64 64 4
+          ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_a2c.trscene build/transparency_a2c.ppm 64 64 4
+          if cmp -s build/transparency_opaque.ppm build/transparency_source_alpha.ppm; then
+            echo "source-alpha scene mode did not change opacity rendering under sanitizers" >&2
+            exit 1
+          fi
+          if cmp -s build/transparency_opaque.ppm build/transparency_a2c.ppm; then
+            echo "alpha-to-coverage scene mode did not change opacity rendering under sanitizers" >&2
+            exit 1
+          fi
+      - name: Reject unsafe, invalid-camera, invalid-shading, or invalid-transparency flat-scene manifests under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -117,3 +157,13 @@ jobs:
             exit 1
           fi
           test ! -e build/invalid_shading_scene.ppm
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_invalid.trscene build/invalid_transparency_scene.ppm 64 64 4; then
+            echo "invalid scene transparency mode unexpectedly rendered" >&2
+            exit 1
+          fi
+          test ! -e build/invalid_transparency_scene.ppm
+          if ./build/tiny_renderer_render tests/fixtures/flat_scene_transparency_a2c.trscene build/a2c_single_sample_scene.ppm 64 64 1; then
+            echo "alpha-to-coverage scene unexpectedly rendered on a single-sample target" >&2
+            exit 1
+          fi
+          test ! -e build/a2c_single_sample_scene.ppm

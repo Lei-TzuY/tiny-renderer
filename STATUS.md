@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains older detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Integrated architecture through Milestone 77 plus Milestone 75
+## Integrated architecture through Milestone 78
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -22,9 +22,11 @@ Milestone 76 promotes that flat-scene library transaction into the real headless
 
 Milestone 77 adds one bounded optional perspective-camera directive to the same flat-scene manifest. Explicit eye/target/up/FOV/near/far state is fail-closed validated, preserves caller world-space composition instead of applying auto-fit, and drives geometry, environment-background rays, and reflection viewer position from one authoritative camera. Omitting the directive preserves the historical combined-bounds auto-fit path. Explicit-camera scenes still delegate exactly once to the canonical prepared-list executor; no camera-specific raster path exists.
 
-Milestone 75 is now integrated on top of the M77 scene/tooling baseline. `MaterialState` has an explicit trailing `MaterialShadingModel::{BlinnPhong,Lambert}` contract with Blinn-Phong as the compatibility default. Bounded MTL `illum 1` imports Lambert and `illum 2` imports Blinn-Phong; Lambert keeps diffuse/emissive/environment-diffuse contributions but suppresses direct and environment specular semantics. Material-aware validation derives normal/world-position requirements from contributions that can execute, inspection exposes the semantic model, and non-default model state participates in versioned fingerprint semantics without changing historical all-Blinn-Phong fingerprints.
+Milestone 75 is integrated on top of the M77 scene/tooling baseline. `MaterialState` has an explicit trailing `MaterialShadingModel::{BlinnPhong,Lambert}` contract with Blinn-Phong as the compatibility default. Bounded MTL `illum 1` imports Lambert and `illum 2` imports Blinn-Phong; Lambert keeps diffuse/emissive/environment-diffuse contributions but suppresses direct and environment specular semantics. Material-aware validation derives normal/world-position requirements from contributions that can execute, inspection exposes the semantic model, and non-default model state participates in versioned fingerprint semantics without changing historical all-Blinn-Phong fingerprints.
 
-The exact integrated `main` commit is `29eb5d246a220999ab52692b771680ce0ae05843`. Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
+Milestone 78 consumes that material contract through the flat-scene tooling path. A model record may optionally select `inherit`, `lambert`, or `blinn-phong`; the override is applied to every canonical `MaterialDraw` in the scene-owned loaded `ModelAsset` snapshot before preview-option derivation and prepared submission. Source OBJ/MTL assets remain unchanged, inherited and explicit Lambert execution are byte-identical in the HDR-reflection regression, explicit Blinn-Phong changes the verified reflection result, invalid shading tokens fail before output creation, and execution still delegates through `render_scene_preview` and the canonical prepared-list/raster path.
+
+The exact integrated `main` commit is `3de2447cf2f9ce7050b3e6922c24bad6a4b2f60d` (Milestone 78). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
 
 The repository also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, bounded PPM/TGA/PFM texture import through the shared image dispatcher, and bounded headless OBJ/flat-scene preview/render tooling.
 
@@ -32,26 +34,27 @@ The repository also integrates bounded OBJ relative indices, polygon triangulati
 
 Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence.
 
-The branch `milestone-73-prepared-spatial-metadata` remains a reserved but currently stale surface. Its live head is still the M72 commit `f4d63c1c4fbbf285875a54e5fb2da84eb8980bc1`; current `main` is strictly ahead of it and no M73 spatial-metadata implementation may be assumed.
+The branch `milestone-73-prepared-spatial-metadata` remains a reserved but stale surface. Its live head is still the M72 commit `f4d63c1c4fbbf285875a54e5fb2da84eb8980bc1`; current `main` is strictly ahead of it and no M73 spatial-metadata contract may be assumed.
 
-The former `milestone-75-explicit-material-shading-model` candidate has been integrated through PR #93. The next active implementation surface is Milestone 78 below.
+Milestone 79 is the only active implementation surface at this status update: branch `milestone-79-scene-transparency-modes`, PR #95.
 
-## Milestone 78 candidate — flat-scene per-entry material shading override
+## Milestone 79 candidate — flat-scene transparency execution modes
 
-M78 consumes the integrated M75 material contract and M76/M77 flat-scene tooling in one bounded cross-layer slice. It lets a scene record select the fixed-function material model for that scene-owned model snapshot without changing the source OBJ/MTL asset or adding a scene-specific renderer.
+M79 promotes already-verified material opacity, source-alpha blending, depth-write state, and alpha-to-coverage into the real `.trscene` workflow without adding scene-specific blend, opacity, framebuffer, or raster semantics.
 
 Acceptance surface:
 
-- the existing `model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS` manifest record remains valid and preserves inherited MTL material models byte-for-byte;
-- one optional trailing token accepts exactly `inherit`, `lambert`, or `blinn-phong`; omitted and explicit `inherit` both preserve imported material models;
-- a Lambert or Blinn-Phong override applies to every canonical `MaterialDraw` in the scene-owned loaded `ModelAsset` snapshot before normal preview-option derivation and before prepared-model construction;
-- source OBJ/MTL files and any independently loaded `ModelAsset` remain unchanged; the override is instance/tooling configuration, not asset mutation or a new material representation;
-- execution remains `load_obj_model_asset_file` → existing `MaterialState` → `render_scene_preview` → `prepare_model_asset` → canonical prepared-list/raster path;
-- deterministic CLI evidence uses one MTL `illum 1` Lambert asset plus the existing HDR environment-reflection path: inherited and explicit Lambert renders must be byte-identical, while explicit Blinn-Phong must produce a different reflection result;
-- malformed/unsupported shading tokens fail before output creation, and the same positive/negative paths execute under ASan/UBSan;
-- no general MTL illumination-model support, PBR/BRDF expansion, hierarchy, persistent scene graph, per-draw manifest override, or performance/image-quality claim is introduced.
+- the established `model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [SHADING_MODE]` record remains valid and preserves historical opaque execution;
+- one optional transparency token after the shading token accepts exactly `opaque`, `source-alpha`, or `alpha-to-coverage`; omission is `opaque`, and callers that want only transparency spell the shading token as `inherit`;
+- `source-alpha` maps to the existing `BlendFactor::SourceAlpha` / `OneMinusSourceAlpha` RGB blend equation with depth writes disabled while preserving the renderer's normal depth comparison path;
+- `alpha-to-coverage` maps to the existing deterministic alpha-to-coverage state with blending disabled and depth writes enabled, inheriting canonical 4x-target fail-closed validation;
+- imported material `d` / `map_d` remains the only fragment-opacity source; the scene format does not duplicate or override material opacity data;
+- execution remains manifest parse → canonical OBJ/MTL asset load → scene-owned render-option configuration → `render_scene_preview` → prepared-model/list preflight → the single raster/framebuffer ownership path;
+- 4x CLI regressions render `opaque`, `source-alpha`, and `alpha-to-coverage` deterministically from the existing file-driven opacity-map asset; both non-opaque policies must produce observable output differences from opaque rendering;
+- unknown transparency modes and alpha-to-coverage on a single-sample target fail before output creation, and sanitizer CI executes the same positive and negative paths;
+- the slice does not add automatic opacity classification, destination alpha, triangle sorting, order-independent transparency, hierarchy, persistent scene storage, PBR, or performance/image-quality claims.
 
-Candidate branch: `milestone-78-scene-material-shading-override`. Branch commits are not integration evidence until the exact final PR head and post-merge `main` pass Ubuntu, macOS, and ASan/UBSan gates.
+Candidate branch: `milestone-79-scene-transparency-modes`; PR #95. Its exact implementation head `d170daf3853bef77a8da007caedd96bf994dbe20` passed Ubuntu, macOS, and ASan/UBSan before this status-only closure commit. The final PR head must pass the same gates again before integration.
 
 ## Architectural invariants
 
@@ -60,14 +63,14 @@ Candidate branch: `milestone-78-scene-material-shading-override`. Branch commits
 - Model/prepared/list submission validates complete state before writes when later invalid state could otherwise partially commit earlier work.
 - Submission-order helpers may reorder already-prepared work, but they must delegate execution to the canonical prepared-list path rather than creating a second raster path.
 - Offline scene orchestration owns only bounded preparation, framing/camera selection, environment injection, and executor selection; it does not own raster/material/depth/blend semantics.
-- Flat-scene manifest import owns bounded path/transform/order/camera/material-mode parsing; it delegates asset import to the canonical OBJ/model loader and rendering to `render_scene_preview`.
-- Tooling-level material overrides configure the existing `MaterialState` on scene-owned asset snapshots; they do not create a parallel shading implementation.
+- Flat-scene manifest import owns bounded path/transform/order/camera/material-mode/transparency-mode parsing; it delegates asset import to the canonical OBJ/model loader and rendering to `render_scene_preview`.
+- Tooling-level material overrides configure existing `MaterialState` on scene-owned asset snapshots; tooling-level transparency modes configure existing `ModelRenderOptions` blend/depth/alpha-to-coverage state. Neither creates a parallel shading or ownership implementation.
 - Texture roles and environment lookups reuse `Texture2D`, sampler validation, mip generation, transfer semantics, and gradient sampling rather than maintaining role-specific filters.
 - Imported asset textures use shared ownership; prepared submissions retain resource lifetime independently from source-object lifetime.
 - Headless/tooling controls configure existing library state rather than creating CLI-only rendering behavior.
 - Default/trailing state additions preserve historical behavior unless the caller explicitly opts into the new capability.
 - Performance claims require controlled measurements; CI duration is never treated as a benchmark.
 
-## Promotion after Milestone 78
+## Promotion after Milestone 79
 
-After M78 converges, re-read exact live `main`, open PRs, and the reserved M73 branch before selecting the next slice. If M73 becomes a real integrated spatial contract, promote directly to draw-granularity transparency ordering or another consumer of those bounds. If it remains stale, prefer another cross-layer scene/runtime integration that configures already-existing verified render state over hierarchy, persistent scene storage, broad PBR, or parser-only expansion.
+After M79 converges, re-read exact live `main`, open PRs/issues, and the stale M73 branch before selecting the next slice. If M73 remains stale, the strongest immediate consumer is a bounded mixed opaque/transparent scene submission mode: preserve opaque and alpha-to-coverage entries in deterministic depth-writing execution, then submit explicitly `source-alpha` entries through the established M72 stable back-to-front helper, while preflighting the complete mixed transaction before the first framebuffer mutation. Do not infer transparency from arbitrary material data, split material draws, sort triangles, or claim order-independent transparency. If a concurrent spatial-metadata implementation has become real by then, re-evaluate draw-granularity ordering against that contract instead of competing with it.
