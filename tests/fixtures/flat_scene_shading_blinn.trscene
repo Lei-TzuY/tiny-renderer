@@ -1,0 +1,3 @@
+# Per-entry override promotes the inherited Lambert material to Blinn-Phong.
+tiny-renderer-scene-v1
+model shading_model.obj 0 0 0 1 0 blinn-phong
