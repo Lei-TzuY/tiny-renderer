@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -42,9 +43,11 @@ inline void validate_offline_benchmark_config(const OfflineBenchmarkConfig& conf
         throw std::invalid_argument("offline benchmark requires at least one measured iteration");
     }
     if (config.warmup_iterations > kMaxOfflineBenchmarkIterations
-        || config.measured_iterations > kMaxOfflineBenchmarkIterations
-        || config.warmup_iterations
-            > kMaxOfflineBenchmarkIterations - config.measured_iterations) {
+        || config.measured_iterations > kMaxOfflineBenchmarkIterations) {
+        throw std::invalid_argument("offline benchmark iteration budget exceeds 1000 total iterations");
+    }
+    if (config.warmup_iterations
+        > kMaxOfflineBenchmarkIterations - config.measured_iterations) {
         throw std::invalid_argument("offline benchmark iteration budget exceeds 1000 total iterations");
     }
 }
@@ -85,7 +88,6 @@ struct OfflineBenchmarkEvaluations {
 }
 
 inline std::uint64_t benchmark_execute_preflighted(
-    const PreparedOfflineMixedScene& scene,
     const OfflineBenchmarkEvaluations& prepared,
     std::vector<Framebuffer>& targets) {
     if (prepared.evaluations.size() != prepared.overrides.size()
@@ -95,7 +97,7 @@ inline std::uint64_t benchmark_execute_preflighted(
 
     std::uint64_t sequence_hash = kBenchmarkHashOffset;
     for (std::size_t index = 0U; index < prepared.evaluations.size(); ++index) {
-        detail::execute_preflighted_prepared_scene_evaluation(
+        execute_preflighted_prepared_scene_evaluation(
             targets[index],
             prepared.evaluations[index],
             prepared.overrides[index]);
@@ -103,7 +105,6 @@ inline std::uint64_t benchmark_execute_preflighted(
         sequence_hash ^= frame_hash;
         sequence_hash *= kBenchmarkHashPrime;
     }
-    (void)scene;
     return sequence_hash;
 }
 
@@ -160,7 +161,7 @@ template <typename Clock = std::chrono::steady_clock>
     report.warmup_iterations = config.warmup_iterations;
     report.samples.reserve(config.measured_iterations);
 
-    const auto run_iteration = [&](bool record) {
+    const auto run_warmup = [&] {
         PreparedOfflineMixedScene scene = prepare_offline_mixed_scene(entries, settings);
         Framebuffer validation_target(settings.width, settings.height, settings.sample_count);
         detail::OfflineBenchmarkEvaluations prepared =
@@ -172,36 +173,32 @@ template <typename Clock = std::chrono::steady_clock>
             targets.emplace_back(settings.width, settings.height, settings.sample_count);
             targets.back().clear(settings.clear_color);
         }
-        const std::uint64_t sequence_hash =
-            detail::benchmark_execute_preflighted(scene, prepared, targets);
-        if (!record) {
-            return sequence_hash;
-        }
-        return sequence_hash;
+        return detail::benchmark_execute_preflighted(prepared, targets);
     };
 
     for (std::size_t iteration = 0U; iteration < config.warmup_iterations; ++iteration) {
-        (void)run_iteration(false);
+        (void)run_warmup();
     }
 
     std::uint64_t reference_hash = 0U;
     for (std::size_t iteration = 0U; iteration < config.measured_iterations; ++iteration) {
-        PreparedOfflineMixedScene scene = prepare_offline_mixed_scene(entries, settings);
-        double preparation_us = 0.0;
-        // The object above establishes valid storage for the following phases;
-        // recreate it inside the measured region so preparation timing includes
-        // the complete canonical snapshot construction rather than a partial helper.
-        preparation_us = detail::benchmark_microseconds<Clock>([&] {
-            scene = prepare_offline_mixed_scene(entries, settings);
+        std::optional<PreparedOfflineMixedScene> scene;
+        const double preparation_us = detail::benchmark_microseconds<Clock>([&] {
+            scene.emplace(prepare_offline_mixed_scene(entries, settings));
         });
+        if (!scene) {
+            throw std::logic_error("offline benchmark preparation did not produce a scene");
+        }
 
         Framebuffer validation_target(settings.width, settings.height, settings.sample_count);
         detail::OfflineBenchmarkEvaluations prepared;
         const double evaluation_preflight_us = detail::benchmark_microseconds<Clock>([&] {
             prepared = detail::benchmark_evaluate_and_preflight(
-                scene, cameras, validation_target);
+                *scene, cameras, validation_target);
         });
 
+        // Allocation and target clear intentionally stay outside raster timing.
+        // The raster phase measures submission/shading/sample ownership only.
         std::vector<Framebuffer> targets;
         targets.reserve(cameras.size());
         for (std::size_t index = 0U; index < cameras.size(); ++index) {
@@ -211,8 +208,7 @@ template <typename Clock = std::chrono::steady_clock>
 
         std::uint64_t sequence_hash = 0U;
         const double raster_us = detail::benchmark_microseconds<Clock>([&] {
-            sequence_hash = detail::benchmark_execute_preflighted(
-                scene, prepared, targets);
+            sequence_hash = detail::benchmark_execute_preflighted(prepared, targets);
         });
         if (iteration == 0U) {
             reference_hash = sequence_hash;
