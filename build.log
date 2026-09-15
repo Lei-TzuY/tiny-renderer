@@ -1,0 +1,207 @@
+[  0%] Building CXX object CMakeFiles/tiny_renderer.dir/src/framebuffer.cpp.o
+[  1%] Building CXX object CMakeFiles/tiny_renderer.dir/src/framebuffer_output.cpp.o
+[  2%] Building CXX object CMakeFiles/tiny_renderer.dir/src/image_loader.cpp.o
+[  2%] Building CXX object CMakeFiles/tiny_renderer.dir/src/material_asset_loader.cpp.o
+[  3%] Building CXX object CMakeFiles/tiny_renderer.dir/src/model_inspection.cpp.o
+[  4%] Building CXX object CMakeFiles/tiny_renderer.dir/src/model_renderer.cpp.o
+[  4%] Building CXX object CMakeFiles/tiny_renderer.dir/src/offline_render.cpp.o
+[  5%] Building CXX object CMakeFiles/tiny_renderer.dir/src/mtl_loader.cpp.o
+[  6%] Building CXX object CMakeFiles/tiny_renderer.dir/src/obj_loader.cpp.o
+[  6%] Building CXX object CMakeFiles/tiny_renderer.dir/src/point_shadow.cpp.o
+[  7%] Building CXX object CMakeFiles/tiny_renderer.dir/src/ppm_loader.cpp.o
+[  8%] Building CXX object CMakeFiles/tiny_renderer.dir/src/rasterizer.cpp.o
+[  9%] Building CXX object CMakeFiles/tiny_renderer.dir/src/rasterizer_range.cpp.o
+[  9%] Building CXX object CMakeFiles/tiny_renderer.dir/src/rasterizer_validation.cpp.o
+[ 10%] Building CXX object CMakeFiles/tiny_renderer.dir/src/shadow.cpp.o
+[ 11%] Building CXX object CMakeFiles/tiny_renderer.dir/src/shadow_renderer.cpp.o
+[ 11%] Building CXX object CMakeFiles/tiny_renderer.dir/src/spot_shadow.cpp.o
+[ 12%] Building CXX object CMakeFiles/tiny_renderer.dir/src/texture.cpp.o
+[ 13%] Building CXX object CMakeFiles/tiny_renderer.dir/src/tga_loader.cpp.o
+[ 13%] Linking CXX static library libtiny_renderer.a
+[ 13%] Built target tiny_renderer
+[ 13%] Building CXX object CMakeFiles/tiny_renderer_sample.dir/src/main.cpp.o
+[ 14%] Building CXX object CMakeFiles/tiny_renderer_asset_inspect.dir/src/asset_inspect_main.cpp.o
+[ 15%] Linking CXX executable tiny_renderer_asset_inspect
+[ 15%] Built target tiny_renderer_asset_inspect
+[ 16%] Building CXX object CMakeFiles/tiny_renderer_render.dir/src/render_main.cpp.o
+[ 17%] Linking CXX executable tiny_renderer_sample
+[ 17%] Built target tiny_renderer_sample
+[ 17%] Building CXX object CMakeFiles/tiny_renderer_tests.dir/tests/test_main.cpp.o
+[ 18%] Linking CXX executable tiny_renderer_tests
+[ 18%] Built target tiny_renderer_tests
+[ 19%] Building CXX object CMakeFiles/tiny_renderer_fixed_point_tests.dir/tests/test_fixed_point.cpp.o
+[ 20%] Linking CXX executable tiny_renderer_render
+[ 20%] Built target tiny_renderer_render
+[ 21%] Building CXX object CMakeFiles/tiny_renderer_interpolation_tests.dir/tests/test_interpolation.cpp.o
+[ 21%] Linking CXX executable tiny_renderer_fixed_point_tests
+[ 21%] Built target tiny_renderer_fixed_point_tests
+[ 22%] Building CXX object CMakeFiles/tiny_renderer_texture_tests.dir/tests/test_texture.cpp.o
+[ 23%] Linking CXX executable tiny_renderer_interpolation_tests
+[ 23%] Built target tiny_renderer_interpolation_tests
+[ 24%] Building CXX object CMakeFiles/tiny_renderer_obj_tests.dir/tests/test_obj_loader.cpp.o
+[ 24%] Linking CXX executable tiny_renderer_texture_tests
+[ 24%] Built target tiny_renderer_texture_tests
+[ 25%] Building CXX object CMakeFiles/tiny_renderer_obj_relative_index_tests.dir/tests/test_obj_relative_indices.cpp.o
+[ 25%] Linking CXX executable tiny_renderer_obj_tests
+[ 25%] Built target tiny_renderer_obj_tests
+[ 26%] Building CXX object CMakeFiles/tiny_renderer_obj_model_source_tests.dir/tests/test_obj_model_source.cpp.o
+[ 27%] Linking CXX executable tiny_renderer_obj_relative_index_tests
+[ 27%] Built target tiny_renderer_obj_relative_index_tests
+[ 28%] Building CXX object CMakeFiles/tiny_renderer_multi_material_library_tests.dir/tests/test_multiple_material_libraries.cpp.o
+[ 29%] Linking CXX executable tiny_renderer_multi_material_library_tests
+[ 29%] Built target tiny_renderer_multi_material_library_tests
+[ 29%] Building CXX object CMakeFiles/tiny_renderer_ppm_tests.dir/tests/test_ppm_loader.cpp.o
+[ 29%] Linking CXX executable tiny_renderer_obj_model_source_tests
+[ 29%] Built target tiny_renderer_obj_model_source_tests
+[ 30%] Building CXX object CMakeFiles/tiny_renderer_tga_tests.dir/tests/test_tga_loader.cpp.o
+[ 31%] Linking CXX executable tiny_renderer_ppm_tests
+[ 31%] Built target tiny_renderer_ppm_tests
+[ 32%] Building CXX object CMakeFiles/tiny_renderer_lighting_tests.dir/tests/test_lighting.cpp.o
+[ 33%] Linking CXX executable tiny_renderer_tga_tests
+[ 33%] Built target tiny_renderer_tga_tests
+[ 34%] Building CXX object CMakeFiles/tiny_renderer_material_tests.dir/tests/test_material.cpp.o
+[ 35%] Linking CXX executable tiny_renderer_lighting_tests
+[ 35%] Built target tiny_renderer_lighting_tests
+[ 35%] Building CXX object CMakeFiles/tiny_renderer_material_import_tests.dir/tests/test_material_import.cpp.o
+[ 35%] Linking CXX executable tiny_renderer_material_tests
+[ 35%] Built target tiny_renderer_material_tests
+[ 36%] Building CXX object CMakeFiles/tiny_renderer_model_asset_tests.dir/tests/test_model_asset.cpp.o
+[ 37%] Linking CXX executable tiny_renderer_material_import_tests
+[ 37%] Built target tiny_renderer_material_import_tests
+[ 37%] Building CXX object CMakeFiles/tiny_renderer_asset_inspection_tests.dir/tests/test_asset_inspect.cpp.o
+[ 38%] Linking CXX executable tiny_renderer_model_asset_tests
+[ 38%] Built target tiny_renderer_model_asset_tests
+[ 39%] Building CXX object CMakeFiles/tiny_renderer_direct_range_tests.dir/tests/test_direct_range.cpp.o
+[ 40%] Linking CXX executable tiny_renderer_asset_inspection_tests
+[ 40%] Built target tiny_renderer_asset_inspection_tests
+[ 41%] Building CXX object CMakeFiles/tiny_renderer_model_renderer_tests.dir/tests/test_model_renderer.cpp.o
+[ 41%] Linking CXX executable tiny_renderer_direct_range_tests
+[ 41%] Built target tiny_renderer_direct_range_tests
+[ 41%] Building CXX object CMakeFiles/tiny_renderer_prepared_model_tests.dir/tests/test_prepared_model.cpp.o
+[ 42%] Linking CXX executable tiny_renderer_prepared_model_tests
+[ 43%] Linking CXX executable tiny_renderer_model_renderer_tests
+[ 43%] Built target tiny_renderer_prepared_model_tests
+[ 44%] Building CXX object CMakeFiles/tiny_renderer_shared_preflight_tests.dir/tests/test_shared_preflight.cpp.o
+[ 44%] Built target tiny_renderer_model_renderer_tests
+[ 45%] Building CXX object CMakeFiles/tiny_renderer_prepared_visibility_tests.dir/tests/test_prepared_visibility.cpp.o
+[ 45%] Linking CXX executable tiny_renderer_prepared_visibility_tests
+[ 45%] Built target tiny_renderer_prepared_visibility_tests
+[ 45%] Building CXX object CMakeFiles/tiny_renderer_model_instance_tests.dir/tests/test_model_instances.cpp.o
+[ 45%] Linking CXX executable tiny_renderer_shared_preflight_tests
+[ 45%] Built target tiny_renderer_shared_preflight_tests
+[ 46%] Building CXX object CMakeFiles/tiny_renderer_prepared_model_list_tests.dir/tests/test_prepared_model_list.cpp.o
+[ 47%] Linking CXX executable tiny_renderer_model_instance_tests
+[ 47%] Built target tiny_renderer_model_instance_tests
+[ 48%] Building CXX object CMakeFiles/tiny_renderer_culling_tests.dir/tests/test_culling.cpp.o
+[ 49%] Linking CXX executable tiny_renderer_prepared_model_list_tests
+[ 49%] Built target tiny_renderer_prepared_model_list_tests
+[ 49%] Building CXX object CMakeFiles/tiny_renderer_depth_state_tests.dir/tests/test_depth_state.cpp.o
+[ 50%] Linking CXX executable tiny_renderer_culling_tests
+[ 50%] Built target tiny_renderer_culling_tests
+[ 51%] Building CXX object CMakeFiles/tiny_renderer_viewport_scissor_tests.dir/tests/test_viewport_scissor.cpp.o
+[ 52%] Linking CXX executable tiny_renderer_depth_state_tests
+[ 52%] Built target tiny_renderer_depth_state_tests
+[ 53%] Building CXX object CMakeFiles/tiny_renderer_stencil_tests.dir/tests/test_stencil.cpp.o
+[ 54%] Linking CXX executable tiny_renderer_stencil_tests
+[ 54%] Built target tiny_renderer_stencil_tests
+[ 54%] Building CXX object CMakeFiles/tiny_renderer_stencil_integration_tests.dir/tests/test_stencil_integration.cpp.o
+[ 55%] Linking CXX executable tiny_renderer_viewport_scissor_tests
+[ 55%] Built target tiny_renderer_viewport_scissor_tests
+[ 56%] Building CXX object CMakeFiles/tiny_renderer_blend_tests.dir/tests/test_blend.cpp.o
+[ 57%] Linking CXX executable tiny_renderer_stencil_integration_tests
+[ 57%] Built target tiny_renderer_stencil_integration_tests
+[ 58%] Building CXX object CMakeFiles/tiny_renderer_blend_integration_tests.dir/tests/test_blend_integration.cpp.o
+[ 59%] Linking CXX executable tiny_renderer_blend_tests
+[ 59%] Built target tiny_renderer_blend_tests
+[ 60%] Building CXX object CMakeFiles/tiny_renderer_opacity_tests.dir/tests/test_opacity.cpp.o
+[ 60%] Linking CXX executable tiny_renderer_blend_integration_tests
+[ 60%] Built target tiny_renderer_blend_integration_tests
+[ 60%] Building CXX object CMakeFiles/tiny_renderer_msaa_tests.dir/tests/test_msaa.cpp.o
+[ 60%] Linking CXX executable tiny_renderer_opacity_tests
+[ 60%] Built target tiny_renderer_opacity_tests
+[ 60%] Building CXX object CMakeFiles/tiny_renderer_output_transfer_tests.dir/tests/test_output_transfer.cpp.o
+[ 61%] Linking CXX executable tiny_renderer_msaa_tests
+[ 61%] Built target tiny_renderer_msaa_tests
+[ 61%] Building CXX object CMakeFiles/tiny_renderer_pfm_header_boundary_tests.dir/tests/test_pfm_header_boundary.cpp.o
+[ 62%] Linking CXX executable tiny_renderer_output_transfer_tests
+[ 62%] Built target tiny_renderer_output_transfer_tests
+[ 63%] Building CXX object CMakeFiles/tiny_renderer_display_mapping_tests.dir/tests/test_display_mapping.cpp.o
+[ 64%] Linking CXX executable tiny_renderer_pfm_header_boundary_tests
+[ 64%] Built target tiny_renderer_pfm_header_boundary_tests
+[ 64%] Building CXX object CMakeFiles/tiny_renderer_offline_render_tests.dir/tests/test_offline_render.cpp.o
+[ 65%] Linking CXX executable tiny_renderer_display_mapping_tests
+[ 65%] Built target tiny_renderer_display_mapping_tests
+[ 66%] Building CXX object CMakeFiles/tiny_renderer_offline_prepared_scene_tests.dir/tests/test_offline_prepared_scene.cpp.o
+[ 67%] Linking CXX executable tiny_renderer_offline_prepared_scene_tests
+[ 67%] Built target tiny_renderer_offline_prepared_scene_tests
+[ 67%] Building CXX object CMakeFiles/tiny_renderer_headless_environment_tests.dir/tests/test_headless_environment.cpp.o
+[ 68%] Linking CXX executable tiny_renderer_offline_render_tests
+[ 68%] Built target tiny_renderer_offline_render_tests
+[ 69%] Building CXX object CMakeFiles/tiny_renderer_headless_reflection_tests.dir/tests/test_headless_reflection.cpp.o
+[ 70%] Linking CXX executable tiny_renderer_headless_environment_tests
+[ 70%] Built target tiny_renderer_headless_environment_tests
+[ 71%] Building CXX object CMakeFiles/tiny_renderer_environment_mip_tests.dir/tests/test_environment_mips.cpp.o
+[ 71%] Linking CXX executable tiny_renderer_headless_reflection_tests
+[ 71%] Built target tiny_renderer_headless_reflection_tests
+[ 72%] Building CXX object CMakeFiles/tiny_renderer_environment_reflection_mip_tests.dir/tests/test_environment_reflection_mips.cpp.o
+[ 72%] Linking CXX executable tiny_renderer_environment_mip_tests
+[ 72%] Built target tiny_renderer_environment_mip_tests
+[ 73%] Building CXX object CMakeFiles/tiny_renderer_opacity_texture_tests.dir/tests/test_opacity_texture.cpp.o
+[ 74%] Linking CXX executable tiny_renderer_environment_reflection_mip_tests
+[ 74%] Built target tiny_renderer_environment_reflection_mip_tests
+[ 74%] Building CXX object CMakeFiles/tiny_renderer_alpha_to_coverage_tests.dir/tests/test_alpha_to_coverage.cpp.o
+[ 75%] Linking CXX executable tiny_renderer_opacity_texture_tests
+[ 75%] Built target tiny_renderer_opacity_texture_tests
+[ 76%] Building CXX object CMakeFiles/tiny_renderer_shadow_tests.dir/tests/test_shadow.cpp.o
+[ 77%] Linking CXX executable tiny_renderer_alpha_to_coverage_tests
+[ 77%] Built target tiny_renderer_alpha_to_coverage_tests
+[ 78%] Building CXX object CMakeFiles/tiny_renderer_alpha_test_tests.dir/tests/test_alpha_test.cpp.o
+[ 79%] Linking CXX executable tiny_renderer_shadow_tests
+[ 79%] Built target tiny_renderer_shadow_tests
+[ 80%] Building CXX object CMakeFiles/tiny_renderer_fragment_program_tests.dir/tests/test_fragment_program.cpp.o
+[ 81%] Linking CXX executable tiny_renderer_alpha_test_tests
+[ 81%] Built target tiny_renderer_alpha_test_tests
+[ 81%] Building CXX object CMakeFiles/tiny_renderer_vertex_program_tests.dir/tests/test_vertex_program.cpp.o
+[ 82%] Linking CXX executable tiny_renderer_fragment_program_tests
+[ 82%] Built target tiny_renderer_fragment_program_tests
+[ 82%] Building CXX object CMakeFiles/tiny_renderer_normal_mapping_tests.dir/tests/test_normal_mapping.cpp.o
+[ 83%] Linking CXX executable tiny_renderer_vertex_program_tests
+[ 83%] Built target tiny_renderer_vertex_program_tests
+[ 83%] Building CXX object CMakeFiles/tiny_renderer_specular_lighting_tests.dir/tests/test_specular_lighting.cpp.o
+[ 84%] Linking CXX executable tiny_renderer_normal_mapping_tests
+[ 84%] Built target tiny_renderer_normal_mapping_tests
+[ 85%] Building CXX object CMakeFiles/tiny_renderer_shininess_texture_tests.dir/tests/test_shininess_texture.cpp.o
+[ 86%] Linking CXX executable tiny_renderer_specular_lighting_tests
+[ 87%] Linking CXX executable tiny_renderer_shininess_texture_tests
+[ 87%] Built target tiny_renderer_specular_lighting_tests
+[ 88%] Building CXX object CMakeFiles/tiny_renderer_point_light_tests.dir/tests/test_point_light.cpp.o
+[ 88%] Built target tiny_renderer_shininess_texture_tests
+[ 89%] Building CXX object CMakeFiles/tiny_renderer_multi_light_tests.dir/tests/test_multi_light.cpp.o
+[ 89%] Linking CXX executable tiny_renderer_point_light_tests
+[ 89%] Built target tiny_renderer_point_light_tests
+[ 90%] Building CXX object CMakeFiles/tiny_renderer_point_shadow_tests.dir/tests/test_point_shadow.cpp.o
+[ 90%] Linking CXX executable tiny_renderer_multi_light_tests
+[ 90%] Built target tiny_renderer_multi_light_tests
+[ 91%] Building CXX object CMakeFiles/tiny_renderer_spotlight_tests.dir/tests/test_spotlight.cpp.o
+[ 92%] Linking CXX executable tiny_renderer_point_shadow_tests
+[ 92%] Built target tiny_renderer_point_shadow_tests
+[ 93%] Building CXX object CMakeFiles/tiny_renderer_spot_shadow_tests.dir/tests/test_spot_shadow.cpp.o
+[ 94%] Linking CXX executable tiny_renderer_spotlight_tests
+[ 94%] Built target tiny_renderer_spotlight_tests
+[ 94%] Building CXX object CMakeFiles/tiny_renderer_light_color_tests.dir/tests/test_light_color.cpp.o
+[ 94%] Linking CXX executable tiny_renderer_spot_shadow_tests
+[ 94%] Built target tiny_renderer_spot_shadow_tests
+[ 95%] Building CXX object CMakeFiles/tiny_renderer_per_record_shadow_tests.dir/tests/test_per_record_shadows.cpp.o
+[ 96%] Linking CXX executable tiny_renderer_light_color_tests
+[ 96%] Built target tiny_renderer_light_color_tests
+[ 97%] Building CXX object CMakeFiles/tiny_renderer_shadow_sampling_tests.dir/tests/test_shadow_sampling.cpp.o
+[ 98%] Linking CXX executable tiny_renderer_per_record_shadow_tests
+[ 98%] Built target tiny_renderer_per_record_shadow_tests
+[ 98%] Building CXX object CMakeFiles/tiny_renderer_cascaded_shadow_tests.dir/tests/test_cascaded_shadow.cpp.o
+[ 98%] Linking CXX executable tiny_renderer_shadow_sampling_tests
+[ 98%] Built target tiny_renderer_shadow_sampling_tests
+[ 98%] Building CXX object CMakeFiles/tiny_renderer_environment_diffuse_tests.dir/tests/test_environment_diffuse.cpp.o
+[ 99%] Linking CXX executable tiny_renderer_cascaded_shadow_tests
+[ 99%] Built target tiny_renderer_cascaded_shadow_tests
+[100%] Linking CXX executable tiny_renderer_environment_diffuse_tests
+[100%] Built target tiny_renderer_environment_diffuse_tests

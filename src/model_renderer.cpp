@@ -403,12 +403,6 @@ void preflight_prepared_draw_entry(
         false);
 }
 
-void preflight_prepared_draw_entry(
-    const Framebuffer& framebuffer,
-    const PreparedDrawOrderEntry& entry) {
-    preflight_prepared_draw_entry(framebuffer, entry, {});
-}
-
 void execute_prepared_draw_entry(
     Framebuffer& framebuffer,
     const PreparedDrawOrderEntry& entry,
@@ -421,14 +415,6 @@ void execute_prepared_draw_entry(
     const ModelRenderOptions options = prepared_draw_execution_options(prepared, overrides);
     Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, options);
     rasterizer.draw_mesh_range(asset.mesh, draw.range, entry.model, view, projection);
-}
-
-void execute_prepared_draw_entry(
-    Framebuffer& framebuffer,
-    const PreparedDrawOrderEntry& entry,
-    const Mat4& view,
-    const Mat4& projection) {
-    execute_prepared_draw_entry(framebuffer, entry, view, projection, {});
 }
 
 void execute_prepared_model_transform(
