@@ -170,11 +170,18 @@ inline void preflight_prepared_scene_evaluation(
     preflight_prepared_scene_evaluation(framebuffer, evaluation, {});
 }
 
-inline void draw_prepared_scene_evaluation(
+namespace detail {
+
+// Execution-only half of the prepared-scene transaction. Callers outside the
+// renderer's orchestration/measurement internals must use
+// draw_prepared_scene_evaluation so target-dependent validation cannot be
+// bypassed accidentally. M89 uses this narrow split only after the exact same
+// evaluation has already passed preflight, allowing validation cost and raster
+// cost to be measured independently without inventing a second draw path.
+inline void execute_preflighted_prepared_scene_evaluation(
     Framebuffer& framebuffer,
     const PreparedSceneEvaluation& evaluation,
     const PreparedDrawExecutionOverrides& overrides) {
-    preflight_prepared_scene_evaluation(framebuffer, evaluation, overrides);
     draw_prepared_draw_order(
         framebuffer,
         evaluation.visible_caller_order_draws(),
@@ -187,6 +194,17 @@ inline void draw_prepared_scene_evaluation(
         evaluation.view(),
         evaluation.projection(),
         overrides);
+}
+
+}  // namespace detail
+
+inline void draw_prepared_scene_evaluation(
+    Framebuffer& framebuffer,
+    const PreparedSceneEvaluation& evaluation,
+    const PreparedDrawExecutionOverrides& overrides) {
+    preflight_prepared_scene_evaluation(framebuffer, evaluation, overrides);
+    detail::execute_preflighted_prepared_scene_evaluation(
+        framebuffer, evaluation, overrides);
 }
 
 inline void draw_prepared_scene_evaluation(
