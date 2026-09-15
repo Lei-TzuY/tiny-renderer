@@ -156,25 +156,43 @@ private:
 // mutate the framebuffer.
 inline void preflight_prepared_scene_evaluation(
     const Framebuffer& framebuffer,
+    const PreparedSceneEvaluation& evaluation,
+    const PreparedDrawExecutionOverrides& overrides) {
+    preflight_prepared_draw_order(
+        framebuffer, evaluation.caller_order_draws(), overrides);
+    preflight_prepared_draw_order(
+        framebuffer, evaluation.back_to_front_draws(), overrides);
+}
+
+inline void preflight_prepared_scene_evaluation(
+    const Framebuffer& framebuffer,
     const PreparedSceneEvaluation& evaluation) {
-    preflight_prepared_draw_order(framebuffer, evaluation.caller_order_draws());
-    preflight_prepared_draw_order(framebuffer, evaluation.back_to_front_draws());
+    preflight_prepared_scene_evaluation(framebuffer, evaluation, {});
+}
+
+inline void draw_prepared_scene_evaluation(
+    Framebuffer& framebuffer,
+    const PreparedSceneEvaluation& evaluation,
+    const PreparedDrawExecutionOverrides& overrides) {
+    preflight_prepared_scene_evaluation(framebuffer, evaluation, overrides);
+    draw_prepared_draw_order(
+        framebuffer,
+        evaluation.visible_caller_order_draws(),
+        evaluation.view(),
+        evaluation.projection(),
+        overrides);
+    draw_prepared_draw_order(
+        framebuffer,
+        evaluation.visible_back_to_front_draws(),
+        evaluation.view(),
+        evaluation.projection(),
+        overrides);
 }
 
 inline void draw_prepared_scene_evaluation(
     Framebuffer& framebuffer,
     const PreparedSceneEvaluation& evaluation) {
-    preflight_prepared_scene_evaluation(framebuffer, evaluation);
-    draw_prepared_draw_order(
-        framebuffer,
-        evaluation.visible_caller_order_draws(),
-        evaluation.view(),
-        evaluation.projection());
-    draw_prepared_draw_order(
-        framebuffer,
-        evaluation.visible_back_to_front_draws(),
-        evaluation.view(),
-        evaluation.projection());
+    draw_prepared_scene_evaluation(framebuffer, evaluation, {});
 }
 
 }  // namespace tiny_renderer

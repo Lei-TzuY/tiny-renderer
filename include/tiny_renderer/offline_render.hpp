@@ -7,18 +7,21 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "tiny_renderer/environment.hpp"
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/model_renderer.hpp"
+#include "tiny_renderer/prepared_scene.hpp"
 
 namespace tiny_renderer {
 
@@ -131,6 +134,46 @@ struct OfflineSceneEntry {
     ModelRenderOptions options{};
     std::optional<OfflineSceneTransparencyMode> transparency_mode{};
 };
+
+// Reusable explicit-camera mixed-transparency scene. Canonical model,
+// material, texture, and per-draw spatial ownership is prepared once; each
+// render only reevaluates camera ordering/visibility and camera-dependent
+// shading state. Borrowed resources referenced by OfflineRenderSettings
+// must outlive this prepared scene just as they must outlive one-shot calls.
+class PreparedOfflineMixedScene {
+public:
+    PreparedOfflineMixedScene(const PreparedOfflineMixedScene&) = delete;
+    PreparedOfflineMixedScene& operator=(const PreparedOfflineMixedScene&) = delete;
+    PreparedOfflineMixedScene(PreparedOfflineMixedScene&&) noexcept = default;
+    PreparedOfflineMixedScene& operator=(PreparedOfflineMixedScene&&) noexcept = default;
+
+    [[nodiscard]] const PreparedScenePlan& plan() const noexcept { return *plan_; }
+    [[nodiscard]] const OfflineRenderSettings& settings() const noexcept { return settings_; }
+
+private:
+    friend PreparedOfflineMixedScene prepare_offline_mixed_scene(
+        std::span<const OfflineSceneEntry> entries,
+        OfflineRenderSettings settings);
+
+    PreparedOfflineMixedScene(
+        std::unique_ptr<PreparedScenePlan> plan,
+        OfflineRenderSettings settings)
+        : plan_(std::move(plan)), settings_(std::move(settings)) {}
+
+    std::unique_ptr<PreparedScenePlan> plan_;
+    OfflineRenderSettings settings_;
+};
+
+[[nodiscard]] PreparedOfflineMixedScene prepare_offline_mixed_scene(
+    std::span<const OfflineSceneEntry> entries,
+    OfflineRenderSettings settings = {});
+
+// Reuses the prepared scene ownership with one explicit camera. The active
+// camera eye is rebound to offline environment reflection at execution time
+// without copying or rebuilding the owned canonical model snapshots.
+[[nodiscard]] Framebuffer render_prepared_scene_preview(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneCamera& camera);
 
 // Parsed CLI-facing flat-scene description. Paths are resolved as sibling OBJ
 // files of the manifest itself. Each record may optionally request one bounded

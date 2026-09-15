@@ -249,6 +249,12 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_offline_render_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_offline_render_tests COMMAND tiny_renderer_offline_render_tests)
 
+    add_executable(tiny_renderer_offline_prepared_scene_tests tests/test_offline_prepared_scene.cpp)
+    target_link_libraries(tiny_renderer_offline_prepared_scene_tests PRIVATE tiny_renderer)
+    add_test(
+        NAME tiny_renderer_offline_prepared_scene_tests
+        COMMAND tiny_renderer_offline_prepared_scene_tests)
+
     add_executable(tiny_renderer_headless_environment_tests tests/test_headless_environment.cpp)
     target_link_libraries(tiny_renderer_headless_environment_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_headless_environment_tests COMMAND tiny_renderer_headless_environment_tests)

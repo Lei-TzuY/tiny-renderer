@@ -4,13 +4,14 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "tiny_renderer/math.hpp"
-#include "tiny_renderer/prepared_spatial.hpp"
+#include "tiny_renderer/prepared_scene.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -475,6 +476,69 @@ Framebuffer render_model_preview(
     return framebuffer;
 }
 
+PreparedOfflineMixedScene prepare_offline_mixed_scene(
+    std::span<const OfflineSceneEntry> entries,
+    OfflineRenderSettings settings) {
+    validate_settings(settings);
+
+    std::vector<PreparedScenePlanEntry> plan_entries;
+    plan_entries.reserve(entries.size());
+    for (const OfflineSceneEntry& entry : entries) {
+        if (entry.asset == nullptr) {
+            throw std::invalid_argument("offline prepared scene entry requires a model asset");
+        }
+        if (!entry.transparency_mode) {
+            throw std::invalid_argument(
+                "offline prepared mixed scene requires an explicit transparency mode for every entry");
+        }
+
+        ModelRenderOptions options = entry.options;
+        apply_offline_scene_transparency_mode(options, *entry.transparency_mode);
+        // Environment reflection is injected once for canonical ownership,
+        // then its viewer is rebound from the active camera for each render.
+        options = inject_offline_environment(
+            settings, std::move(options), Vec3{0.0F, 0.0F, 0.0F});
+        const PreparedScenePhase phase =
+            *entry.transparency_mode == OfflineSceneTransparencyMode::SourceAlpha
+            ? PreparedScenePhase::BackToFront
+            : PreparedScenePhase::CallerOrder;
+        plan_entries.push_back({
+            prepare_spatial_model(*entry.asset, std::move(options)),
+            entry.model,
+            phase,
+        });
+    }
+
+    return PreparedOfflineMixedScene{
+        std::make_unique<PreparedScenePlan>(std::move(plan_entries)),
+        std::move(settings)};
+}
+
+Framebuffer render_prepared_scene_preview(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneCamera& camera) {
+    const OfflineRenderSettings& settings = scene.settings();
+    validate_settings(settings);
+    validate_offline_scene_camera(camera);
+    const PreviewGeometryState geometry = explicit_scene_geometry_state(camera, settings);
+    const PreparedSceneEvaluation evaluation = evaluate_prepared_scene_plan(
+        scene.plan(), geometry.view, geometry.projection);
+
+    PreparedDrawExecutionOverrides overrides;
+    if (settings.environment_reflection) {
+        overrides.environment_reflection_viewer_position = camera.eye;
+    }
+
+    Framebuffer framebuffer(settings.width, settings.height, settings.sample_count);
+    // Complete unfiltered-plan target validation must happen before clear or
+    // environment mutation, exactly as in the one-shot mixed transaction.
+    preflight_prepared_scene_evaluation(framebuffer, evaluation, overrides);
+    framebuffer.clear(settings.clear_color);
+    draw_preview_environment(framebuffer, settings, geometry.camera);
+    draw_prepared_scene_evaluation(framebuffer, evaluation, overrides);
+    return framebuffer;
+}
+
 Framebuffer render_scene_preview(
     std::span<const OfflineSceneEntry> entries,
     const OfflineRenderSettings& settings,
@@ -545,14 +609,9 @@ Framebuffer render_scene_preview(
         render_entries.data(), render_entries.size()};
 
     std::vector<PreparedModelListEntry> ordered_entries;
-    std::vector<PreparedSpatialSubmission> depth_writing_spatial;
-    std::vector<PreparedSpatialListEntry> depth_writing_spatial_entries;
-    std::vector<PreparedDrawOrderEntry> depth_writing_draws;
-    std::vector<PreparedDrawOrderEntry> visible_depth_writing_draws;
-    std::vector<PreparedSpatialSubmission> source_alpha_spatial;
-    std::vector<PreparedSpatialListEntry> source_alpha_spatial_entries;
-    std::vector<PreparedDrawOrderEntry> ordered_source_alpha_draws;
-    std::vector<PreparedDrawOrderEntry> visible_source_alpha_draws;
+    std::unique_ptr<PreparedScenePlan> mixed_plan;
+    std::optional<PreparedSceneEvaluation> mixed_evaluation;
+    PreparedDrawExecutionOverrides mixed_overrides;
 
     switch (ordering) {
         case OfflineSceneOrdering::InputOrder:
@@ -562,59 +621,25 @@ Framebuffer render_scene_preview(
                 render_span, geometry.view);
             break;
         case OfflineSceneOrdering::MixedTransparency: {
-            std::size_t depth_writing_count = 0U;
-            std::size_t source_alpha_count = 0U;
-            for (const OfflineSceneEntry& entry : entries) {
-                if (*entry.transparency_mode == OfflineSceneTransparencyMode::SourceAlpha) {
-                    ++source_alpha_count;
-                } else {
-                    ++depth_writing_count;
-                }
-            }
-            depth_writing_spatial.reserve(depth_writing_count);
-            depth_writing_spatial_entries.reserve(depth_writing_count);
-            source_alpha_spatial.reserve(source_alpha_count);
-            source_alpha_spatial_entries.reserve(source_alpha_count);
-
+            std::vector<PreparedScenePlanEntry> plan_entries;
+            plan_entries.reserve(entries.size());
             for (std::size_t i = 0U; i < entries.size(); ++i) {
-                switch (*entries[i].transparency_mode) {
-                    case OfflineSceneTransparencyMode::Opaque:
-                    case OfflineSceneTransparencyMode::AlphaToCoverage:
-                        depth_writing_spatial.push_back(
-                            prepare_spatial_submission(std::move(prepared[i])));
-                        depth_writing_spatial_entries.push_back({
-                            &depth_writing_spatial.back(),
-                            render_entries[i].model,
-                        });
-                        break;
-                    case OfflineSceneTransparencyMode::SourceAlpha:
-                        source_alpha_spatial.push_back(
-                            prepare_spatial_submission(std::move(prepared[i])));
-                        source_alpha_spatial_entries.push_back({
-                            &source_alpha_spatial.back(),
-                            render_entries[i].model,
-                        });
-                        break;
-                }
+                const PreparedScenePhase phase =
+                    *entries[i].transparency_mode == OfflineSceneTransparencyMode::SourceAlpha
+                    ? PreparedScenePhase::BackToFront
+                    : PreparedScenePhase::CallerOrder;
+                plan_entries.push_back({
+                    prepare_spatial_submission(std::move(prepared[i])),
+                    render_entries[i].model,
+                    phase,
+                });
             }
-            depth_writing_draws = flatten_prepared_model_draws(
-                std::span<const PreparedSpatialListEntry>{
-                    depth_writing_spatial_entries.data(), depth_writing_spatial_entries.size()},
-                geometry.view);
-            visible_depth_writing_draws = filter_prepared_draw_order_to_frustum(
-                std::span<const PreparedDrawOrderEntry>{
-                    depth_writing_draws.data(), depth_writing_draws.size()},
-                geometry.view,
-                geometry.projection);
-            ordered_source_alpha_draws = order_prepared_model_draws_back_to_front(
-                std::span<const PreparedSpatialListEntry>{
-                    source_alpha_spatial_entries.data(), source_alpha_spatial_entries.size()},
-                geometry.view);
-            visible_source_alpha_draws = filter_prepared_draw_order_to_frustum(
-                std::span<const PreparedDrawOrderEntry>{
-                    ordered_source_alpha_draws.data(), ordered_source_alpha_draws.size()},
-                geometry.view,
-                geometry.projection);
+            mixed_plan = std::make_unique<PreparedScenePlan>(std::move(plan_entries));
+            mixed_evaluation = evaluate_prepared_scene_plan(
+                *mixed_plan, geometry.view, geometry.projection);
+            if (settings.environment_reflection) {
+                mixed_overrides.environment_reflection_viewer_position = active_camera.eye;
+            }
             break;
         }
     }
@@ -626,14 +651,11 @@ Framebuffer render_scene_preview(
     // caller-ordered depth-writing plan and complete sorted source-alpha plan
     // remain validated even when off-frustum draws are omitted from submission.
     if (ordering == OfflineSceneOrdering::MixedTransparency) {
-        preflight_prepared_draw_order(
-            framebuffer,
-            std::span<const PreparedDrawOrderEntry>{
-                depth_writing_draws.data(), depth_writing_draws.size()});
-        preflight_prepared_draw_order(
-            framebuffer,
-            std::span<const PreparedDrawOrderEntry>{
-                ordered_source_alpha_draws.data(), ordered_source_alpha_draws.size()});
+        if (!mixed_evaluation) {
+            throw std::logic_error("mixed offline scene evaluation was not prepared");
+        }
+        preflight_prepared_scene_evaluation(
+            framebuffer, *mixed_evaluation, mixed_overrides);
     } else {
         preflight_prepared_model_list(framebuffer, render_span);
     }
@@ -658,18 +680,8 @@ Framebuffer render_scene_preview(
                 geometry.projection);
             break;
         case OfflineSceneOrdering::MixedTransparency:
-            draw_prepared_draw_order(
-                framebuffer,
-                std::span<const PreparedDrawOrderEntry>{
-                    visible_depth_writing_draws.data(), visible_depth_writing_draws.size()},
-                geometry.view,
-                geometry.projection);
-            draw_prepared_draw_order(
-                framebuffer,
-                std::span<const PreparedDrawOrderEntry>{
-                    visible_source_alpha_draws.data(), visible_source_alpha_draws.size()},
-                geometry.view,
-                geometry.projection);
+            draw_prepared_scene_evaluation(
+                framebuffer, *mixed_evaluation, mixed_overrides);
             break;
     }
     return framebuffer;
