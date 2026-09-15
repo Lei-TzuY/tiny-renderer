@@ -170,11 +170,18 @@ inline void preflight_prepared_scene_evaluation(
     preflight_prepared_scene_evaluation(framebuffer, evaluation, {});
 }
 
-inline void draw_prepared_scene_evaluation(
+namespace detail {
+
+// Scene-transaction execution half used after the complete evaluation has
+// already passed scene-level preflight. This deliberately keeps the canonical
+// draw-order/range submission functions intact, so their own lower-level
+// fail-closed validation still runs. M89 can therefore measure camera
+// evaluation+transaction preflight separately from submission+raster work
+// without creating a benchmark-only fast path or weakening production guards.
+inline void execute_preflighted_prepared_scene_evaluation(
     Framebuffer& framebuffer,
     const PreparedSceneEvaluation& evaluation,
     const PreparedDrawExecutionOverrides& overrides) {
-    preflight_prepared_scene_evaluation(framebuffer, evaluation, overrides);
     draw_prepared_draw_order(
         framebuffer,
         evaluation.visible_caller_order_draws(),
@@ -187,6 +194,17 @@ inline void draw_prepared_scene_evaluation(
         evaluation.view(),
         evaluation.projection(),
         overrides);
+}
+
+}  // namespace detail
+
+inline void draw_prepared_scene_evaluation(
+    Framebuffer& framebuffer,
+    const PreparedSceneEvaluation& evaluation,
+    const PreparedDrawExecutionOverrides& overrides) {
+    preflight_prepared_scene_evaluation(framebuffer, evaluation, overrides);
+    detail::execute_preflighted_prepared_scene_evaluation(
+        framebuffer, evaluation, overrides);
 }
 
 inline void draw_prepared_scene_evaluation(
