@@ -324,6 +324,22 @@ Rasterizer model_rasterizer(
         options.point_shadow_state);
 }
 
+ModelRenderOptions prepared_draw_execution_options(
+    const PreparedModelSubmission& prepared,
+    const PreparedDrawExecutionOverrides& overrides) {
+    ModelRenderOptions options = prepared.options();
+    if (overrides.environment_reflection_viewer_position) {
+        const Vec3 viewer = *overrides.environment_reflection_viewer_position;
+        if (!finite_vec3(viewer)) {
+            throw std::invalid_argument("prepared draw reflection viewer override must be finite");
+        }
+        if (options.fixed_lights.environment_reflection) {
+            options.fixed_lights.environment_reflection->viewer_position = viewer;
+        }
+    }
+    return options;
+}
+
 const MaterialDraw& prepared_draw_for(const PreparedDrawOrderEntry& entry) {
     if (entry.prepared == nullptr) {
         throw std::invalid_argument("prepared draw order entry requires a prepared spatial submission");
@@ -356,11 +372,12 @@ const MaterialDraw& prepared_draw_for(const PreparedDrawOrderEntry& entry) {
 
 void preflight_prepared_draw_entry(
     const Framebuffer& framebuffer,
-    const PreparedDrawOrderEntry& entry) {
+    const PreparedDrawOrderEntry& entry,
+    const PreparedDrawExecutionOverrides& overrides) {
     const MaterialDraw& draw = prepared_draw_for(entry);
     const PreparedModelSubmission& prepared = entry.prepared->prepared();
     const ModelAsset& asset = prepared.asset();
-    const ModelRenderOptions& options = prepared.options();
+    const ModelRenderOptions options = prepared_draw_execution_options(prepared, overrides);
     detail::validate_alpha_test_state(options.alpha_test_state);
     detail::preflight_mesh_range_submission(
         framebuffer,
@@ -386,16 +403,32 @@ void preflight_prepared_draw_entry(
         false);
 }
 
+void preflight_prepared_draw_entry(
+    const Framebuffer& framebuffer,
+    const PreparedDrawOrderEntry& entry) {
+    preflight_prepared_draw_entry(framebuffer, entry, {});
+}
+
+void execute_prepared_draw_entry(
+    Framebuffer& framebuffer,
+    const PreparedDrawOrderEntry& entry,
+    const Mat4& view,
+    const Mat4& projection,
+    const PreparedDrawExecutionOverrides& overrides) {
+    const MaterialDraw& draw = prepared_draw_for(entry);
+    const PreparedModelSubmission& prepared = entry.prepared->prepared();
+    const ModelAsset& asset = prepared.asset();
+    const ModelRenderOptions options = prepared_draw_execution_options(prepared, overrides);
+    Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, options);
+    rasterizer.draw_mesh_range(asset.mesh, draw.range, entry.model, view, projection);
+}
+
 void execute_prepared_draw_entry(
     Framebuffer& framebuffer,
     const PreparedDrawOrderEntry& entry,
     const Mat4& view,
     const Mat4& projection) {
-    const MaterialDraw& draw = prepared_draw_for(entry);
-    const PreparedModelSubmission& prepared = entry.prepared->prepared();
-    const ModelAsset& asset = prepared.asset();
-    Rasterizer rasterizer = model_rasterizer(framebuffer, asset, draw, prepared.options());
-    rasterizer.draw_mesh_range(asset.mesh, draw.range, entry.model, view, projection);
+    execute_prepared_draw_entry(framebuffer, entry, view, projection, {});
 }
 
 void execute_prepared_model_transform(
@@ -583,8 +616,15 @@ void draw_prepared_model_list(
 void preflight_prepared_draw_order(
     const Framebuffer& framebuffer,
     std::span<const PreparedDrawOrderEntry> entries) {
+    preflight_prepared_draw_order(framebuffer, entries, {});
+}
+
+void preflight_prepared_draw_order(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries,
+    const PreparedDrawExecutionOverrides& overrides) {
     for (const PreparedDrawOrderEntry& entry : entries) {
-        preflight_prepared_draw_entry(framebuffer, entry);
+        preflight_prepared_draw_entry(framebuffer, entry, overrides);
     }
 }
 
@@ -593,9 +633,18 @@ void draw_prepared_draw_order(
     std::span<const PreparedDrawOrderEntry> entries,
     const Mat4& view,
     const Mat4& projection) {
-    preflight_prepared_draw_order(framebuffer, entries);
+    draw_prepared_draw_order(framebuffer, entries, view, projection, {});
+}
+
+void draw_prepared_draw_order(
+    Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries,
+    const Mat4& view,
+    const Mat4& projection,
+    const PreparedDrawExecutionOverrides& overrides) {
+    preflight_prepared_draw_order(framebuffer, entries, overrides);
     for (const PreparedDrawOrderEntry& entry : entries) {
-        execute_prepared_draw_entry(framebuffer, entry, view, projection);
+        execute_prepared_draw_entry(framebuffer, entry, view, projection, overrides);
     }
 }
 

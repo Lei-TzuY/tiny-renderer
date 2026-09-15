@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -70,6 +71,14 @@ struct PreparedDrawOrderEntry {
     Mat4 model{Mat4::identity()};
     std::size_t draw_index{};
     double view_depth{};
+};
+
+// Camera-dependent execution values that may change between evaluations
+// without rebuilding the owned prepared model/spatial snapshot. The first
+// bounded override is the environment-reflection viewer position used by
+// reusable offline scene rendering.
+struct PreparedDrawExecutionOverrides {
+    std::optional<Vec3> environment_reflection_viewer_position{};
 };
 
 namespace detail {
@@ -422,6 +431,11 @@ void preflight_prepared_draw_order(
     const Framebuffer& framebuffer,
     std::span<const PreparedDrawOrderEntry> entries);
 
+void preflight_prepared_draw_order(
+    const Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries,
+    const PreparedDrawExecutionOverrides& overrides);
+
 // Executes the supplied draw sequence exactly in caller order. The executor
 // uses the canonical prepared-model material/raster mapping and selected
 // draw_mesh_range path; it does not re-sort or create a parallel raster path.
@@ -431,5 +445,12 @@ void draw_prepared_draw_order(
     std::span<const PreparedDrawOrderEntry> entries,
     const Mat4& view,
     const Mat4& projection);
+
+void draw_prepared_draw_order(
+    Framebuffer& framebuffer,
+    std::span<const PreparedDrawOrderEntry> entries,
+    const Mat4& view,
+    const Mat4& projection,
+    const PreparedDrawExecutionOverrides& overrides);
 
 }  // namespace tiny_renderer
