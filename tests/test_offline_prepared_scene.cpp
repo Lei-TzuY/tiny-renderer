@@ -1,11 +1,12 @@
 #include <array>
 #include <cstddef>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include "tiny_renderer/offline_render.hpp"
+#include "tiny_renderer/offline_sequence.hpp"
 
 using namespace tiny_renderer;
 
@@ -128,6 +129,30 @@ bool exact_frame_equal(const Framebuffer& left, const Framebuffer& right) {
     return true;
 }
 
+PreparedOfflineMixedScene make_reflective_mixed_scene(
+    const OfflineRenderSettings& settings) {
+    ModelAsset reflective = triangle_asset(
+        {0.0F, 0.0F, 0.0F},
+        {0.9F, 0.65F, 0.35F});
+    ModelAsset transparent = triangle_asset(
+        {0.1F, 0.7F, 0.25F},
+        {0.0F, 0.0F, 0.0F},
+        0.45F);
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &reflective,
+            Mat4::translation({-0.2F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &transparent,
+            Mat4::translation({0.25F, 0.0F, -0.25F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    return prepare_offline_mixed_scene(entries, settings);
+}
+
 void test_reusable_mixed_scene_matches_one_shot_across_cameras() {
     const Texture2D environment = directional_environment_texture();
     OfflineRenderSettings settings;
@@ -137,28 +162,7 @@ void test_reusable_mixed_scene_matches_one_shot_across_cameras() {
     settings.clear_color = {0.01F, 0.015F, 0.02F};
     settings.environment_reflection = offline_reflection(environment);
 
-    const PreparedOfflineMixedScene reusable = [&] {
-        ModelAsset reflective = triangle_asset(
-            {0.0F, 0.0F, 0.0F},
-            {0.9F, 0.65F, 0.35F});
-        ModelAsset transparent = triangle_asset(
-            {0.1F, 0.7F, 0.25F},
-            {0.0F, 0.0F, 0.0F},
-            0.45F);
-        const std::array<OfflineSceneEntry, 2> entries{{
-            OfflineSceneEntry{
-                &reflective,
-                Mat4::translation({-0.2F, 0.0F, 0.0F}),
-                {},
-                OfflineSceneTransparencyMode::Opaque},
-            OfflineSceneEntry{
-                &transparent,
-                Mat4::translation({0.25F, 0.0F, -0.25F}),
-                {},
-                OfflineSceneTransparencyMode::SourceAlpha},
-        }};
-        return prepare_offline_mixed_scene(entries, settings);
-    }();
+    const PreparedOfflineMixedScene reusable = make_reflective_mixed_scene(settings);
 
     const ModelAsset reflective_reference = triangle_asset(
         {0.0F, 0.0F, 0.0F},
@@ -212,6 +216,123 @@ void test_reusable_mixed_scene_matches_one_shot_across_cameras() {
         "reusing one owned prepared scene for the same camera is exactly deterministic");
 }
 
+void test_reusable_camera_sequence_matches_individual_execution() {
+    const Texture2D environment = directional_environment_texture();
+    OfflineRenderSettings settings;
+    settings.width = 57U;
+    settings.height = 43U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+    settings.environment_reflection = offline_reflection(environment);
+
+    const PreparedOfflineMixedScene reusable = make_reflective_mixed_scene(settings);
+    const OfflineSceneCamera camera_a = camera_at({0.0F, 0.0F, 3.0F});
+    const OfflineSceneCamera camera_b = camera_at({1.35F, 0.15F, 3.0F});
+    const std::array<OfflineSceneCamera, 3> cameras{{camera_a, camera_b, camera_a}};
+
+    const std::vector<Framebuffer> sequence =
+        render_prepared_scene_sequence(reusable, cameras);
+    check(sequence.size() == cameras.size(),
+        "camera sequence returns exactly one framebuffer per input camera");
+    if (sequence.size() == cameras.size()) {
+        for (std::size_t i = 0U; i < cameras.size(); ++i) {
+            const Framebuffer individual =
+                render_prepared_scene_preview(reusable, cameras[i]);
+            check(
+                exact_frame_equal(sequence[i], individual),
+                "camera sequence frame is exact per-sample equivalent to individual reusable rendering");
+        }
+        check(
+            exact_frame_equal(sequence[0], sequence[2]),
+            "repeated camera positions remain exactly deterministic inside one sequence");
+        check(
+            sequence[0].rgb8() != sequence[1].rgb8(),
+            "camera sequence rebinds camera-dependent reflection between adjacent frames");
+    }
+
+    const std::span<const OfflineSceneCamera> empty_cameras{};
+    check(
+        render_prepared_scene_sequence(reusable, empty_cameras).empty(),
+        "empty reusable camera sequence is a deterministic no-op");
+}
+
+class CountingFragmentProgram final : public FragmentProgram {
+public:
+    explicit CountingFragmentProgram(std::size_t* shade_calls)
+        : shade_calls_(shade_calls) {}
+
+    FragmentProgramOutput shade(
+        const FragmentProgramInput& input) const noexcept override {
+        ++(*shade_calls_);
+        return {input.fixed_rgb, input.fixed_opacity, false};
+    }
+
+private:
+    std::size_t* shade_calls_{};
+};
+
+void test_camera_sequence_preflights_every_camera_before_execution() {
+    std::size_t shade_calls = 0U;
+    ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program = std::make_shared<CountingFragmentProgram>(&shade_calls);
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 1> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+
+    OfflineSceneCamera invalid = camera_at({1.0F, 0.0F, 3.0F});
+    invalid.target = invalid.eye;
+    const std::array<OfflineSceneCamera, 2> cameras{{
+        camera_at({0.0F, 0.0F, 3.0F}),
+        invalid,
+    }};
+
+    check_throws<std::invalid_argument>(
+        [&] { (void)render_prepared_scene_sequence(reusable, cameras); },
+        "later invalid camera rejects the complete reusable sequence");
+    check(
+        shade_calls == 0U,
+        "later invalid camera rejects before any earlier frame fragment execution");
+}
+
+void test_camera_sequence_resource_bound() {
+    ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    OfflineRenderSettings settings;
+    settings.width = 512U;
+    settings.height = 512U;
+    const std::array<OfflineSceneEntry, 1> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+
+    std::vector<OfflineSceneCamera> cameras(
+        65U,
+        camera_at({0.0F, 0.0F, 3.0F}));
+    check_throws<std::invalid_argument>(
+        [&] { (void)render_prepared_scene_sequence(reusable, cameras); },
+        "camera sequence rejects an in-memory result beyond the resolved-pixel budget");
+}
+
 void test_reusable_scene_validation_contract() {
     const ModelAsset asset = triangle_asset(
         {0.7F, 0.2F, 0.1F},
@@ -253,6 +374,9 @@ void test_reusable_scene_validation_contract() {
 
 int main() {
     test_reusable_mixed_scene_matches_one_shot_across_cameras();
+    test_reusable_camera_sequence_matches_individual_execution();
+    test_camera_sequence_preflights_every_camera_before_execution();
+    test_camera_sequence_resource_bound();
     test_reusable_scene_validation_contract();
 
     if (failures != 0) {
