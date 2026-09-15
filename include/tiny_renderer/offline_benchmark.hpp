@@ -22,7 +22,10 @@ struct OfflineBenchmarkConfig {
 struct OfflineBenchmarkSample {
     double preparation_microseconds{};
     double evaluation_preflight_microseconds{};
-    double raster_microseconds{};
+    // Includes canonical per-draw/range fail-closed validation plus fragment
+    // submission/raster work. The scene-level transaction preflight is timed in
+    // the preceding phase, but lower-level guards are intentionally not bypassed.
+    double submission_raster_microseconds{};
     std::uint64_t sequence_hash{};
 };
 
@@ -119,8 +122,8 @@ template <typename Clock, typename Function>
 }  // namespace detail
 
 // Controlled phase benchmark for the reusable explicit-camera mixed-scene path.
-// This intentionally rejects environment *background* rendering so the raster
-// phase measures the same prepared geometry submission contract for every run;
+// This intentionally rejects environment *background* rendering so the final
+// phase measures prepared geometry submission/raster work for every run;
 // environment diffuse/reflection lighting remains valid because it is carried
 // by prepared model state and camera execution overrides.
 //
@@ -197,8 +200,9 @@ template <typename Clock = std::chrono::steady_clock>
                 *scene, cameras, validation_target);
         });
 
-        // Allocation and target clear intentionally stay outside raster timing.
-        // The raster phase measures submission/shading/sample ownership only.
+        // Allocation and target clear intentionally stay outside the final
+        // timing. The final phase includes canonical lower-level validation,
+        // submission, shading, and sample ownership but not target allocation.
         std::vector<Framebuffer> targets;
         targets.reserve(cameras.size());
         for (std::size_t index = 0U; index < cameras.size(); ++index) {
@@ -207,7 +211,7 @@ template <typename Clock = std::chrono::steady_clock>
         }
 
         std::uint64_t sequence_hash = 0U;
-        const double raster_us = detail::benchmark_microseconds<Clock>([&] {
+        const double submission_raster_us = detail::benchmark_microseconds<Clock>([&] {
             sequence_hash = detail::benchmark_execute_preflighted(prepared, targets);
         });
         if (iteration == 0U) {
@@ -217,17 +221,17 @@ template <typename Clock = std::chrono::steady_clock>
         }
         if (!std::isfinite(preparation_us)
             || !std::isfinite(evaluation_preflight_us)
-            || !std::isfinite(raster_us)
+            || !std::isfinite(submission_raster_us)
             || preparation_us < 0.0
             || evaluation_preflight_us < 0.0
-            || raster_us < 0.0) {
+            || submission_raster_us < 0.0) {
             throw std::runtime_error("offline benchmark steady-clock measurement is invalid");
         }
 
         report.samples.push_back({
             preparation_us,
             evaluation_preflight_us,
-            raster_us,
+            submission_raster_us,
             sequence_hash,
         });
     }
