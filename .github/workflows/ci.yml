@@ -21,6 +21,13 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Render sample
         run: ./build/tiny_renderer_sample build/milestone1.ppm
+      - name: Smoke controlled benchmark harness
+        run: |
+          ./build/tiny_renderer_sample --benchmark 2 0 > build/benchmark-smoke.txt
+          grep -q '^benchmark=tiny-renderer-offline-v1 ' build/benchmark-smoke.txt
+          test "$(grep -c '^sample=' build/benchmark-smoke.txt)" -eq 2
+          grep -q ' submission_raster_us=' build/benchmark-smoke.txt
+          grep -q '^note=raw-timings-no-performance-claim;' build/benchmark-smoke.txt
       - name: Render deterministic flat-scene manifest
         run: |
           ./build/tiny_renderer_render tests/fixtures/flat_scene.trscene build/flat_scene_a.ppm 96 64 4
@@ -114,6 +121,16 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ./build/tiny_renderer_sample build/milestone1.ppm
+      - name: Smoke controlled benchmark harness under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          ./build/tiny_renderer_sample --benchmark 2 0 > build/benchmark-smoke.txt
+          grep -q '^benchmark=tiny-renderer-offline-v1 ' build/benchmark-smoke.txt
+          test "$(grep -c '^sample=' build/benchmark-smoke.txt)" -eq 2
+          grep -q ' submission_raster_us=' build/benchmark-smoke.txt
+          grep -q '^note=raw-timings-no-performance-claim;' build/benchmark-smoke.txt
       - name: Render flat-scene manifests under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
