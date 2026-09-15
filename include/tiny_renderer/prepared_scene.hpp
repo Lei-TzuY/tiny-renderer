@@ -172,12 +172,12 @@ inline void preflight_prepared_scene_evaluation(
 
 namespace detail {
 
-// Execution-only half of the prepared-scene transaction. Callers outside the
-// renderer's orchestration/measurement internals must use
-// draw_prepared_scene_evaluation so target-dependent validation cannot be
-// bypassed accidentally. M89 uses this narrow split only after the exact same
-// evaluation has already passed preflight, allowing validation cost and raster
-// cost to be measured independently without inventing a second draw path.
+// Scene-transaction execution half used after the complete evaluation has
+// already passed scene-level preflight. This deliberately keeps the canonical
+// draw-order/range submission functions intact, so their own lower-level
+// fail-closed validation still runs. M89 can therefore measure camera
+// evaluation+transaction preflight separately from submission+raster work
+// without creating a benchmark-only fast path or weakening production guards.
 inline void execute_preflighted_prepared_scene_evaluation(
     Framebuffer& framebuffer,
     const PreparedSceneEvaluation& evaluation,
