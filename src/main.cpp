@@ -184,7 +184,7 @@ int run_controlled_benchmark(int argc, char** argv) {
             << "sample=" << index
             << " prepare_us=" << sample.preparation_microseconds
             << " eval_preflight_us=" << sample.evaluation_preflight_microseconds
-            << " raster_us=" << sample.raster_microseconds
+            << " submission_raster_us=" << sample.submission_raster_microseconds
             << " hash=0x" << std::hex << sample.sequence_hash << std::dec
             << '\n';
     }
