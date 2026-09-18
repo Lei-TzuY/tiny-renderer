@@ -474,6 +474,198 @@ void test_compatibility_sequence_preserves_historical_camera_capacity() {
         "compatibility vector sequence remains deterministic across the preserved camera-capacity boundary");
 }
 
+
+void test_prepared_frame_sequence_matches_manual_per_frame_scenes() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset coverage = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F},
+        0.55F);
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F},
+        0.45F);
+    const ModelAsset blue = triangle_asset(
+        {0.10F, 0.25F, 0.85F},
+        {0.0F, 0.0F, 0.0F},
+        0.55F);
+
+    // Deliberately stale/out-of-frustum base transforms prove that frame
+    // overlays, not PreparedScenePlanEntry::model, drive M92 evaluation.
+    const std::array<OfflineSceneEntry, 3> base_entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(base_entries, settings);
+
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+    const std::vector<Mat4> transforms_a{
+        Mat4::translation({-0.35F, 0.0F, 0.0F}),
+        Mat4::translation({0.20F, 0.0F, -0.25F}),
+        Mat4::translation({0.10F, 0.0F, -0.80F}),
+    };
+    const std::vector<Mat4> transforms_b{
+        Mat4::translation({0.35F, 0.0F, 0.0F}),
+        Mat4::translation({0.10F, 0.0F, -0.90F}),
+        Mat4::translation({-0.20F, 0.0F, -0.20F}),
+    };
+    const std::vector<Mat4> transforms_c{
+        Mat4::translation({12.0F, 0.0F, 0.0F}),
+        Mat4::translation({12.0F, 0.0F, -0.25F}),
+        Mat4::translation({12.0F, 0.0F, -0.80F}),
+    };
+
+    const std::array<OfflineSceneFrameState, 4> frames{{
+        OfflineSceneFrameState{camera, transforms_a},
+        OfflineSceneFrameState{camera, transforms_b},
+        OfflineSceneFrameState{camera, transforms_c},
+        OfflineSceneFrameState{camera, transforms_a},
+    }};
+
+    const PreparedOfflineCameraSequence prepared =
+        prepare_offline_frame_sequence(reusable, frames);
+    check(
+        prepared.frame_count() == frames.size(),
+        "prepared affine frame sequence exposes one indexed frame per transform record");
+
+    const std::array<const std::vector<Mat4>*, 4> expected_transforms{{
+        &transforms_a, &transforms_b, &transforms_c, &transforms_a,
+    }};
+    for (std::size_t frame_index = 0U;
+         frame_index < frames.size();
+         ++frame_index) {
+        const std::vector<Mat4>& models = *expected_transforms[frame_index];
+        const std::array<OfflineSceneEntry, 3> manual_entries{{
+            OfflineSceneEntry{
+                &coverage,
+                models[0],
+                {},
+                OfflineSceneTransparencyMode::AlphaToCoverage},
+            OfflineSceneEntry{
+                &green,
+                models[1],
+                {},
+                OfflineSceneTransparencyMode::SourceAlpha},
+            OfflineSceneEntry{
+                &blue,
+                models[2],
+                {},
+                OfflineSceneTransparencyMode::SourceAlpha},
+        }};
+        const Framebuffer expected = render_scene_preview(
+            manual_entries,
+            settings,
+            OfflineSceneOrdering::MixedTransparency,
+            camera);
+        const Framebuffer actual =
+            render_prepared_camera_sequence_frame(prepared, frame_index);
+        check(
+            exact_frame_equal(actual, expected),
+            "prepared affine frame is exact per-sample equivalent to manually rebuilt per-frame prepared submissions");
+    }
+
+    const Framebuffer frame_a =
+        render_prepared_camera_sequence_frame(prepared, 0U);
+    const Framebuffer frame_b =
+        render_prepared_camera_sequence_frame(prepared, 1U);
+    const Framebuffer frame_c =
+        render_prepared_camera_sequence_frame(prepared, 2U);
+    const Framebuffer frame_a_repeat =
+        render_prepared_camera_sequence_frame(prepared, 3U);
+    check(
+        !exact_frame_equal(frame_a, frame_b),
+        "per-frame transforms observably reevaluate caller-order placement and source-alpha depth ordering");
+    check(
+        exact_frame_equal(frame_a, frame_a_repeat),
+        "A-B-C-A transform sequence preserves exact repeated-frame determinism");
+    Framebuffer clear_reference(
+        settings.width,
+        settings.height,
+        settings.sample_count);
+    clear_reference.clear(settings.clear_color);
+    check(
+        exact_frame_equal(frame_c, clear_reference),
+        "far-out frame is exact clear-target output and cannot reuse stale visibility from an earlier transform");
+}
+
+void test_prepared_frame_sequence_rejects_invalid_transform_records() {
+    OfflineRenderSettings settings;
+    settings.width = 37U;
+    settings.height = 29U;
+    settings.sample_count = SampleCount::Four;
+
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F},
+        0.5F);
+    const std::array<OfflineSceneEntry, 1> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    const std::array<OfflineSceneFrameState, 1> missing_transform{{
+        OfflineSceneFrameState{camera, {}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)prepare_offline_frame_sequence(reusable, missing_transform); },
+        "prepared affine frame sequence rejects a transform record whose entry count does not match the prepared scene");
+
+    const std::array<OfflineSceneFrameState, 2> later_projective{{
+        OfflineSceneFrameState{
+            camera,
+            {Mat4::translation({0.0F, 0.0F, -0.2F})}},
+        OfflineSceneFrameState{
+            camera,
+            {Mat4::perspective(
+                radians(55.0F),
+                1.0F,
+                0.1F,
+                20.0F)}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)prepare_offline_frame_sequence(reusable, later_projective); },
+        "later projective model transform rejects the complete prepared frame transaction");
+
+    const std::array<OfflineSceneFrameState, 2> valid_frames{{
+        OfflineSceneFrameState{
+            camera,
+            {Mat4::translation({-0.2F, 0.0F, -0.1F})}},
+        OfflineSceneFrameState{
+            camera,
+            {Mat4::translation({0.2F, 0.0F, -0.4F})}},
+    }};
+    const PreparedOfflineCameraSequence prepared =
+        prepare_offline_frame_sequence(reusable, valid_frames);
+    check(
+        prepared.frame_count() == valid_frames.size(),
+        "finite affine transforms pass the prepared frame transaction");
+}
+
 void test_reusable_scene_validation_contract() {
     const ModelAsset asset = triangle_asset(
         {0.7F, 0.2F, 0.1F},
@@ -521,6 +713,8 @@ int main() {
     test_camera_sequence_preflights_every_camera_before_execution();
     test_camera_sequence_resource_bound();
     test_compatibility_sequence_preserves_historical_camera_capacity();
+    test_prepared_frame_sequence_matches_manual_per_frame_scenes();
+    test_prepared_frame_sequence_rejects_invalid_transform_records();
     test_reusable_scene_validation_contract();
 
     if (failures != 0) {

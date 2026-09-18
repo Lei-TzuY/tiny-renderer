@@ -30,7 +30,7 @@ The repository also integrates bounded OBJ relative indices, polygon triangulati
 
 ### Milestone-number and concurrency note
 
-Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence. The historical `milestone-73-prepared-spatial-metadata` branch is superseded by integrated M81. Milestone 91 is the active implementation surface on branch `milestone-91-prepared-camera-sequence-plan` / PR #107; historical M88/M90 camera-sequence branches are completion history, not parallel implementation surfaces.
+Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence. The historical `milestone-73-prepared-spatial-metadata` branch is superseded by integrated M81, and historical M88/M90/M91 sequence branches are completion history rather than live implementation surfaces. The authoritative state is always the exact integrated `main` commit plus its CI evidence.
 
 ## Milestone 90 — file-driven reusable camera sequences (integrated)
 
@@ -67,32 +67,46 @@ Acceptance surface:
 - Measurement helpers may expose phase boundaries only if production validation semantics remain intact; benchmark code must not gain a faster correctness path than normal rendering.
 - Performance claims require controlled measurements; CI duration is never treated as a benchmark.
 
-## Milestone 91 candidate — prepared frame-at-a-time camera sequences
+## Milestone 91 — prepared frame-at-a-time camera sequences
 
-M91 promotes the M90 file-driven batch into a prepared transaction whose camera-dependent planning and complete target preflight happen once before any indexed frame is allowed to execute. The core capability is bounded ownership: callers and the CLI can consume one framebuffer at a time without rebuilding canonical model/material/texture/spatial state or retaining the entire rendered sequence.
-
-Current candidate behavior:
+M91 is integrated on exact `main` commit `90187dc3ac158a2cf020d1ca68608d0a1ace8c79`. Push CI run `35356841992` completed successfully on Linux, macOS, and ASan/UBSan.
 
 - `PreparedOfflineCameraSequence` retains the address-stable prepared-scene plan through shared ownership, snapshots validated offline settings, and owns the ordered cameras, camera-dependent `PreparedSceneEvaluation` records, and reflection execution overrides. Existing environment textures remain borrowed resources under the established offline-settings lifetime contract.
 - `prepare_offline_camera_sequence` validates the complete camera span, derives exact view/projection matrices, reevaluates caller-order/back-to-front planning plus conservative visibility, binds camera-specific reflection viewer positions, and target-preflights every complete unfiltered evaluation before returning.
-- The public prepared-plan API remains bounded to 256 camera metadata records. `render_prepared_camera_sequence_frame` then executes one deterministic indexed entry through the existing environment and prepared-draw/range/raster paths without repeating scene-level evaluation or transaction preflight; lower-level fail-closed draw/range validation remains active.
-- The historical `render_prepared_scene_sequence` compatibility helper preserves its original 16 Mi aggregate resolved-pixel ownership contract rather than inheriting the new 256-camera metadata limit. A 257-camera 1x1 regression locks that compatibility boundary while both APIs share one preparation implementation.
-- M90 CLI sequence execution now prepares the complete sequence before output and renders/writes one indexed frame at a time, preserving deterministic sidecar order and later-invalid zero-output behavior without retaining every framebuffer simultaneously.
-- Environment background validation now matches the existing diffuse/reflection radiance contract by validating the complete source radiance field before execution. A negative background texel therefore cannot remain latent until a later camera after earlier sequence frames have already executed.
-- Regression evidence locks exact A/B/A resolved and per-sample equivalence against individual reusable rendering and the compatibility vector API, repeated indexed-frame determinism, invalid index rejection, source-scene lifetime, later-invalid camera rejection before fragment shading, reflection rebinding, the 65-camera large-target ownership distinction, preserved >256-camera compatibility when the historical pixel bound allows it, and existing file-driven CLI outputs.
-- This milestone is an ownership/data-plane capability, not a speedup claim. It adds no parallel/asynchronous execution, interpolation/keyframes, streaming input, BVH/occlusion acceleration, or second renderer path.
+- The public prepared-plan API is bounded to 256 camera metadata records. `render_prepared_camera_sequence_frame` executes one deterministic indexed entry through the existing environment and prepared-draw/range/raster paths without repeating scene-level evaluation or transaction preflight; lower-level fail-closed guards remain active.
+- The historical `render_prepared_scene_sequence` compatibility helper preserves its original 16 Mi aggregate resolved-pixel ownership contract rather than inheriting the 256-camera metadata limit.
+- M90 CLI sequence execution prepares the complete sequence before output and renders/writes one indexed frame at a time, preserving deterministic sidecar order and later-invalid zero-output behavior without retaining every framebuffer simultaneously.
+- Environment background validation matches the diffuse/reflection radiance contract by validating the complete source radiance field before execution.
+- Regression evidence locks exact A/B/A resolved and per-sample equivalence, repeated indexed-frame determinism, invalid index rejection, source-scene lifetime, later-invalid camera rejection before fragment shading, reflection rebinding, large-target ownership boundaries, preserved compatibility capacity, and existing file-driven CLI outputs.
+- M91 is an ownership/data-plane capability, not a speedup claim; it adds no parallel/asynchronous execution, interpolation/keyframes, streaming input, acceleration structure, or second renderer path.
 
-## Promotion after Milestone 91
+## Milestone 92 — bounded prepared per-frame affine scene transforms
 
-The next architectural promotion should move from camera-only frame variation to **bounded prepared per-frame affine scene transforms** rather than adding another sequence wrapper.
+M92 promotes M91 from camera-only variation to frame-varying model transforms while preserving immutable prepared model/material/texture ownership and object-space spatial metadata.
 
-Milestone 92 should make frame-varying model transforms explicit while preserving the existing prepared ownership and spatial invariants:
+- `evaluate_prepared_scene_plan` accepts an optional exact per-entry model-transform overlay. A non-empty overlay must match the prepared scene entry count; the legacy overload delegates with no overlay and preserves prepared entry transforms.
+- Each selected frame transform is copied into the existing `PreparedDrawOrderEntry`, so caller-order flattening, stable far-to-near source-alpha ordering, conservative eight-corner AABB frustum testing, complete-plan preflight, and final draw execution consume one consistent matrix rather than stale prepared-entry state.
+- `OfflineSceneFrameState` pairs one validated camera with one complete transform record. `prepare_offline_frame_sequence` reuses `PreparedOfflineCameraSequence` ownership and indexed frame execution rather than introducing a second sequence or raster path.
+- Every explicit frame transform record must align exactly with `PreparedScenePlan::entries()`. Existing prepared-spatial validation rejects non-finite/projective model transforms and position-changing vertex programs because immutable object-space bounds cannot represent them.
+- The common preparation transaction validates all cameras/transforms, reevaluates order and visibility per frame, binds camera-dependent reflection overrides, and target-preflights every complete unfiltered frame plan before any indexed framebuffer can execute. Camera-only M91 preparation delegates to the same transaction core.
+- 4x mixed-transparency regression coverage combines alpha-to-coverage caller-order work with two source-alpha draws whose far-to-near order flips between frames. Every prepared indexed frame is exact resolved/per-sample RGB, depth, and stencil equivalent to manually rebuilding the same per-frame one-shot scene.
+- An A/B/C/A sequence locks deterministic repeated-frame output; C moves every draw outside the frustum and must equal an exact clear target, proving visibility is reevaluated instead of reusing an earlier frame's subset.
+- Transform-count mismatch and a later finite projective transform reject the complete preparation transaction; valid finite affine transforms remain accepted.
+- The slice is programmatic and deterministic. It does not add interpolation/keyframes, skeletal deformation, projective model transforms, position-changing vertex programs, parallel execution, or performance claims.
 
-- immutable `PreparedSpatialSubmission` model/material/texture snapshots and object-space per-draw AABBs are prepared once; a frame supplies a bounded transform record aligned with the prepared scene entries rather than rebuilding meshes or spatial metadata;
-- every frame transform must be finite and affine, and position-changing vertex programs remain rejected by the prepared-spatial path because canonical object-space bounds cannot represent them;
-- camera/order/frustum evaluation must consume that frame's transforms when computing view depth and transforming AABB corners, so no evaluation may reuse stale model matrices or stale visibility/order results;
-- a prepared frame sequence must validate all camera/transform records and target-preflight all complete unfiltered frame plans before the first framebuffer or indexed output can execute, preserving the M91 transaction boundary;
-- caller-order opaque/A2C execution and stable far-to-near source-alpha ordering must remain byte/sample-equivalent to manually constructing the same per-frame prepared submissions;
-- the first slice should be programmatic and deterministic; file-format timeline syntax, interpolation/keyframes, skeletal deformation, projective transforms, position-changing vertex programs, parallel execution, and performance claims remain later work unless independently justified.
+## Promotion after Milestone 92
 
-This promotion reuses the reason M81 spatial metadata remains valuable: bounds are object-space and can be transformed per evaluation. It must not cache a camera/model-dependent draw plan across frames whose transforms differ.
+The next architectural promotion should make M92's verified frame state usable through a **strict bounded file-driven affine frame-state sidecar** rather than adding interpolation or another execution wrapper.
+
+Milestone 93 should connect external frame data to the same M92 preparation transaction:
+
+- define one versioned strict sidecar whose ordered frame records contain the existing camera record plus exactly one explicit affine model matrix per prepared scene entry, with deterministic line/record diagnostics and the same bounded frame count;
+- parse and validate the complete sidecar before any rendering or indexed output file is created; malformed later frames, transform-count mismatch, non-finite matrices, and projective matrices must reject the complete CLI transaction;
+- keep transforms as exact frame samples in the first slice: no implicit interpolation, delta accumulation, Euler decomposition, hierarchy, keyframe curves, or timing semantics;
+- integrate only with the existing reusable mixed-transparency `.trscene` workflow and `PreparedOfflineMixedScene` / `prepare_offline_frame_sequence` path, so model/material/texture/spatial ownership is still prepared once;
+- preserve deterministic indexed output naming/order and prove a file-driven A/B/A transform sequence is byte/sample-equivalent to the same programmatic frame records;
+- ensure a later invalid frame leaves zero earlier indexed outputs, matching the M90/M91 transaction boundary;
+- retain the existing camera-sequence option as a compatibility path rather than ambiguously combining two sidecars in one invocation;
+- make no interpolation, animation-quality, skeletal, streaming, parallelism, or performance claim.
+
+After M93, interpolation/keyframes should only be promoted if a bounded time-domain contract can be specified independently of file parsing and without weakening affine/spatial invariants.

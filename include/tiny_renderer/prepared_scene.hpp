@@ -81,6 +81,7 @@ public:
 private:
     friend PreparedSceneEvaluation evaluate_prepared_scene_plan(
         const PreparedScenePlan& plan,
+        std::span<const Mat4> model_transforms,
         const Mat4& view,
         const Mat4& projection);
 
@@ -107,27 +108,43 @@ private:
 };
 
 // The plan must outlive every evaluation produced from it. Evaluation is
-// camera-dependent: it recomputes view-depth ordering and conservative frustum
-// selection without rebuilding or copying the owned prepared model snapshots.
+// camera/model-dependent: it recomputes view-depth ordering and conservative
+// frustum selection without rebuilding or copying the owned prepared model
+// snapshots. A non-empty model transform span is an exact per-entry overlay;
+// an empty span preserves the plan's prepared model transforms.
 [[nodiscard]] inline PreparedSceneEvaluation evaluate_prepared_scene_plan(
     const PreparedScenePlan& plan,
+    std::span<const Mat4> model_transforms,
     const Mat4& view,
     const Mat4& projection) {
+    if (!model_transforms.empty()
+        && model_transforms.size() != plan.entries().size()) {
+        throw std::invalid_argument(
+            "prepared scene transform overlay must match prepared scene entry count");
+    }
+
     std::vector<PreparedSpatialListEntry> caller_order_entries;
     std::vector<PreparedSpatialListEntry> back_to_front_entries;
     caller_order_entries.reserve(plan.entries().size());
     back_to_front_entries.reserve(plan.entries().size());
 
+    std::size_t entry_index = 0U;
     for (const PreparedScenePlanEntry& entry : plan.entries()) {
+        const Mat4& model = model_transforms.empty()
+            ? entry.model
+            : model_transforms[entry_index];
+        ++entry_index;
+
         switch (entry.phase) {
             case PreparedScenePhase::CallerOrder:
-                caller_order_entries.push_back({&entry.prepared, entry.model});
+                caller_order_entries.push_back({&entry.prepared, model});
                 break;
             case PreparedScenePhase::BackToFront:
-                back_to_front_entries.push_back({&entry.prepared, entry.model});
+                back_to_front_entries.push_back({&entry.prepared, model});
                 break;
             default:
-                throw std::invalid_argument("prepared scene entry uses an unknown execution phase");
+                throw std::invalid_argument(
+                    "prepared scene entry uses an unknown execution phase");
         }
     }
 
@@ -137,9 +154,11 @@ private:
         order_prepared_model_draws_back_to_front(back_to_front_entries, view);
 
     std::vector<PreparedDrawOrderEntry> visible_caller_order_draws =
-        filter_prepared_draw_order_to_frustum(caller_order_draws, view, projection);
+        filter_prepared_draw_order_to_frustum(
+            caller_order_draws, view, projection);
     std::vector<PreparedDrawOrderEntry> visible_back_to_front_draws =
-        filter_prepared_draw_order_to_frustum(back_to_front_draws, view, projection);
+        filter_prepared_draw_order_to_frustum(
+            back_to_front_draws, view, projection);
 
     return PreparedSceneEvaluation{
         view,
@@ -149,6 +168,17 @@ private:
         std::move(back_to_front_draws),
         std::move(visible_back_to_front_draws),
     };
+}
+
+[[nodiscard]] inline PreparedSceneEvaluation evaluate_prepared_scene_plan(
+    const PreparedScenePlan& plan,
+    const Mat4& view,
+    const Mat4& projection) {
+    return evaluate_prepared_scene_plan(
+        plan,
+        std::span<const Mat4>{},
+        view,
+        projection);
 }
 
 // Visibility is execution selection only. Target-dependent validation always
