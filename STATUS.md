@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Integrated architecture through Milestone 90; Milestone 91 candidate
+## Architecture frontier: Milestone 93 strict file-driven affine frame state
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -94,19 +94,27 @@ M92 promotes M91 from camera-only variation to frame-varying model transforms wh
 - Transform-count mismatch and a later finite projective transform reject the complete preparation transaction; valid finite affine transforms remain accepted.
 - The slice is programmatic and deterministic. It does not add interpolation/keyframes, skeletal deformation, projective model transforms, position-changing vertex programs, parallel execution, or performance claims.
 
-## Promotion after Milestone 92
+## Milestone 93 — strict file-driven affine frame state
 
-The next architectural promotion should make M92's verified frame state usable through a **strict bounded file-driven affine frame-state sidecar** rather than adding interpolation or another execution wrapper.
+M93 closes the external frame-state gap without adding another renderer, sequence executor, or interpolation path.
 
-Milestone 93 should connect external frame data to the same M92 preparation transaction:
+- `tiny-renderer-frame-sequence-v1` is a strict bounded sidecar whose ordered records contain the established 12-scalar camera state plus exactly one complete row-major affine model matrix per prepared scene entry, terminated by an explicit `end`.
+- Parsing rejects missing/wrong headers, unknown directives, missing/extra/trailing tokens, unterminated frames, non-finite camera or matrix values, finite projective matrices, transform-count mismatch, more than 256 frames, and an expected scene-entry count above the existing 256-entry scene bound. The model-count bound is checked before per-frame transform storage is reserved.
+- The CLI exposes `--frame-sequence FILE` only for `.trscene` input using `ordering mixed-transparency`, rejects embedded-manifest camera conflicts, and makes `--frame-sequence` mutually exclusive with the historical `--camera-sequence` compatibility path.
+- Imported model/material/texture/spatial ownership is still prepared exactly once through `PreparedOfflineMixedScene`. Parsed frame records feed the existing M92 `prepare_offline_frame_sequence` transaction, so camera-dependent ordering, conservative visibility, reflection rebinding, complete target preflight, and indexed frame execution remain on the established path.
+- The complete sidecar and prepared frame transaction are accepted before indexed output begins. A malformed later frame therefore leaves zero earlier indexed outputs; successful output order/naming remains deterministic `STEM_0000.EXT`, `STEM_0001.EXT`, and so on.
+- File-driven A/B/A execution is regression-locked both at the CLI byte boundary and against independently constructed programmatic M92 frame records. The latter comparison covers resolved RGB/hash plus every 4x sample's RGB, depth, and stencil attachments.
+- Frame matrices remain exact independent samples. M93 adds no interpolation, delta accumulation, Euler decomposition, hierarchy, keyframe curves, timing semantics, streaming, parallel execution, or performance/animation-quality claim.
 
-- define one versioned strict sidecar whose ordered frame records contain the existing camera record plus exactly one explicit affine model matrix per prepared scene entry, with deterministic line/record diagnostics and the same bounded frame count;
-- parse and validate the complete sidecar before any rendering or indexed output file is created; malformed later frames, transform-count mismatch, non-finite matrices, and projective matrices must reject the complete CLI transaction;
-- keep transforms as exact frame samples in the first slice: no implicit interpolation, delta accumulation, Euler decomposition, hierarchy, keyframe curves, or timing semantics;
-- integrate only with the existing reusable mixed-transparency `.trscene` workflow and `PreparedOfflineMixedScene` / `prepare_offline_frame_sequence` path, so model/material/texture/spatial ownership is still prepared once;
-- preserve deterministic indexed output naming/order and prove a file-driven A/B/A transform sequence is byte/sample-equivalent to the same programmatic frame records;
-- ensure a later invalid frame leaves zero earlier indexed outputs, matching the M90/M91 transaction boundary;
-- retain the existing camera-sequence option as a compatibility path rather than ambiguously combining two sidecars in one invocation;
-- make no interpolation, animation-quality, skeletal, streaming, parallelism, or performance claim.
+## Promotion after Milestone 93
 
-After M93, interpolation/keyframes should only be promoted if a bounded time-domain contract can be specified independently of file parsing and without weakening affine/spatial invariants.
+The next architectural promotion should establish a **bounded programmatic time-domain/keyframe evaluator** independently of file parsing. The important boundary is semantic: M93 may later supply keyframe data, but a file format must not define interpolation behavior implicitly.
+
+A Milestone 94 slice should require:
+
+- one finite, strictly increasing, bounded keyframe time domain with an explicit maximum keyframe count and deterministic rejection of duplicates, non-finite times, empty/underspecified interpolation spans, and out-of-domain sample requests;
+- keyframes reuse the existing validated camera plus complete per-entry affine transform record rather than introducing a scene graph or mutable prepared ownership;
+- interpolation semantics are specified numerically in the programmatic API first. Exact endpoint/keyframe samples must reproduce the stored frame state exactly; any between-keyframe affine interpolation must preserve the affine bottom row by construction and be revalidated before prepared-scene evaluation;
+- sampled cameras/transforms feed the existing M92 preparation transaction, so all requested sample times are evaluated and target-preflighted before the first output frame can execute;
+- deterministic regressions cover exact endpoints, a bounded interior sample, repeated sample times in caller output order, camera-dependent transparency/visibility changes, and a later invalid interpolated state rejecting the complete sampled transaction before rendering;
+- M94 must not add file syntax, Euler/quaternion decomposition, easing curves, hierarchy/skeletal animation, looping, extrapolation, asynchronous/parallel execution, or performance/animation-quality claims unless a later milestone specifies those contracts independently.
