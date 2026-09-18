@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Integrated architecture through Milestone 88
+## Integrated architecture through Milestone 89; Milestone 90 candidate
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -22,31 +22,30 @@ Milestone 87 gives that reusable plan a real offline mixed-transparency consumer
 
 Milestone 88 promotes reusable single-camera execution into a bounded ordered multi-camera transaction. `render_prepared_scene_sequence` validates every camera, reevaluates camera-dependent order/visibility, binds reflection overrides, and target-preflights the complete camera span before the first returned frame begins fragment execution. Returned order exactly follows caller A/B/A order, repeated cameras remain exact-deterministic, and total returned ownership is bounded to 16 Mi resolved pixels. The implementation reuses `PreparedOfflineMixedScene`, `PreparedSceneEvaluation`, complete-plan preflight, and the established single-camera consumer; it makes no throughput or batching-speed claim.
 
-The exact integrated `main` commit is `64523c608d5179ec2c1d25b765ad8d3076b53058` (Milestone 88). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
+Milestone 89 adds a controlled offline benchmark harness around the reusable mixed-scene pipeline without introducing an acceleration fast path. The harness measures complete preparation, camera evaluation plus scene-level preflight, and canonical lower-level validation/submission/raster phases separately; framebuffer allocation/clear remains outside the submission timing region, every measured iteration verifies one deterministic sequence hash, CI only smoke-executes the harness, and no CI timing is treated as performance evidence.
+
+The exact integrated `main` commit entering Milestone 90 is `ba9b8a8a6f5c4943ff40bdae014180b02b86fe70` (Milestone 89). Its Linux, macOS, and ASan/UBSan post-merge CI gates are green.
 
 The repository also integrates bounded OBJ relative indices, polygon triangulation, smoothing/generated normals, deterministic model inspection/fingerprints, multiple sibling MTL libraries, UV-optional position/normal face layouts, bounded PPM/TGA/PFM texture import through the shared image dispatcher, and bounded headless OBJ/flat-scene preview/render tooling.
 
 ### Milestone-number and concurrency note
 
-Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence. The historical `milestone-73-prepared-spatial-metadata` branch is superseded by integrated M81. Milestone 89 is the active implementation surface on branch `milestone-89-controlled-offline-benchmark`; no parallel M89 benchmark or acceleration implementation should be opened while it is active.
+Milestone numbers describe work streams, not an assertion that every lower-numbered branch has been integrated. Stale milestone-numbered branches are not completion evidence. The historical `milestone-73-prepared-spatial-metadata` branch is superseded by integrated M81. Milestone 90 is the active implementation surface on branch `milestone-90-file-driven-camera-sequences`; no parallel camera-sequence file/CLI implementation should be opened while it is active.
 
-## Milestone 89 candidate — controlled reusable-scene benchmark harness
+## Milestone 90 candidate — file-driven reusable camera sequences
 
-M89 adds measurement capability before attempting acceleration. It deliberately does not optimize the renderer and does not treat GitHub Actions duration as performance evidence. The fixed workload exercises reusable mixed-scene preparation, A/B/A camera evaluation, opaque/source-alpha/alpha-to-coverage submission, view-dependent environment reflection, and 4x sample ownership through the same production paths used by normal offline rendering.
+M90 promotes the reusable camera-sequence transaction from programmatic API-only use into a strict bounded file-driven offline workflow. It does not add another renderer or benchmark path: imported scene assets are prepared once, the complete sidecar camera list is validated through the existing camera contract, and execution delegates to `render_prepared_scene_sequence`.
 
 Acceptance surface:
 
-- `benchmark_offline_mixed_scene` accepts bounded warmup/measured iteration counts, fixed entries/settings/cameras, and reports raw per-iteration phase timings plus one deterministic sequence hash;
-- the preparation phase measures complete `prepare_offline_mixed_scene` ownership construction rather than a partial helper or cached object;
-- the camera phase measures `evaluate_prepared_scene_plan` plus the complete scene-level target preflight for every camera, including camera validation and reflection override binding;
-- the final `submission_raster` phase begins only after the same evaluations have passed scene-level preflight, while intentionally retaining canonical per-draw/range fail-closed validation inside normal submission. It therefore measures lower-level validation + submission + shading/sample ownership, not a falsely isolated hardware-style raster cost;
-- framebuffer allocation and clear happen outside the final timed region so target ownership allocation is not conflated with geometry submission;
-- every measured iteration hashes all returned camera targets and rejects if the sequence hash changes, preventing a timing run from silently measuring divergent or empty work;
-- total iteration count is bounded to 1000 and the established 16 Mi resolved-pixel camera-sequence resource bound is reused;
-- the first controlled workload is programmatic and deterministic: three material/transparency phases, 4x MSAA, environment reflection, and A/B/A cameras, so it does not depend on filesystem/cache noise from asset import;
-- `tiny_renderer_sample --benchmark [MEASURED] [WARMUP]` emits a stable `tiny-renderer-offline-v1` text schema with raw microsecond samples and explicit `raw-timings-no-performance-claim` labeling;
-- Release Ubuntu/macOS and ASan/UBSan CI execute a two-iteration smoke run to prove the harness and deterministic hash path are executable. Those CI timings are not benchmark evidence and must not justify an optimization;
-- no BVH, occlusion culling, parallel frame execution, throughput claim, or benchmark-only rendering fast path is introduced in M89.
+- `tiny-renderer-camera-sequence-v1` is a strict sidecar format with repeated exact 12-scalar camera records, full-line comments/blank lines, finite camera validation, deterministic line diagnostics, no trailing tokens, at least one camera, and a maximum of 256 camera records;
+- `tiny_renderer_render ... --camera-sequence FILE` accepts the sidecar only for `.trscene` input using `ordering mixed-transparency` and rejects conflict with an embedded manifest camera;
+- the CLI loads every scene asset and the complete camera sidecar before execution, prepares one `PreparedOfflineMixedScene`, and reuses the existing bounded sequence transaction rather than rebuilding canonical model/material/texture/spatial ownership per frame;
+- rendered frames preserve sidecar order and are written as deterministic `STEM_0000.EXT`, `STEM_0001.EXT`, ... outputs while the unsuffixed output path remains unused;
+- file-driven A/B/A execution is byte-deterministic: repeated A frames are identical, B is observably distinct, and repeated complete CLI runs produce identical frame bytes;
+- a later invalid sidecar camera rejects before any earlier frame is rasterized or any indexed output file is written;
+- parser regressions lock version-header strictness, trailing-token rejection, camera-count bounds, and later-camera validation; CLI regressions cover real mixed-transparency OBJ/MTL assets through 4x execution;
+- the existing 16 Mi resolved-pixel in-memory sequence bound remains authoritative for M90. No streaming, parallel frame execution, interpolation/timeline semantics, BVH/occlusion acceleration, or throughput claim is added.
 
 ## Architectural invariants
 
@@ -68,6 +67,15 @@ Acceptance surface:
 - Measurement helpers may expose phase boundaries only if production validation semantics remain intact; benchmark code must not gain a faster correctness path than normal rendering.
 - Performance claims require controlled measurements; CI duration is never treated as a benchmark.
 
-## Promotion after Milestone 89
+## Promotion after Milestone 90
 
-After M89 converges, collect controlled Release measurements on one fixed machine using the committed fixed workload and retain the complete raw sample set. Use those results only to identify whether preparation, camera evaluation/preflight, or submission+raster dominates that workload. An acceleration milestone such as BVH-backed visibility, cached camera-independent planning, or parallel frame execution requires a measured bottleneck plus a design that preserves the complete fail-closed transaction contract. If controlled evidence does not identify a meaningful acceleration target, promote another executable scene/runtime capability instead of performance farming.
+M90 makes ordered camera batches a real file-driven workflow, but the public sequence API still returns every `Framebuffer` at once and therefore couples reusable camera planning to complete multi-frame ownership. Without controlled benchmark evidence, the next promotion must not pretend an acceleration bottleneck is known.
+
+Milestone 91 should introduce a **prepared camera-sequence plan with frame-at-a-time execution**:
+
+- preparation must validate every camera, derive the exact view/projection state, evaluate camera-dependent visibility/order, bind reflection overrides, and target-preflight the complete sequence before the first frame can execute;
+- the prepared sequence must retain or safely reference the immutable `PreparedOfflineMixedScene` ownership needed by every frame and expose a bounded frame count plus deterministic indexed execution;
+- rendering one prepared frame must consume the already validated/evaluated camera entry through the same environment and canonical prepared-draw/raster paths, not quietly redo a different planning path;
+- a compatibility helper may still materialize `std::vector<Framebuffer>`, but the new core execution contract must allow a caller/CLI to render one frame at a time after sequence-wide preflight so memory ownership is bounded by one target rather than all returned targets;
+- exact A/B/A resolved/per-sample equivalence, later-invalid no-execution semantics, reflection rebinding, visibility/order equivalence, and file-driven CLI output must remain regression-locked;
+- this is a data-plane/ownership capability, not a speedup claim. Parallel execution, asynchronous I/O, interpolation/keyframes, BVH/occlusion acceleration, and throughput claims remain out of scope unless separately justified and measured.

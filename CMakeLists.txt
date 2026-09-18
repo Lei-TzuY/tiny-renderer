@@ -255,6 +255,17 @@ if(BUILD_TESTING)
         NAME tiny_renderer_offline_prepared_scene_tests
         COMMAND tiny_renderer_offline_prepared_scene_tests)
 
+    add_executable(tiny_renderer_offline_file_sequence_tests
+        tests/test_offline_file_sequence.cpp)
+    target_link_libraries(tiny_renderer_offline_file_sequence_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_offline_file_sequence_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_dependencies(tiny_renderer_offline_file_sequence_tests tiny_renderer_render)
+    add_test(
+        NAME tiny_renderer_offline_file_sequence_tests
+        COMMAND tiny_renderer_offline_file_sequence_tests)
+
     add_executable(tiny_renderer_headless_environment_tests tests/test_headless_environment.cpp)
     target_link_libraries(tiny_renderer_headless_environment_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_headless_environment_tests COMMAND tiny_renderer_headless_environment_tests)
