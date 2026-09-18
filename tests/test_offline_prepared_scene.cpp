@@ -256,6 +256,68 @@ void test_reusable_camera_sequence_matches_individual_execution() {
         "empty reusable camera sequence is a deterministic no-op");
 }
 
+void test_prepared_camera_sequence_plan_matches_existing_execution() {
+    const Texture2D environment = directional_environment_texture();
+    OfflineRenderSettings settings;
+    settings.width = 57U;
+    settings.height = 43U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+    settings.environment_reflection = offline_reflection(environment);
+
+    const PreparedOfflineMixedScene reusable = make_reflective_mixed_scene(settings);
+    const OfflineSceneCamera camera_a = camera_at({0.0F, 0.0F, 3.0F});
+    const OfflineSceneCamera camera_b = camera_at({1.35F, 0.15F, 3.0F});
+    const std::array<OfflineSceneCamera, 3> cameras{{camera_a, camera_b, camera_a}};
+
+    const PreparedOfflineCameraSequence prepared =
+        prepare_offline_camera_sequence(reusable, cameras);
+    check(prepared.frame_count() == cameras.size(),
+          "prepared camera sequence exposes exactly one indexed frame per camera");
+
+    const std::vector<Framebuffer> materialized =
+        render_prepared_scene_sequence(reusable, cameras);
+    check(materialized.size() == cameras.size(),
+          "materialized compatibility sequence preserves camera count");
+
+    for (std::size_t i = 0U; i < cameras.size(); ++i) {
+        const Framebuffer indexed =
+            render_prepared_camera_sequence_frame(prepared, i);
+        const Framebuffer individual =
+            render_prepared_scene_preview(reusable, cameras[i]);
+        check(
+            exact_frame_equal(indexed, individual),
+            "prepared indexed frame is exact per-sample equivalent to individual reusable rendering");
+        if (i < materialized.size()) {
+            check(
+                exact_frame_equal(indexed, materialized[i]),
+                "prepared indexed frame is exact-equivalent to compatibility vector execution");
+        }
+    }
+
+    const Framebuffer first =
+        render_prepared_camera_sequence_frame(prepared, 0U);
+    const Framebuffer repeated =
+        render_prepared_camera_sequence_frame(prepared, 2U);
+    check(
+        exact_frame_equal(first, repeated),
+        "prepared A-B-A sequence preserves exact repeated-camera determinism");
+
+    const Framebuffer first_repeat =
+        render_prepared_camera_sequence_frame(prepared, 0U);
+    check(
+        exact_frame_equal(first, first_repeat),
+        "one prepared frame can be executed repeatedly without rebuilding sequence state");
+
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)render_prepared_camera_sequence_frame(
+                prepared,
+                prepared.frame_count());
+        },
+        "prepared camera sequence rejects an out-of-range frame index");
+}
+
 class CountingFragmentProgram final : public FragmentProgram {
 public:
     explicit CountingFragmentProgram(std::size_t* shade_calls)
@@ -301,11 +363,18 @@ void test_camera_sequence_preflights_every_camera_before_execution() {
     }};
 
     check_throws<std::invalid_argument>(
-        [&] { (void)render_prepared_scene_sequence(reusable, cameras); },
-        "later invalid camera rejects the complete reusable sequence");
+        [&] { (void)prepare_offline_camera_sequence(reusable, cameras); },
+        "later invalid camera rejects prepared sequence construction");
     check(
         shade_calls == 0U,
-        "later invalid camera rejects before any earlier frame fragment execution");
+        "later invalid camera rejects prepared sequence before any fragment execution");
+
+    check_throws<std::invalid_argument>(
+        [&] { (void)render_prepared_scene_sequence(reusable, cameras); },
+        "later invalid camera rejects the complete reusable compatibility sequence");
+    check(
+        shade_calls == 0U,
+        "later invalid camera rejects compatibility sequence before any earlier frame fragment execution");
 }
 
 void test_camera_sequence_resource_bound() {
@@ -328,9 +397,23 @@ void test_camera_sequence_resource_bound() {
     std::vector<OfflineSceneCamera> cameras(
         65U,
         camera_at({0.0F, 0.0F, 3.0F}));
+
+    const PreparedOfflineCameraSequence prepared =
+        prepare_offline_camera_sequence(reusable, cameras);
+    check(
+        prepared.frame_count() == cameras.size(),
+        "frame-at-a-time prepared sequence is bounded by camera metadata rather than aggregate framebuffer ownership");
+    const Framebuffer one_frame =
+        render_prepared_camera_sequence_frame(prepared, 64U);
+    check(
+        one_frame.width() == settings.width
+            && one_frame.height() == settings.height
+            && one_frame.samples_per_pixel() == 4U,
+        "prepared sequence can execute one frame without materializing the full 65-frame result");
+
     check_throws<std::invalid_argument>(
         [&] { (void)render_prepared_scene_sequence(reusable, cameras); },
-        "camera sequence rejects an in-memory result beyond the resolved-pixel budget");
+        "compatibility vector sequence retains the historical total resolved-pixel bound");
 }
 
 void test_reusable_scene_validation_contract() {
@@ -375,6 +458,7 @@ void test_reusable_scene_validation_contract() {
 int main() {
     test_reusable_mixed_scene_matches_one_shot_across_cameras();
     test_reusable_camera_sequence_matches_individual_execution();
+    test_prepared_camera_sequence_plan_matches_existing_execution();
     test_camera_sequence_preflights_every_camera_before_execution();
     test_camera_sequence_resource_bound();
     test_reusable_scene_validation_contract();
