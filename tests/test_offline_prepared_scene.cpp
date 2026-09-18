@@ -815,6 +815,18 @@ void test_bounded_timeline_validation_contract() {
         [&] { (void)sample_offline_frame_timeline(too_many_keyframes, one_sample); },
         "timeline rejects more than the bounded keyframe count");
 
+    OfflineSceneFrameState too_many_models = frame;
+    too_many_models.model_transforms.assign(
+        detail::kMaxOfflineSceneEntries + 1U,
+        Mat4::identity());
+    const std::array<OfflineSceneTimelineKeyframe, 2> oversized_models{{
+        OfflineSceneTimelineKeyframe{0.0F, too_many_models},
+        OfflineSceneTimelineKeyframe{2.0F, too_many_models},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(oversized_models, one_sample); },
+        "timeline rejects model-transform ownership above the bounded scene entry limit before sample allocation");
+
     OfflineSceneFrameState two_models = frame;
     two_models.model_transforms.push_back(Mat4::identity());
     const std::array<OfflineSceneTimelineKeyframe, 2> inconsistent_models{{
