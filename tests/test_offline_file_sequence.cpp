@@ -237,6 +237,14 @@ void test_strict_bounded_frame_sequence_loader() {
         },
         "later finite projective transform rejects the complete affine sidecar");
 
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                fixtures / "frame_sequence_aba.trframes",
+                detail::kMaxOfflineSceneEntries + 1U);
+        },
+        "frame sidecar rejects an expected model count above the bounded scene entry limit before allocation");
+
     const std::filesystem::path root =
         std::filesystem::current_path() / "tiny_renderer_frame_sequence_parser_fixture";
     std::error_code ignored;
