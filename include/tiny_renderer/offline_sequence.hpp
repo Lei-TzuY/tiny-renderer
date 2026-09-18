@@ -258,6 +258,10 @@ namespace detail {
 
     const std::size_t model_count =
         keyframes.front().frame.model_transforms.size();
+    if (model_count > kMaxOfflineSceneEntries) {
+        throw std::invalid_argument(
+            "offline timeline model transform count exceeds bounded scene entry limit");
+    }
     for (std::size_t index = 0U; index < keyframes.size(); ++index) {
         const OfflineSceneTimelineKeyframe& keyframe = keyframes[index];
         if (!std::isfinite(keyframe.time)) {
