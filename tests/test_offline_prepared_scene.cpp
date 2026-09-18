@@ -318,6 +318,34 @@ void test_prepared_camera_sequence_plan_matches_existing_execution() {
         "prepared camera sequence rejects an out-of-range frame index");
 }
 
+void test_prepared_camera_sequence_retains_plan_after_source_destruction() {
+    OfflineRenderSettings settings;
+    settings.width = 47U;
+    settings.height = 35U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.015F, 0.02F, 0.025F};
+
+    const OfflineSceneCamera camera = camera_at({0.45F, 0.1F, 3.0F});
+    const std::array<OfflineSceneCamera, 1> cameras{{camera}};
+
+    const PreparedOfflineCameraSequence prepared = [&] {
+        PreparedOfflineMixedScene source =
+            make_reflective_mixed_scene(settings);
+        return prepare_offline_camera_sequence(source, cameras);
+    }();
+
+    const PreparedOfflineMixedScene reference_scene =
+        make_reflective_mixed_scene(settings);
+    const Framebuffer expected =
+        render_prepared_scene_preview(reference_scene, camera);
+    const Framebuffer actual =
+        render_prepared_camera_sequence_frame(prepared, 0U);
+
+    check(
+        exact_frame_equal(actual, expected),
+        "prepared camera sequence retains immutable scene-plan ownership after the source scene is destroyed");
+}
+
 class CountingFragmentProgram final : public FragmentProgram {
 public:
     explicit CountingFragmentProgram(std::size_t* shade_calls)
@@ -459,6 +487,7 @@ int main() {
     test_reusable_mixed_scene_matches_one_shot_across_cameras();
     test_reusable_camera_sequence_matches_individual_execution();
     test_prepared_camera_sequence_plan_matches_existing_execution();
+    test_prepared_camera_sequence_retains_plan_after_source_destruction();
     test_camera_sequence_preflights_every_camera_before_execution();
     test_camera_sequence_resource_bound();
     test_reusable_scene_validation_contract();
