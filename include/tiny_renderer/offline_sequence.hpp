@@ -203,17 +203,161 @@ inline void reject_offline_camera_sequence_extra_tokens(
     return cameras;
 }
 
-// Render one reusable prepared mixed scene from an ordered camera sequence.
-// The complete camera list is validated, evaluated, and target-preflighted
-// before the first frame is rasterized. Returned frame order exactly matches
-// caller camera order. Each camera receives a fresh scene evaluation and
-// camera-dependent reflection viewer override while canonical prepared
-// model/material/texture/spatial ownership remains shared by `scene`.
+// Prepared camera-sequence plan. The source PreparedOfflineMixedScene must
+// outlive this plan because each PreparedSceneEvaluation contains draw entries
+// pointing into that scene's address-stable PreparedScenePlan ownership.
 //
-// The complete returned sequence is bounded by
-// detail::kMaxOfflineSequenceResolvedPixels resolved pixels. This API makes no
-// throughput or speedup claim; it exposes reusable multi-camera execution and a
-// sequence-wide fail-closed transaction boundary.
+// Preparation validates every camera, evaluates camera-dependent ordering and
+// conservative visibility, binds per-camera execution overrides, and
+// target-preflights the complete sequence before this object can be returned.
+// Rendering one indexed frame therefore does not repeat scene-level planning or
+// transaction preflight; canonical lower-level draw/range guards remain active.
+class PreparedOfflineCameraSequence {
+public:
+    PreparedOfflineCameraSequence(const PreparedOfflineCameraSequence&) = default;
+    PreparedOfflineCameraSequence(PreparedOfflineCameraSequence&&) noexcept = default;
+    PreparedOfflineCameraSequence& operator=(const PreparedOfflineCameraSequence&) = default;
+    PreparedOfflineCameraSequence& operator=(PreparedOfflineCameraSequence&&) noexcept = default;
+
+    [[nodiscard]] std::size_t frame_count() const noexcept { return cameras_.size(); }
+
+private:
+    friend PreparedOfflineCameraSequence prepare_offline_camera_sequence(
+        const PreparedOfflineMixedScene& scene,
+        std::span<const OfflineSceneCamera> cameras);
+    friend Framebuffer render_prepared_camera_sequence_frame(
+        const PreparedOfflineCameraSequence& sequence,
+        std::size_t frame_index);
+
+    PreparedOfflineCameraSequence(
+        const PreparedOfflineMixedScene& scene,
+        std::vector<OfflineSceneCamera> cameras,
+        std::vector<PreparedSceneEvaluation> evaluations,
+        std::vector<PreparedDrawExecutionOverrides> overrides)
+        : scene_(&scene),
+          cameras_(std::move(cameras)),
+          evaluations_(std::move(evaluations)),
+          overrides_(std::move(overrides)) {}
+
+    const PreparedOfflineMixedScene* scene_{nullptr};
+    std::vector<OfflineSceneCamera> cameras_;
+    std::vector<PreparedSceneEvaluation> evaluations_;
+    std::vector<PreparedDrawExecutionOverrides> overrides_;
+};
+
+// Builds a bounded reusable sequence plan without allocating or rasterizing any
+// output frame. A later malformed or target-incompatible camera rejects the
+// complete sequence before the caller can execute frame zero.
+[[nodiscard]] inline PreparedOfflineCameraSequence prepare_offline_camera_sequence(
+    const PreparedOfflineMixedScene& scene,
+    std::span<const OfflineSceneCamera> cameras) {
+    if (cameras.size() > detail::kMaxOfflineSequenceCameras) {
+        throw std::invalid_argument(
+            "offline prepared camera sequence exceeds bounded camera limit");
+    }
+
+    const OfflineRenderSettings& settings = scene.settings();
+    if (settings.width == 0U || settings.height == 0U) {
+        throw std::logic_error(
+            "prepared offline scene contains invalid zero-sized render settings");
+    }
+
+    const float aspect = detail::offline_sequence_aspect(settings);
+    Framebuffer validation_target(
+        settings.width,
+        settings.height,
+        settings.sample_count);
+
+    std::vector<OfflineSceneCamera> owned_cameras;
+    std::vector<PreparedSceneEvaluation> evaluations;
+    std::vector<PreparedDrawExecutionOverrides> overrides;
+    owned_cameras.reserve(cameras.size());
+    evaluations.reserve(cameras.size());
+    overrides.reserve(cameras.size());
+
+    for (const OfflineSceneCamera& camera : cameras) {
+        validate_offline_scene_camera(camera);
+        const Mat4 view = Mat4::look_at(camera.eye, camera.target, camera.up);
+        const Mat4 projection = Mat4::perspective(
+            camera.vertical_fov_radians,
+            aspect,
+            camera.near_plane,
+            camera.far_plane);
+        PreparedSceneEvaluation evaluation = evaluate_prepared_scene_plan(
+            scene.plan(), view, projection);
+        PreparedDrawExecutionOverrides execution_overrides =
+            detail::offline_sequence_overrides(settings, camera);
+        preflight_prepared_scene_evaluation(
+            validation_target,
+            evaluation,
+            execution_overrides);
+
+        owned_cameras.push_back(camera);
+        evaluations.push_back(std::move(evaluation));
+        overrides.push_back(std::move(execution_overrides));
+    }
+
+    return PreparedOfflineCameraSequence{
+        scene,
+        std::move(owned_cameras),
+        std::move(evaluations),
+        std::move(overrides),
+    };
+}
+
+// Executes exactly one already-prepared camera entry. Only one framebuffer is
+// owned by this call. Environment background and canonical prepared-draw
+// submission remain on the existing production paths. Scene-level evaluation
+// and preflight were completed transactionally by prepare_offline_camera_sequence.
+[[nodiscard]] inline Framebuffer render_prepared_camera_sequence_frame(
+    const PreparedOfflineCameraSequence& sequence,
+    std::size_t frame_index) {
+    if (frame_index >= sequence.frame_count()) {
+        throw std::out_of_range(
+            "offline prepared camera sequence frame index out of range");
+    }
+    if (sequence.scene_ == nullptr
+        || sequence.evaluations_.size() != sequence.frame_count()
+        || sequence.overrides_.size() != sequence.frame_count()) {
+        throw std::logic_error(
+            "offline prepared camera sequence has inconsistent owned state");
+    }
+
+    const PreparedOfflineMixedScene& scene = *sequence.scene_;
+    const OfflineRenderSettings& settings = scene.settings();
+    const OfflineSceneCamera& camera = sequence.cameras_[frame_index];
+
+    Framebuffer framebuffer(
+        settings.width,
+        settings.height,
+        settings.sample_count);
+    framebuffer.clear(settings.clear_color);
+
+    if (settings.environment) {
+        const PerspectiveCameraState perspective{
+            camera.eye,
+            camera.target,
+            camera.up,
+            camera.vertical_fov_radians,
+            detail::offline_sequence_aspect(settings),
+        };
+        draw_environment_background(
+            framebuffer,
+            perspective,
+            *settings.environment);
+    }
+
+    detail::execute_preflighted_prepared_scene_evaluation(
+        framebuffer,
+        sequence.evaluations_[frame_index],
+        sequence.overrides_[frame_index]);
+    return framebuffer;
+}
+
+// Compatibility helper that still materializes every returned framebuffer.
+// The historical total resolved-pixel bound remains on this vector-producing
+// API. New frame-at-a-time callers should prepare once and execute indexed
+// frames instead.
 [[nodiscard]] inline std::vector<Framebuffer> render_prepared_scene_sequence(
     const PreparedOfflineMixedScene& scene,
     std::span<const OfflineSceneCamera> cameras) {
@@ -237,45 +381,16 @@ inline void reject_offline_camera_sequence_extra_tokens(
             "offline camera sequence exceeds total resolved-pixel budget");
     }
 
-    const float aspect = detail::offline_sequence_aspect(settings);
-    Framebuffer validation_target(
-        settings.width,
-        settings.height,
-        settings.sample_count);
-
-    std::vector<PreparedSceneEvaluation> evaluations;
-    std::vector<PreparedDrawExecutionOverrides> overrides;
-    evaluations.reserve(cameras.size());
-    overrides.reserve(cameras.size());
-
-    // First pass: no framebuffer mutation. A malformed or target-invalid later
-    // camera rejects the whole sequence before an earlier valid frame can shade
-    // or write any sample.
-    for (const OfflineSceneCamera& camera : cameras) {
-        validate_offline_scene_camera(camera);
-        const Mat4 view = Mat4::look_at(camera.eye, camera.target, camera.up);
-        const Mat4 projection = Mat4::perspective(
-            camera.vertical_fov_radians,
-            aspect,
-            camera.near_plane,
-            camera.far_plane);
-        evaluations.push_back(evaluate_prepared_scene_plan(
-            scene.plan(), view, projection));
-        overrides.push_back(detail::offline_sequence_overrides(settings, camera));
-        preflight_prepared_scene_evaluation(
-            validation_target,
-            evaluations.back(),
-            overrides.back());
-    }
-
-    // Second pass: execute only after the complete sequence has converged.
-    // Reuse the established single-camera consumer so environment background,
-    // complete-plan validation, visibility selection, and raster ownership stay
-    // on one canonical path.
+    const PreparedOfflineCameraSequence prepared =
+        prepare_offline_camera_sequence(scene, cameras);
     std::vector<Framebuffer> frames;
-    frames.reserve(cameras.size());
-    for (const OfflineSceneCamera& camera : cameras) {
-        frames.push_back(render_prepared_scene_preview(scene, camera));
+    frames.reserve(prepared.frame_count());
+    for (std::size_t frame_index = 0U;
+         frame_index < prepared.frame_count();
+         ++frame_index) {
+        frames.push_back(render_prepared_camera_sequence_frame(
+            prepared,
+            frame_index));
     }
     return frames;
 }
