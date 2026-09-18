@@ -56,6 +56,78 @@ bool same_matrix(const Mat4& a, const Mat4& b) {
     return true;
 }
 
+bool exact_frame_equal(const Framebuffer& left, const Framebuffer& right) {
+    if (left.width() != right.width()
+        || left.height() != right.height()
+        || left.samples_per_pixel() != right.samples_per_pixel()
+        || left.rgb8() != right.rgb8()
+        || left.fnv1a64() != right.fnv1a64()) {
+        return false;
+    }
+    for (std::size_t y = 0U; y < left.height(); ++y) {
+        for (std::size_t x = 0U; x < left.width(); ++x) {
+            for (std::size_t sample = 0U; sample < left.samples_per_pixel(); ++sample) {
+                const Vec3 a = left.sample_color_at(x, y, sample);
+                const Vec3 b = right.sample_color_at(x, y, sample);
+                if (a.x != b.x || a.y != b.y || a.z != b.z
+                    || left.sample_depth_at(x, y, sample) != right.sample_depth_at(x, y, sample)
+                    || left.sample_stencil_at(x, y, sample) != right.sample_stencil_at(x, y, sample)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+VaryingPack normal_varyings() {
+    VaryingPack varyings;
+    varyings.count = 3U;
+    varyings.values[0] = 0.0F;
+    varyings.values[1] = 0.0F;
+    varyings.values[2] = 1.0F;
+    return varyings;
+}
+
+ModelAsset triangle_asset(Vec3 albedo, float opacity) {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-0.9F, -0.9F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.9F, -0.9F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.0F, 0.9F, 0.0F}, normal_varyings()),
+    };
+    asset.mesh.triangles = {{{0U, 1U, 2U}}};
+
+    MaterialDraw draw;
+    draw.range = {0U, 1U};
+    draw.material_name = "frame-equivalence";
+    draw.material.albedo = albedo;
+    draw.material.opacity = opacity;
+    asset.draws.push_back(draw);
+    return asset;
+}
+
+Mat4 fixture_affine_transform(float x, float z) {
+    Mat4 matrix = Mat4::identity();
+    matrix(0U, 0U) = 0.8F;
+    matrix(1U, 1U) = 0.8F;
+    matrix(2U, 2U) = 0.8F;
+    matrix(0U, 3U) = x;
+    matrix(2U, 3U) = z;
+    return matrix;
+}
+
+OfflineSceneCamera fixture_frame_camera() {
+    OfflineSceneCamera camera;
+    camera.eye = {0.0F, 0.0F, 3.0F};
+    camera.target = {0.0F, 0.0F, 0.0F};
+    camera.up = {0.0F, 1.0F, 0.0F};
+    camera.vertical_fov_radians = 0.8726646259971648F;
+    camera.near_plane = 0.1F;
+    camera.far_plane = 100.0F;
+    return camera;
+}
+
 std::filesystem::path source_dir() {
 #ifdef TINY_RENDERER_SOURCE_DIR
     return std::filesystem::path(TINY_RENDERER_SOURCE_DIR);
@@ -334,6 +406,87 @@ void test_strict_bounded_frame_sequence_loader() {
     std::filesystem::remove_all(root, ignored);
 }
 
+void test_file_driven_frame_records_match_programmatic_equivalent() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::vector<OfflineSceneFrameState> file_frames =
+        load_offline_frame_sequence_file(
+            fixtures / "frame_sequence_aba.trframes",
+            3U);
+
+    OfflineRenderSettings settings;
+    settings.width = 64U;
+    settings.height = 48U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.02F, 0.025F, 0.035F};
+
+    const ModelAsset coverage =
+        triangle_asset({0.85F, 0.15F, 0.10F}, 0.55F);
+    const ModelAsset green =
+        triangle_asset({0.10F, 0.75F, 0.20F}, 0.45F);
+    const ModelAsset blue =
+        triangle_asset({0.10F, 0.25F, 0.85F}, 0.55F);
+
+    const std::array<OfflineSceneEntry, 3> entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene prepared_scene =
+        prepare_offline_mixed_scene(entries, settings);
+
+    const OfflineSceneCamera camera = fixture_frame_camera();
+    const std::vector<Mat4> transforms_a{
+        fixture_affine_transform(0.55F, 0.25F),
+        fixture_affine_transform(-0.65F, 0.0F),
+        fixture_affine_transform(0.55F, -0.25F),
+    };
+    const std::vector<Mat4> transforms_b{
+        fixture_affine_transform(-0.55F, 0.35F),
+        fixture_affine_transform(0.65F, 0.0F),
+        fixture_affine_transform(-0.55F, -0.35F),
+    };
+    const std::array<OfflineSceneFrameState, 3> programmatic_frames{{
+        OfflineSceneFrameState{camera, transforms_a},
+        OfflineSceneFrameState{camera, transforms_b},
+        OfflineSceneFrameState{camera, transforms_a},
+    }};
+
+    const PreparedOfflineCameraSequence file_sequence =
+        prepare_offline_frame_sequence(prepared_scene, file_frames);
+    const PreparedOfflineCameraSequence programmatic_sequence =
+        prepare_offline_frame_sequence(prepared_scene, programmatic_frames);
+
+    check(
+        file_sequence.frame_count() == programmatic_sequence.frame_count()
+            && file_sequence.frame_count() == 3U,
+        "file-driven and programmatic A-B-A frame records prepare the same bounded frame count");
+    if (file_sequence.frame_count() != programmatic_sequence.frame_count()) {
+        return;
+    }
+
+    for (std::size_t index = 0U; index < file_sequence.frame_count(); ++index) {
+        const Framebuffer file_frame =
+            render_prepared_camera_sequence_frame(file_sequence, index);
+        const Framebuffer programmatic_frame =
+            render_prepared_camera_sequence_frame(programmatic_sequence, index);
+        check(
+            exact_frame_equal(file_frame, programmatic_frame),
+            "file-driven affine frame is exact resolved and per-sample RGB/depth/stencil equivalent to the same programmatic frame record");
+    }
+}
+
 void test_file_driven_affine_frame_sequence_transaction(const char* argv0) {
     const std::filesystem::path cli = render_cli_path(argv0);
     check(std::filesystem::exists(cli),
@@ -512,6 +665,7 @@ void test_file_driven_cli_sequence_transaction(const char* argv0) {
 int main(int argc, char** argv) {
     test_strict_bounded_camera_sequence_loader();
     test_strict_bounded_frame_sequence_loader();
+    test_file_driven_frame_records_match_programmatic_equivalent();
     if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
         test_file_driven_cli_sequence_transaction(argv[0]);
         test_file_driven_affine_frame_sequence_transaction(argv[0]);
