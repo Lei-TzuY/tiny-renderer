@@ -444,6 +444,36 @@ void test_camera_sequence_resource_bound() {
         "compatibility vector sequence retains the historical total resolved-pixel bound");
 }
 
+void test_compatibility_sequence_preserves_historical_camera_capacity() {
+    OfflineRenderSettings settings;
+    settings.width = 1U;
+    settings.height = 1U;
+    settings.sample_count = SampleCount::One;
+    settings.clear_color = {0.125F, 0.25F, 0.5F};
+
+    const std::array<OfflineSceneEntry, 0> entries{};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    std::vector<OfflineSceneCamera> cameras(
+        detail::kMaxOfflineSequenceCameras + 1U,
+        camera_at({0.0F, 0.0F, 3.0F}));
+
+    check_throws<std::invalid_argument>(
+        [&] { (void)prepare_offline_camera_sequence(reusable, cameras); },
+        "new prepared camera-sequence API enforces its bounded metadata camera limit");
+
+    const std::vector<Framebuffer> frames =
+        render_prepared_scene_sequence(reusable, cameras);
+    check(
+        frames.size() == cameras.size(),
+        "compatibility vector sequence preserves the historical pixel-bound contract beyond 256 cameras");
+    check(
+        frames.front().width() == 1U
+            && frames.front().height() == 1U
+            && frames.back().fnv1a64() == frames.front().fnv1a64(),
+        "compatibility vector sequence remains deterministic across the preserved camera-capacity boundary");
+}
+
 void test_reusable_scene_validation_contract() {
     const ModelAsset asset = triangle_asset(
         {0.7F, 0.2F, 0.1F},
@@ -490,6 +520,7 @@ int main() {
     test_prepared_camera_sequence_retains_plan_after_source_destruction();
     test_camera_sequence_preflights_every_camera_before_execution();
     test_camera_sequence_resource_bound();
+    test_compatibility_sequence_preserves_historical_camera_capacity();
     test_reusable_scene_validation_contract();
 
     if (failures != 0) {
