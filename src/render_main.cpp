@@ -728,20 +728,25 @@ int main(int argc, char** argv) {
                 const tiny_renderer::PreparedOfflineMixedScene prepared_scene =
                     tiny_renderer::prepare_offline_mixed_scene(
                         scene_entries, parsed.settings);
-                const std::vector<tiny_renderer::Framebuffer> frames =
-                    tiny_renderer::render_prepared_scene_sequence(
+                const tiny_renderer::PreparedOfflineCameraSequence sequence =
+                    tiny_renderer::prepare_offline_camera_sequence(
                         prepared_scene, cameras);
 
-                for (std::size_t index = 0U; index < frames.size(); ++index) {
+                for (std::size_t index = 0U;
+                     index < sequence.frame_count();
+                     ++index) {
+                    const tiny_renderer::Framebuffer frame =
+                        tiny_renderer::render_prepared_camera_sequence_frame(
+                            sequence, index);
                     const std::filesystem::path frame_path =
                         sequence_output_path(output_path, index);
                     if (extension == ".ppm") {
-                        frames[index].write_ppm(
+                        frame.write_ppm(
                             frame_path.string(),
                             display_mapping,
                             output_transfer);
                     } else {
-                        frames[index].write_pfm(frame_path.string());
+                        frame.write_pfm(frame_path.string());
                     }
                 }
 
@@ -752,7 +757,7 @@ int main(int argc, char** argv) {
                     << " samples=" << static_cast<unsigned>(parsed.settings.sample_count)
                     << " source=scene models=" << scene_entries.size()
                     << " ordering=mixed-transparency"
-                    << " cameras=" << frames.size()
+                    << " cameras=" << sequence.frame_count()
                     << " output_pattern="
                     << sequence_output_path(output_path, 0U).filename().string()
                     << '\n';
