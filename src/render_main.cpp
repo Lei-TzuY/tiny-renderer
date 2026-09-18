@@ -174,6 +174,7 @@ struct ParsedArguments {
     std::optional<float> display_exposure{};
     std::optional<tiny_renderer::OutputTransferFunction> output_transfer{};
     std::optional<std::filesystem::path> camera_sequence_path{};
+    std::optional<std::filesystem::path> frame_sequence_path{};
     std::optional<std::filesystem::path> environment_path{};
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
@@ -198,6 +199,7 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_display_exposure = false;
     bool saw_output_transfer = false;
     bool saw_camera_sequence = false;
+    bool saw_frame_sequence = false;
     bool saw_environment = false;
     bool saw_intensity = false;
     bool saw_yaw = false;
@@ -260,6 +262,16 @@ ParsedArguments parse_arguments(int argc, char** argv) {
                 std::filesystem::path(require_value("--camera-sequence"));
             if (parsed.camera_sequence_path->empty()) {
                 throw std::invalid_argument("--camera-sequence requires a non-empty path");
+            }
+        } else if (token == "--frame-sequence") {
+            if (saw_frame_sequence) {
+                throw std::invalid_argument("--frame-sequence may be specified at most once");
+            }
+            saw_frame_sequence = true;
+            parsed.frame_sequence_path =
+                std::filesystem::path(require_value("--frame-sequence"));
+            if (parsed.frame_sequence_path->empty()) {
+                throw std::invalid_argument("--frame-sequence requires a non-empty path");
             }
         } else if (token == "--environment") {
             if (saw_environment) {
@@ -396,6 +408,10 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     if (positional.size() == 3U) {
         parsed.settings.sample_count = parse_sample_count(positional[2]);
     }
+    if (parsed.camera_sequence_path && parsed.frame_sequence_path) {
+        throw std::invalid_argument(
+            "--camera-sequence and --frame-sequence are mutually exclusive");
+    }
     if ((parsed.environment_intensity || parsed.environment_yaw || parsed.environment_mip)
         && !parsed.environment_path) {
         throw std::invalid_argument("environment intensity/yaw/mip requires --environment");
@@ -467,7 +483,7 @@ const char* ordering_name(tiny_renderer::OfflineSceneOrdering ordering) {
 void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.(obj|trscene) OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
-           " [--camera-sequence FILE]"
+           " [--camera-sequence FILE] [--frame-sequence FILE]"
            " [--texture-mip base|nearest|linear] [--texture-anisotropy 1|2|4]"
            " [--display-exposure VALUE] [--output-transfer linear|srgb]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
@@ -485,8 +501,10 @@ void print_usage() {
            " repeat 'model FILE.obj TX TY TZ SCALE ROTATION_Y_RADIANS [inherit|lambert|blinn-phong]"
            " [opaque|source-alpha|alpha-to-coverage]' (max 256 sibling OBJ files)\n"
         << "  --camera-sequence FILE requires .trscene ordering=mixed-transparency and no manifest camera;"
-           " FILE uses tiny-renderer-camera-sequence-v1 plus repeated camera records;"
-           " outputs are named STEM_0000.EXT, STEM_0001.EXT, ...\n"
+           " FILE uses tiny-renderer-camera-sequence-v1 plus repeated camera records;\n"
+        << "  --frame-sequence FILE has the same scene restrictions, is mutually exclusive with --camera-sequence,"
+           " and uses tiny-renderer-frame-sequence-v1 frame/camera plus exact per-model affine matrices;"
+           " sequence outputs are named STEM_0000.EXT, STEM_0001.EXT, ...\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
            " display-exposure=1 output-transfer=srgb"
            " environment-intensity=1 environment-yaw=0 environment-mip=base"
@@ -519,6 +537,9 @@ int main(int argc, char** argv) {
         ParsedArguments parsed = parse_arguments(argc, argv);
         if (parsed.camera_sequence_path && input_extension != ".trscene") {
             throw std::invalid_argument("--camera-sequence requires .trscene input");
+        }
+        if (parsed.frame_sequence_path && input_extension != ".trscene") {
+            throw std::invalid_argument("--frame-sequence requires .trscene input");
         }
         if (extension == ".pfm" && (parsed.display_exposure || parsed.output_transfer)) {
             throw std::invalid_argument("display output controls require .ppm output");
@@ -713,24 +734,34 @@ int main(int argc, char** argv) {
                 });
             }
 
-            if (parsed.camera_sequence_path) {
+            if (parsed.camera_sequence_path || parsed.frame_sequence_path) {
                 if (manifest.ordering != tiny_renderer::OfflineSceneOrdering::MixedTransparency) {
                     throw std::invalid_argument(
-                        "--camera-sequence requires .trscene ordering mixed-transparency");
+                        "sequence rendering requires .trscene ordering mixed-transparency");
                 }
                 if (manifest.camera) {
                     throw std::invalid_argument(
-                        "--camera-sequence conflicts with camera directive in .trscene manifest");
+                        "sequence rendering conflicts with camera directive in .trscene manifest");
                 }
-                const std::vector<tiny_renderer::OfflineSceneCamera> cameras =
-                    tiny_renderer::load_offline_camera_sequence_file(
-                        *parsed.camera_sequence_path);
+
                 const tiny_renderer::PreparedOfflineMixedScene prepared_scene =
                     tiny_renderer::prepare_offline_mixed_scene(
                         scene_entries, parsed.settings);
-                const tiny_renderer::PreparedOfflineCameraSequence sequence =
-                    tiny_renderer::prepare_offline_camera_sequence(
+                const tiny_renderer::PreparedOfflineCameraSequence sequence = [&] {
+                    if (parsed.frame_sequence_path) {
+                        const std::vector<tiny_renderer::OfflineSceneFrameState> frames =
+                            tiny_renderer::load_offline_frame_sequence_file(
+                                *parsed.frame_sequence_path,
+                                scene_entries.size());
+                        return tiny_renderer::prepare_offline_frame_sequence(
+                            prepared_scene, frames);
+                    }
+                    const std::vector<tiny_renderer::OfflineSceneCamera> cameras =
+                        tiny_renderer::load_offline_camera_sequence_file(
+                            *parsed.camera_sequence_path);
+                    return tiny_renderer::prepare_offline_camera_sequence(
                         prepared_scene, cameras);
+                }();
 
                 for (std::size_t index = 0U;
                      index < sequence.frame_count();
@@ -756,8 +787,9 @@ int main(int argc, char** argv) {
                     << " height=" << parsed.settings.height
                     << " samples=" << static_cast<unsigned>(parsed.settings.sample_count)
                     << " source=scene models=" << scene_entries.size()
-                    << " ordering=mixed-transparency"
-                    << " cameras=" << sequence.frame_count()
+                    << " ordering=mixed-transparency "
+                    << (parsed.frame_sequence_path ? "frames=" : "cameras=")
+                    << sequence.frame_count()
                     << " output_pattern="
                     << sequence_output_path(output_path, 0U).filename().string()
                     << '\n';

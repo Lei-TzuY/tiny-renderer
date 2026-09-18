@@ -1,0 +1,21 @@
+tiny-renderer-frame-sequence-v1
+# A: exact manifest-equivalent affine transforms.
+frame 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+model 0.8 0 0 0.55 0 0.8 0 0 0 0 0.8 0.25 0 0 0 1
+model 0.8 0 0 -0.65 0 0.8 0 0 0 0 0.8 0 0 0 0 1
+model 0.8 0 0 0.55 0 0.8 0 0 0 0 0.8 -0.25 0 0 0 1
+end
+
+# B: same camera, distinct complete transforms.
+frame 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+model 0.8 0 0 -0.55 0 0.8 0 0 0 0 0.8 0.35 0 0 0 1
+model 0.8 0 0 0.65 0 0.8 0 0 0 0 0.8 0 0 0 0 1
+model 0.8 0 0 -0.55 0 0.8 0 0 0 0 0.8 -0.35 0 0 0 1
+end
+
+# A repeated exactly.
+frame 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+model 0.8 0 0 0.55 0 0.8 0 0 0 0 0.8 0.25 0 0 0 1
+model 0.8 0 0 -0.65 0 0.8 0 0 0 0 0.8 0 0 0 0 1
+model 0.8 0 0 0.55 0 0.8 0 0 0 0 0.8 -0.25 0 0 0 1
+end

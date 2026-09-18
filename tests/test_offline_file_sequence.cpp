@@ -45,6 +45,89 @@ bool same_camera(const OfflineSceneCamera& a, const OfflineSceneCamera& b) {
         && a.far_plane == b.far_plane;
 }
 
+bool same_matrix(const Mat4& a, const Mat4& b) {
+    for (std::size_t row = 0U; row < 4U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            if (a(row, column) != b(row, column)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool exact_frame_equal(const Framebuffer& left, const Framebuffer& right) {
+    if (left.width() != right.width()
+        || left.height() != right.height()
+        || left.samples_per_pixel() != right.samples_per_pixel()
+        || left.rgb8() != right.rgb8()
+        || left.fnv1a64() != right.fnv1a64()) {
+        return false;
+    }
+    for (std::size_t y = 0U; y < left.height(); ++y) {
+        for (std::size_t x = 0U; x < left.width(); ++x) {
+            for (std::size_t sample = 0U; sample < left.samples_per_pixel(); ++sample) {
+                const Vec3 a = left.sample_color_at(x, y, sample);
+                const Vec3 b = right.sample_color_at(x, y, sample);
+                if (a.x != b.x || a.y != b.y || a.z != b.z
+                    || left.sample_depth_at(x, y, sample) != right.sample_depth_at(x, y, sample)
+                    || left.sample_stencil_at(x, y, sample) != right.sample_stencil_at(x, y, sample)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+VaryingPack normal_varyings() {
+    VaryingPack varyings;
+    varyings.count = 3U;
+    varyings.values[0] = 0.0F;
+    varyings.values[1] = 0.0F;
+    varyings.values[2] = 1.0F;
+    return varyings;
+}
+
+ModelAsset triangle_asset(Vec3 albedo, float opacity) {
+    ModelAsset asset;
+    asset.mesh.vertices = {
+        Vertex::with_varyings({-0.9F, -0.9F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.9F, -0.9F, 0.0F}, normal_varyings()),
+        Vertex::with_varyings({0.0F, 0.9F, 0.0F}, normal_varyings()),
+    };
+    asset.mesh.triangles = {{{0U, 1U, 2U}}};
+
+    MaterialDraw draw;
+    draw.range = {0U, 1U};
+    draw.material_name = "frame-equivalence";
+    draw.material.albedo = albedo;
+    draw.material.opacity = opacity;
+    asset.draws.push_back(draw);
+    return asset;
+}
+
+Mat4 fixture_affine_transform(float x, float z) {
+    Mat4 matrix = Mat4::identity();
+    matrix(0U, 0U) = 0.8F;
+    matrix(1U, 1U) = 0.8F;
+    matrix(2U, 2U) = 0.8F;
+    matrix(0U, 3U) = x;
+    matrix(2U, 3U) = z;
+    return matrix;
+}
+
+OfflineSceneCamera fixture_frame_camera() {
+    OfflineSceneCamera camera;
+    camera.eye = {0.0F, 0.0F, 3.0F};
+    camera.target = {0.0F, 0.0F, 0.0F};
+    camera.up = {0.0F, 1.0F, 0.0F};
+    camera.vertical_fov_radians = 0.8726646259971648F;
+    camera.near_plane = 0.1F;
+    camera.far_plane = 100.0F;
+    return camera;
+}
+
 std::filesystem::path source_dir() {
 #ifdef TINY_RENDERER_SOURCE_DIR
     return std::filesystem::path(TINY_RENDERER_SOURCE_DIR);
@@ -94,6 +177,19 @@ int run_sequence_cli(
         + " " + quote_path(scene)
         + " " + quote_path(output)
         + " 64 48 4 --camera-sequence " + quote_path(cameras);
+    return std::system(command.c_str());
+}
+
+int run_frame_sequence_cli(
+    const std::filesystem::path& cli,
+    const std::filesystem::path& scene,
+    const std::filesystem::path& output,
+    const std::filesystem::path& frames) {
+    const std::string command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(output)
+        + " 64 48 4 --frame-sequence " + quote_path(frames);
     return std::system(command.c_str());
 }
 
@@ -159,6 +255,333 @@ void test_strict_bounded_camera_sequence_loader() {
             (void)load_offline_camera_sequence_file(root / "oversized.trcameras");
         },
         "camera sidecar rejects more than the bounded camera count");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+void test_strict_bounded_frame_sequence_loader() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::vector<OfflineSceneFrameState> frames =
+        load_offline_frame_sequence_file(
+            fixtures / "frame_sequence_aba.trframes",
+            3U);
+    check(frames.size() == 3U,
+          "A-B-A affine sidecar loads exactly three frame records");
+    if (frames.size() == 3U) {
+        check(same_camera(frames[0].camera, frames[1].camera)
+                  && same_camera(frames[0].camera, frames[2].camera),
+              "A-B-A affine fixture keeps camera fixed so transform changes are isolated");
+        check(frames[0].model_transforms.size() == 3U
+                  && frames[1].model_transforms.size() == 3U
+                  && frames[2].model_transforms.size() == 3U,
+              "every parsed frame owns one exact transform per prepared scene entry");
+        if (frames[0].model_transforms.size() == 3U
+            && frames[1].model_transforms.size() == 3U
+            && frames[2].model_transforms.size() == 3U) {
+            check(
+                same_matrix(
+                    frames[0].model_transforms[0],
+                    frames[2].model_transforms[0])
+                    && same_matrix(
+                        frames[0].model_transforms[1],
+                        frames[2].model_transforms[1])
+                    && same_matrix(
+                        frames[0].model_transforms[2],
+                        frames[2].model_transforms[2]),
+                "repeated A frame preserves exact row-major affine matrices");
+            check(
+                !same_matrix(
+                    frames[0].model_transforms[0],
+                    frames[1].model_transforms[0]),
+                "middle B frame carries an observably distinct model transform");
+            check(
+                frames[0].model_transforms[0](0U, 3U) == 0.55F
+                    && frames[0].model_transforms[0](2U, 3U) == 0.25F,
+                "row-major frame matrix parsing preserves translation components");
+        }
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                fixtures / "frame_sequence_invalid_later.trframes",
+                3U);
+        },
+        "later finite projective transform rejects the complete affine sidecar");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                fixtures / "frame_sequence_aba.trframes",
+                detail::kMaxOfflineSceneEntries + 1U);
+        },
+        "frame sidecar rejects an expected model count above the bounded scene entry limit before allocation");
+
+    const std::filesystem::path root =
+        std::filesystem::current_path() / "tiny_renderer_frame_sequence_parser_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    {
+        std::ofstream missing_header(root / "missing_header.trframes");
+        missing_header
+            << "frame 0 0 3 0 0 0 0 1 0 0.8726646 0.1 100\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                root / "missing_header.trframes",
+                0U);
+        },
+        "frame sidecar requires the exact version header");
+
+    {
+        std::ofstream short_frame(root / "short_frame.trframes");
+        short_frame
+            << "tiny-renderer-frame-sequence-v1\n"
+            << "frame 0 0 3 0 0 0 0 1 0 0.8726646 0.1 100\n"
+            << "model 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                root / "short_frame.trframes",
+                2U);
+        },
+        "frame sidecar rejects fewer transforms than the prepared scene entry count");
+
+    {
+        std::ofstream extra_model(root / "extra_model.trframes");
+        extra_model
+            << "tiny-renderer-frame-sequence-v1\n"
+            << "frame 0 0 3 0 0 0 0 1 0 0.8726646 0.1 100\n"
+            << "model 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\n"
+            << "model 1 0 0 1 0 1 0 0 0 0 1 0 0 0 0 1\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                root / "extra_model.trframes",
+                1U);
+        },
+        "frame sidecar rejects extra transforms beyond the prepared scene entry count");
+
+    {
+        std::ofstream unterminated(root / "unterminated.trframes");
+        unterminated
+            << "tiny-renderer-frame-sequence-v1\n"
+            << "frame 0 0 3 0 0 0 0 1 0 0.8726646 0.1 100\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                root / "unterminated.trframes",
+                0U);
+        },
+        "frame sidecar rejects an unterminated frame transaction");
+
+    {
+        std::ofstream oversized(root / "oversized.trframes");
+        oversized << "tiny-renderer-frame-sequence-v1\n";
+        for (std::size_t i = 0U;
+             i < detail::kMaxOfflineSequenceCameras + 1U;
+             ++i) {
+            oversized
+                << "frame 0 0 3 0 0 0 0 1 0 0.8726646 0.1 100\n"
+                << "end\n";
+        }
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_frame_sequence_file(
+                root / "oversized.trframes",
+                0U);
+        },
+        "frame sidecar rejects more than the bounded frame count");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+void test_file_driven_frame_records_match_programmatic_equivalent() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::vector<OfflineSceneFrameState> file_frames =
+        load_offline_frame_sequence_file(
+            fixtures / "frame_sequence_aba.trframes",
+            3U);
+
+    OfflineRenderSettings settings;
+    settings.width = 64U;
+    settings.height = 48U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.02F, 0.025F, 0.035F};
+
+    const ModelAsset coverage =
+        triangle_asset({0.85F, 0.15F, 0.10F}, 0.55F);
+    const ModelAsset green =
+        triangle_asset({0.10F, 0.75F, 0.20F}, 0.45F);
+    const ModelAsset blue =
+        triangle_asset({0.10F, 0.25F, 0.85F}, 0.55F);
+
+    const std::array<OfflineSceneEntry, 3> entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene prepared_scene =
+        prepare_offline_mixed_scene(entries, settings);
+
+    const OfflineSceneCamera camera = fixture_frame_camera();
+    const std::vector<Mat4> transforms_a{
+        fixture_affine_transform(0.55F, 0.25F),
+        fixture_affine_transform(-0.65F, 0.0F),
+        fixture_affine_transform(0.55F, -0.25F),
+    };
+    const std::vector<Mat4> transforms_b{
+        fixture_affine_transform(-0.55F, 0.35F),
+        fixture_affine_transform(0.65F, 0.0F),
+        fixture_affine_transform(-0.55F, -0.35F),
+    };
+    const std::array<OfflineSceneFrameState, 3> programmatic_frames{{
+        OfflineSceneFrameState{camera, transforms_a},
+        OfflineSceneFrameState{camera, transforms_b},
+        OfflineSceneFrameState{camera, transforms_a},
+    }};
+
+    const PreparedOfflineCameraSequence file_sequence =
+        prepare_offline_frame_sequence(prepared_scene, file_frames);
+    const PreparedOfflineCameraSequence programmatic_sequence =
+        prepare_offline_frame_sequence(prepared_scene, programmatic_frames);
+
+    check(
+        file_sequence.frame_count() == programmatic_sequence.frame_count()
+            && file_sequence.frame_count() == 3U,
+        "file-driven and programmatic A-B-A frame records prepare the same bounded frame count");
+    if (file_sequence.frame_count() != programmatic_sequence.frame_count()) {
+        return;
+    }
+
+    for (std::size_t index = 0U; index < file_sequence.frame_count(); ++index) {
+        const Framebuffer file_frame =
+            render_prepared_camera_sequence_frame(file_sequence, index);
+        const Framebuffer programmatic_frame =
+            render_prepared_camera_sequence_frame(programmatic_sequence, index);
+        check(
+            exact_frame_equal(file_frame, programmatic_frame),
+            "file-driven affine frame is exact resolved and per-sample RGB/depth/stencil equivalent to the same programmatic frame record");
+    }
+}
+
+void test_file_driven_affine_frame_sequence_transaction(const char* argv0) {
+    const std::filesystem::path cli = render_cli_path(argv0);
+    check(std::filesystem::exists(cli),
+          "affine frame sequence integration locates tiny_renderer_render sibling executable");
+    if (!std::filesystem::exists(cli)) {
+        return;
+    }
+
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::filesystem::path scene = fixtures / "flat_scene_sequence_mixed.trscene";
+    const std::filesystem::path frames = fixtures / "frame_sequence_aba.trframes";
+    const std::filesystem::path invalid =
+        fixtures / "frame_sequence_invalid_later.trframes";
+    const std::filesystem::path cameras =
+        fixtures / "camera_sequence_aba.trcameras";
+
+    const std::filesystem::path root =
+        std::filesystem::current_path() / "tiny_renderer_frame_sequence_cli_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::filesystem::path first_base = root / "frames.ppm";
+    check(run_frame_sequence_cli(cli, scene, first_base, frames) == 0,
+          "file-driven A-B-A affine frame sequence renders successfully");
+    const std::array<std::filesystem::path, 3> outputs{{
+        indexed_output(first_base, 0U),
+        indexed_output(first_base, 1U),
+        indexed_output(first_base, 2U),
+    }};
+    for (const auto& output : outputs) {
+        check(std::filesystem::exists(output),
+              "affine frame sequence creates every indexed output");
+    }
+    check(!std::filesystem::exists(first_base),
+          "affine frame sequence never writes an ambiguous unsuffixed output");
+    if (std::filesystem::exists(outputs[0])
+        && std::filesystem::exists(outputs[1])
+        && std::filesystem::exists(outputs[2])) {
+        const std::vector<char> a0 = read_binary_file(outputs[0]);
+        const std::vector<char> b = read_binary_file(outputs[1]);
+        const std::vector<char> a1 = read_binary_file(outputs[2]);
+        check(a0 == a1,
+              "repeated A affine frames are byte-identical");
+        check(a0 != b,
+              "B differs with a fixed camera, proving file-driven model transforms execute");
+    }
+
+    // Frame A encodes the manifest's original transforms exactly and uses the
+    // first compatibility camera, so both input paths must produce the same
+    // canonical prepared-scene output.
+    const std::filesystem::path camera_reference = root / "camera_reference.ppm";
+    check(run_sequence_cli(cli, scene, camera_reference, cameras) == 0,
+          "camera-sequence compatibility reference renders successfully");
+    const std::filesystem::path camera_a = indexed_output(camera_reference, 0U);
+    if (std::filesystem::exists(outputs[0])
+        && std::filesystem::exists(camera_a)) {
+        check(read_binary_file(outputs[0]) == read_binary_file(camera_a),
+              "explicit frame-A matrices are byte-equivalent to the same static manifest transforms");
+    }
+
+    const std::filesystem::path repeat_base = root / "repeat.ppm";
+    check(run_frame_sequence_cli(cli, scene, repeat_base, frames) == 0,
+          "repeated affine frame-sequence invocation succeeds");
+    for (std::size_t i = 0U; i < outputs.size(); ++i) {
+        const std::filesystem::path repeat = indexed_output(repeat_base, i);
+        check(std::filesystem::exists(repeat),
+              "repeated affine sequence creates every indexed frame");
+        if (std::filesystem::exists(outputs[i])
+            && std::filesystem::exists(repeat)) {
+            check(read_binary_file(outputs[i]) == read_binary_file(repeat),
+                  "file-driven affine frame output is deterministic across runs");
+        }
+    }
+
+    const std::filesystem::path invalid_base = root / "invalid.ppm";
+    check(run_frame_sequence_cli(cli, scene, invalid_base, invalid) != 0,
+          "later invalid projective transform rejects the CLI frame transaction");
+    check(!std::filesystem::exists(invalid_base)
+              && !std::filesystem::exists(indexed_output(invalid_base, 0U))
+              && !std::filesystem::exists(indexed_output(invalid_base, 1U)),
+          "later invalid affine frame rejects before any indexed output is written");
+
+    const std::filesystem::path conflict_base = root / "conflict.ppm";
+    const std::string conflict_command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(conflict_base)
+        + " 64 48 4 --camera-sequence " + quote_path(cameras)
+        + " --frame-sequence " + quote_path(frames);
+    check(std::system(conflict_command.c_str()) != 0,
+          "camera and affine frame sidecars are rejected as ambiguous together");
+    check(!std::filesystem::exists(conflict_base)
+              && !std::filesystem::exists(indexed_output(conflict_base, 0U)),
+          "sidecar-option conflict rejects before output");
 
     std::filesystem::remove_all(root, ignored);
 }
@@ -241,8 +664,11 @@ void test_file_driven_cli_sequence_transaction(const char* argv0) {
 
 int main(int argc, char** argv) {
     test_strict_bounded_camera_sequence_loader();
+    test_strict_bounded_frame_sequence_loader();
+    test_file_driven_frame_records_match_programmatic_equivalent();
     if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
         test_file_driven_cli_sequence_transaction(argv[0]);
+        test_file_driven_affine_frame_sequence_transaction(argv[0]);
     } else {
         check(false, "camera sequence integration test executable path is available");
     }
