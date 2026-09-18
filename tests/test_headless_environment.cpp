@@ -343,6 +343,19 @@ void test_invalid_environment_is_rejected() {
     check_throws<std::invalid_argument>(
         [&] { (void)render_model_preview(asset, settings); },
         "preview rejects invalid environment intensity");
+
+    const Texture2D negative_radiance(
+        2U,
+        1U,
+        {
+            {0.5F, 0.25F, 0.125F},
+            {-0.01F, 0.25F, 0.125F},
+        });
+    invalid = environment_state(negative_radiance);
+    settings.environment = invalid;
+    check_throws<std::invalid_argument>(
+        [&] { (void)render_model_preview(asset, settings); },
+        "preview rejects a negative environment radiance texel during settings preflight");
 }
 
 void test_invalid_or_duplicate_environment_lighting_is_rejected() {

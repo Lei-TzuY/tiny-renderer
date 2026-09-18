@@ -135,6 +135,8 @@ struct OfflineSceneEntry {
     std::optional<OfflineSceneTransparencyMode> transparency_mode{};
 };
 
+class PreparedOfflineCameraSequence;
+
 // Reusable explicit-camera mixed-transparency scene. Canonical model,
 // material, texture, and per-draw spatial ownership is prepared once; each
 // render only reevaluates camera ordering/visibility and camera-dependent
@@ -151,16 +153,17 @@ public:
     [[nodiscard]] const OfflineRenderSettings& settings() const noexcept { return settings_; }
 
 private:
+    friend class PreparedOfflineCameraSequence;
     friend PreparedOfflineMixedScene prepare_offline_mixed_scene(
         std::span<const OfflineSceneEntry> entries,
         OfflineRenderSettings settings);
 
     PreparedOfflineMixedScene(
-        std::unique_ptr<PreparedScenePlan> plan,
+        std::shared_ptr<const PreparedScenePlan> plan,
         OfflineRenderSettings settings)
         : plan_(std::move(plan)), settings_(std::move(settings)) {}
 
-    std::unique_ptr<PreparedScenePlan> plan_;
+    std::shared_ptr<const PreparedScenePlan> plan_;
     OfflineRenderSettings settings_;
 };
 

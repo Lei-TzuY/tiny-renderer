@@ -510,7 +510,7 @@ PreparedOfflineMixedScene prepare_offline_mixed_scene(
     }
 
     return PreparedOfflineMixedScene{
-        std::make_unique<PreparedScenePlan>(std::move(plan_entries)),
+        std::make_shared<const PreparedScenePlan>(std::move(plan_entries)),
         std::move(settings)};
 }
 
