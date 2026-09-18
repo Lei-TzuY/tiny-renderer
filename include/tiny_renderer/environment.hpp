@@ -255,6 +255,17 @@ inline void validate_environment_background_state(const EnvironmentBackgroundSta
         || environment.yaw_radians > kPi) {
         throw std::invalid_argument("environment yaw must be finite and within [-pi, pi]");
     }
+
+    // Environment backgrounds represent radiance just like diffuse/reflection
+    // environment roles. Validate the complete source field before any camera
+    // can begin framebuffer ownership so a later camera cannot discover a bad
+    // texel only after earlier sequence frames have already executed.
+    for (std::size_t y = 0U; y < environment.texture->height(); ++y) {
+        for (std::size_t x = 0U; x < environment.texture->width(); ++x) {
+            (void)environment_detail::checked_scaled_radiance(
+                environment.texture->texel(x, y), environment.intensity);
+        }
+    }
 }
 
 // World +Y is the north pole (v=0), -Y is the south pole (v=1). With zero
