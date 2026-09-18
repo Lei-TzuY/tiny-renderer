@@ -204,9 +204,10 @@ inline void reject_offline_camera_sequence_extra_tokens(
     return cameras;
 }
 
-// Prepared camera-sequence plan. The source PreparedOfflineMixedScene must
-// outlive this plan because each PreparedSceneEvaluation contains draw entries
-// pointing into that scene's address-stable PreparedScenePlan ownership.
+// Prepared camera-sequence plan. It retains shared immutable ownership of the
+// address-stable PreparedScenePlan plus a validated settings snapshot, so the
+// source PreparedOfflineMixedScene may be moved or destroyed after preparation.
+// Camera evaluations still borrow draw entries from that retained plan.
 //
 // Preparation validates every camera, evaluates camera-dependent ordering and
 // conservative visibility, binds per-camera execution overrides, and
@@ -235,12 +236,14 @@ private:
         std::vector<OfflineSceneCamera> cameras,
         std::vector<PreparedSceneEvaluation> evaluations,
         std::vector<PreparedDrawExecutionOverrides> overrides)
-        : scene_(&scene),
+        : plan_owner_(scene.plan_),
+          settings_(scene.settings_),
           cameras_(std::move(cameras)),
           evaluations_(std::move(evaluations)),
           overrides_(std::move(overrides)) {}
 
-    const PreparedOfflineMixedScene* scene_{nullptr};
+    std::shared_ptr<const PreparedScenePlan> plan_owner_{};
+    OfflineRenderSettings settings_{};
     std::vector<OfflineSceneCamera> cameras_;
     std::vector<PreparedSceneEvaluation> evaluations_;
     std::vector<PreparedDrawExecutionOverrides> overrides_;
@@ -317,15 +320,14 @@ private:
         throw std::out_of_range(
             "offline prepared camera sequence frame index out of range");
     }
-    if (sequence.scene_ == nullptr
+    if (!sequence.plan_owner_
         || sequence.evaluations_.size() != sequence.frame_count()
         || sequence.overrides_.size() != sequence.frame_count()) {
         throw std::logic_error(
             "offline prepared camera sequence has inconsistent owned state");
     }
 
-    const PreparedOfflineMixedScene& scene = *sequence.scene_;
-    const OfflineRenderSettings& settings = scene.settings();
+    const OfflineRenderSettings& settings = sequence.settings_;
     const OfflineSceneCamera& camera = sequence.cameras_[frame_index];
 
     Framebuffer framebuffer(
