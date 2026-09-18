@@ -231,6 +231,14 @@ private:
     friend Framebuffer render_prepared_camera_sequence_frame(
         const PreparedOfflineCameraSequence& sequence,
         std::size_t frame_index);
+    friend std::vector<Framebuffer> render_prepared_scene_sequence(
+        const PreparedOfflineMixedScene& scene,
+        std::span<const OfflineSceneCamera> cameras);
+
+    static PreparedOfflineCameraSequence prepare_impl(
+        const PreparedOfflineMixedScene& scene,
+        std::span<const OfflineSceneCamera> cameras,
+        bool enforce_camera_limit);
 
     PreparedOfflineCameraSequence(
         const PreparedOfflineMixedScene& scene,
@@ -253,10 +261,12 @@ private:
 // Builds a bounded reusable sequence plan without allocating or rasterizing any
 // output frame. A later malformed or target-incompatible camera rejects the
 // complete sequence before the caller can execute frame zero.
-[[nodiscard]] inline PreparedOfflineCameraSequence prepare_offline_camera_sequence(
+inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl(
     const PreparedOfflineMixedScene& scene,
-    std::span<const OfflineSceneCamera> cameras) {
-    if (cameras.size() > detail::kMaxOfflineSequenceCameras) {
+    std::span<const OfflineSceneCamera> cameras,
+    bool enforce_camera_limit) {
+    if (enforce_camera_limit
+        && cameras.size() > detail::kMaxOfflineSequenceCameras) {
         throw std::invalid_argument(
             "offline prepared camera sequence exceeds bounded camera limit");
     }
@@ -308,6 +318,13 @@ private:
         std::move(evaluations),
         std::move(overrides),
     };
+}
+
+[[nodiscard]] inline PreparedOfflineCameraSequence prepare_offline_camera_sequence(
+    const PreparedOfflineMixedScene& scene,
+    std::span<const OfflineSceneCamera> cameras) {
+    return PreparedOfflineCameraSequence::prepare_impl(
+        scene, cameras, true);
 }
 
 // Executes exactly one already-prepared camera entry. Only one framebuffer is
@@ -385,8 +402,12 @@ private:
             "offline camera sequence exceeds total resolved-pixel budget");
     }
 
+    // Preserve the historical library contract: this compatibility API is
+    // bounded by aggregate returned framebuffer ownership, not by the 256-camera
+    // file-sidecar/prepared-plan metadata limit. Preparation still uses the same
+    // camera evaluation and complete target-preflight implementation.
     const PreparedOfflineCameraSequence prepared =
-        prepare_offline_camera_sequence(scene, cameras);
+        PreparedOfflineCameraSequence::prepare_impl(scene, cameras, false);
     std::vector<Framebuffer> frames;
     frames.reserve(prepared.frame_count());
     for (std::size_t frame_index = 0U;
