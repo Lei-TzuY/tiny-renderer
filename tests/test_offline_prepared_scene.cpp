@@ -597,11 +597,14 @@ void test_prepared_frame_sequence_matches_manual_per_frame_scenes() {
     check(
         exact_frame_equal(frame_a, frame_a_repeat),
         "A-B-C-A transform sequence preserves exact repeated-frame determinism");
+    Framebuffer clear_reference(
+        settings.width,
+        settings.height,
+        settings.sample_count);
+    clear_reference.clear(settings.clear_color);
     check(
-        frame_c.fnv1a64()
-            == Framebuffer(settings.width, settings.height, settings.sample_count).fnv1a64()
-            || frame_c.rgb8() != frame_a.rgb8(),
-        "far-out frame does not reuse stale visible draw selection from an earlier transform");
+        exact_frame_equal(frame_c, clear_reference),
+        "far-out frame is exact clear-target output and cannot reuse stale visibility from an earlier transform");
 }
 
 void test_prepared_frame_sequence_rejects_invalid_transform_records() {
