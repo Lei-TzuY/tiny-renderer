@@ -205,7 +205,17 @@ inline void reject_offline_camera_sequence_extra_tokens(
     return cameras;
 }
 
-// Prepared camera-sequence plan. It retains shared immutable ownership of the
+// One programmatic frame state for reusable offline execution. The model
+// transform record is aligned exactly with PreparedScenePlan::entries(); each
+// matrix is a complete model transform for that frame, not a delta transform.
+// Preparation copies camera-dependent evaluation results, so callers do not
+// need to retain this record after the prepared sequence is created.
+struct OfflineSceneFrameState {
+    OfflineSceneCamera camera{};
+    std::vector<Mat4> model_transforms{};
+};
+
+// Prepared frame-sequence plan. It retains shared immutable ownership of the
 // address-stable PreparedScenePlan plus a validated settings snapshot, so the
 // source PreparedOfflineMixedScene may be moved or destroyed after preparation.
 // Camera evaluations still borrow draw entries from that retained plan.
@@ -228,6 +238,9 @@ private:
     friend PreparedOfflineCameraSequence prepare_offline_camera_sequence(
         const PreparedOfflineMixedScene& scene,
         std::span<const OfflineSceneCamera> cameras);
+    friend PreparedOfflineCameraSequence prepare_offline_frame_sequence(
+        const PreparedOfflineMixedScene& scene,
+        std::span<const OfflineSceneFrameState> frames);
     friend Framebuffer render_prepared_camera_sequence_frame(
         const PreparedOfflineCameraSequence& sequence,
         std::size_t frame_index);
@@ -239,6 +252,11 @@ private:
         const PreparedOfflineMixedScene& scene,
         std::span<const OfflineSceneCamera> cameras,
         bool enforce_camera_limit);
+    static PreparedOfflineCameraSequence prepare_frame_impl(
+        const PreparedOfflineMixedScene& scene,
+        std::span<const OfflineSceneFrameState> frames,
+        bool enforce_frame_limit,
+        bool require_model_transforms);
 
     PreparedOfflineCameraSequence(
         const PreparedOfflineMixedScene& scene,
@@ -258,17 +276,19 @@ private:
     std::vector<PreparedDrawExecutionOverrides> overrides_;
 };
 
-// Builds a bounded reusable sequence plan without allocating or rasterizing any
-// output frame. A later malformed or target-incompatible camera rejects the
-// complete sequence before the caller can execute frame zero.
-inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl(
+// Builds one reusable prepared frame transaction without allocating or
+// rasterizing any output framebuffer. Every camera, optional per-entry affine
+// model transform overlay, camera-dependent draw plan, and complete unfiltered
+// target preflight is accepted before this object can be returned.
+inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_frame_impl(
     const PreparedOfflineMixedScene& scene,
-    std::span<const OfflineSceneCamera> cameras,
-    bool enforce_camera_limit) {
-    if (enforce_camera_limit
-        && cameras.size() > detail::kMaxOfflineSequenceCameras) {
+    std::span<const OfflineSceneFrameState> frames,
+    bool enforce_frame_limit,
+    bool require_model_transforms) {
+    if (enforce_frame_limit
+        && frames.size() > detail::kMaxOfflineSequenceCameras) {
         throw std::invalid_argument(
-            "offline prepared camera sequence exceeds bounded camera limit");
+            "offline prepared frame sequence exceeds bounded frame limit");
     }
 
     const OfflineRenderSettings& settings = scene.settings();
@@ -277,6 +297,7 @@ inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl
             "prepared offline scene contains invalid zero-sized render settings");
     }
 
+    const std::size_t scene_entry_count = scene.plan().entries().size();
     const float aspect = detail::offline_sequence_aspect(settings);
     Framebuffer validation_target(
         settings.width,
@@ -286,11 +307,22 @@ inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl
     std::vector<OfflineSceneCamera> owned_cameras;
     std::vector<PreparedSceneEvaluation> evaluations;
     std::vector<PreparedDrawExecutionOverrides> overrides;
-    owned_cameras.reserve(cameras.size());
-    evaluations.reserve(cameras.size());
-    overrides.reserve(cameras.size());
+    owned_cameras.reserve(frames.size());
+    evaluations.reserve(frames.size());
+    overrides.reserve(frames.size());
 
-    for (const OfflineSceneCamera& camera : cameras) {
+    for (const OfflineSceneFrameState& frame : frames) {
+        if (require_model_transforms) {
+            if (frame.model_transforms.size() != scene_entry_count) {
+                throw std::invalid_argument(
+                    "offline frame model transform count must match prepared scene entry count");
+            }
+        } else if (!frame.model_transforms.empty()) {
+            throw std::logic_error(
+                "camera-only sequence preparation received unexpected model transforms");
+        }
+
+        const OfflineSceneCamera& camera = frame.camera;
         validate_offline_scene_camera(camera);
         const Mat4 view = Mat4::look_at(camera.eye, camera.target, camera.up);
         const Mat4 projection = Mat4::perspective(
@@ -298,8 +330,19 @@ inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl
             aspect,
             camera.near_plane,
             camera.far_plane);
-        PreparedSceneEvaluation evaluation = evaluate_prepared_scene_plan(
-            scene.plan(), view, projection);
+
+        PreparedSceneEvaluation evaluation = require_model_transforms
+            ? evaluate_prepared_scene_plan(
+                  scene.plan(),
+                  std::span<const Mat4>{
+                      frame.model_transforms.data(),
+                      frame.model_transforms.size()},
+                  view,
+                  projection)
+            : evaluate_prepared_scene_plan(
+                  scene.plan(),
+                  view,
+                  projection);
         PreparedDrawExecutionOverrides execution_overrides =
             detail::offline_sequence_overrides(settings, camera);
         preflight_prepared_scene_evaluation(
@@ -320,11 +363,42 @@ inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl
     };
 }
 
+// Camera-only compatibility preparation delegates to the same frame transaction
+// with no transform overlay, preserving every M91 ownership and validation rule.
+inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl(
+    const PreparedOfflineMixedScene& scene,
+    std::span<const OfflineSceneCamera> cameras,
+    bool enforce_camera_limit) {
+    std::vector<OfflineSceneFrameState> frames;
+    frames.reserve(cameras.size());
+    for (const OfflineSceneCamera& camera : cameras) {
+        frames.push_back(OfflineSceneFrameState{camera, {}});
+    }
+    return prepare_frame_impl(
+        scene,
+        frames,
+        enforce_camera_limit,
+        false);
+}
+
 [[nodiscard]] inline PreparedOfflineCameraSequence prepare_offline_camera_sequence(
     const PreparedOfflineMixedScene& scene,
     std::span<const OfflineSceneCamera> cameras) {
     return PreparedOfflineCameraSequence::prepare_impl(
         scene, cameras, true);
+}
+
+// Programmatic M92 path: each frame supplies one explicit affine model
+// transform per prepared scene entry. Geometry/material/texture snapshots and
+// object-space draw bounds stay owned by the original PreparedScenePlan.
+[[nodiscard]] inline PreparedOfflineCameraSequence prepare_offline_frame_sequence(
+    const PreparedOfflineMixedScene& scene,
+    std::span<const OfflineSceneFrameState> frames) {
+    return PreparedOfflineCameraSequence::prepare_frame_impl(
+        scene,
+        frames,
+        true,
+        true);
 }
 
 // Executes exactly one already-prepared camera entry. Only one framebuffer is
