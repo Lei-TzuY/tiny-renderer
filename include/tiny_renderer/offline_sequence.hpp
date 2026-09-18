@@ -360,6 +360,11 @@ inline void reject_offline_frame_sequence_extra_tokens(
 load_offline_frame_sequence_file(
     const std::filesystem::path& path,
     std::size_t expected_model_count) {
+    if (expected_model_count > detail::kMaxOfflineSceneEntries) {
+        throw std::invalid_argument(
+            "offline frame sequence expected model count exceeds bounded scene entry limit");
+    }
+
     std::ifstream input(path);
     if (!input) {
         throw std::runtime_error(
