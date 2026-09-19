@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 94 bounded programmatic timeline evaluation
+## Architecture frontier: Milestone 95 strict file-driven timeline state
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -118,17 +118,32 @@ M94 defines interpolation semantics programmatically before any file syntax is a
 - Regression coverage locks exact endpoint/interior/repeated sampling, affine bottom-row preservation, 4x mixed-transparency equivalence against explicit M92 frame records, camera/model interpolation effects on ordering/visibility, bounded-count rejection, projective-keyframe rejection, empty-request validation, and complete fail-closed behavior.
 - M94 is an abstract finite scalar-time API. It adds no file syntax, frame-rate/wall-clock semantics, Euler/quaternion decomposition, easing, looping, extrapolation, hierarchy/skeletal animation, parallel execution, or performance/animation-quality claim.
 
-## Promotion after Milestone 94
+## Milestone 95 — strict file-driven timeline state
 
-The next architectural promotion should expose **strict file-driven timeline/keyframe state** while keeping M94 as the sole interpolation authority. The file layer may serialize validated keyframes and explicit requested sample times, but it must not define a second interpolation model or bypass M92/M94 preparation.
+M95 exposes M94 timeline semantics through one strict bounded external sidecar and the existing mixed-transparency CLI transaction without adding another interpolation or render path.
 
-A Milestone 95 slice should require:
+- `tiny-renderer-timeline-v1` contains at least two finite strictly increasing `keyframe TIME <camera>` records. Every keyframe owns exactly one complete row-major affine `model` matrix per prepared scene entry and is terminated by explicit `end`; one or more ordered `sample TIME` directives follow all keyframes.
+- The timeline loader shares M93's strict finite-number, camera, and affine-matrix parsing core while retaining timeline-specific line diagnostics. It rejects missing/wrong headers, unknown directives, malformed/trailing tokens, incomplete/extra models, unterminated records, non-finite or non-increasing keyframe times, finite projective transforms, keyframes after sampling begins, oversized keyframe/sample counts, and out-of-domain sample requests.
+- Expected scene-entry ownership is bounded before per-keyframe transform storage is reserved. Keyframes and samples retain the established M94 256-record limits.
+- Parsing owns syntax only. It returns `OfflineSceneTimelineFile { keyframes, sample_times }`, reuses M94's semantic keyframe validator, and performs no interpolation or prepared-scene evaluation.
+- The CLI adds `--timeline-sequence FILE` only to the existing `.trscene` / `ordering mixed-transparency` sequence transaction with no manifest camera. Camera-only, exact-frame, and timeline sidecars form one mutually exclusive option group.
+- Parsed timeline state feeds M94 `prepare_offline_timeline_sequence`, which samples through the established M94 semantics and delegates the complete result to the M92 affine-frame preparation transaction. Indexed rendering and output naming continue through the existing `PreparedOfflineCameraSequence` executor.
+- File-driven endpoint/interior/repeated/final samples are regression-locked against independently constructed programmatic M94 keyframes with exact resolved RGB/hash and every 4x sample's RGB, depth, and stencil state. A repeated requested time is byte-deterministic at the CLI boundary.
+- A later invalid sample rejects the complete file/CLI transaction before any earlier indexed output is written, and conflicting sequence sidecar modes reject before output.
+- M95 adds no interpolation policy, easing, looping, extrapolation, frame-rate/wall-clock scheduling, hierarchy/skeletal animation, asynchronous/parallel execution, new renderer path, or performance claim.
 
-- one strict bounded sidecar format with an explicit version header, finite strictly increasing keyframe times, the existing 12-scalar camera state, exactly one complete affine model matrix per prepared scene entry, and explicit requested sample times;
-- parsing rejects missing/wrong headers, unknown directives, malformed/trailing tokens, duplicate/non-increasing/non-finite keyframe times, incomplete/extra transforms, projective/non-finite matrices, oversized keyframe/sample counts, and sample requests outside the declared keyframe domain before indexed output begins;
-- parsed state maps directly into `OfflineSceneTimelineKeyframe` plus sample-time records and then calls M94 `prepare_offline_timeline_sequence`; the file syntax must not reimplement interpolation, camera validation, scene evaluation, or rendering;
-- CLI integration is explicit and mutually exclusive with the existing exact camera/frame sequence modes, and is available only where the reusable mixed-transparency prepared-scene transaction is valid;
-- the complete file, timeline sampling, prepared-scene evaluation, and target preflight succeed before the first output file is emitted, so malformed later keyframes/sample requests leave zero earlier indexed outputs;
-- deterministic regressions compare file-driven output against independently constructed programmatic M94 keyframes across endpoint/interior/repeated samples, including exact resolved/hash and 4x per-sample RGB/depth/stencil equivalence;
-- M95 does not add easing curves, looping, extrapolation, frame-rate scheduling, async/parallel execution, hierarchy/skeletal animation, new renderer paths, or performance/animation-quality claims.
+## Promotion after Milestone 95
+
+The timeline/file phase is now coherent enough that the next architectural promotion should move up a layer rather than farm more sidecar syntax. Milestone 96 should establish **bounded programmatic hierarchical transform evaluation** over the existing prepared-scene entries while preserving M92 as the execution transaction.
+
+A Milestone 96 slice should require:
+
+- one immutable bounded hierarchy topology aligned exactly with `PreparedScenePlan::entries()`, where each entry is either a root or names one parent entry; parent references may use arbitrary entry order but out-of-range references, self-parenting, and cycles reject deterministically;
+- hierarchy topology is separate from dynamic frame state. Each hierarchical frame contains one validated camera plus exactly one finite affine **local** transform per prepared scene entry, with the existing scene/frame ownership limits remaining authoritative;
+- world transforms are resolved deterministically as `parent_world * local`, roots preserve their local transform exactly, and every composed result is revalidated as finite affine state before prepared-scene evaluation;
+- all hierarchy structure and all requested frame-local transform records are validated/resolved before the first frame can execute fragments. A later invalid local transform or cyclic/invalid topology must reject the complete preparation transaction;
+- resolved world-transform frames delegate directly to the existing M92 `prepare_offline_frame_sequence` path, so camera-dependent ordering, conservative visibility, environment-reflection rebinding, target preflight, and indexed execution remain unchanged;
+- a root-only hierarchy is exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to the same M92 world-transform frames, while a parent motion regression must observably move its child and trigger the established ordering/visibility reevaluation;
+- arbitrary parent-before/after entry ordering is covered so the implementation proves graph evaluation rather than relying on file/order coincidence;
+- M96 is programmatic first. It must not add hierarchy file syntax, skeletal joints/skin weights, constraints, inverse kinematics, timeline interpolation of hierarchy topology, scene-graph asset ownership, parallel execution, or performance claims.
 
