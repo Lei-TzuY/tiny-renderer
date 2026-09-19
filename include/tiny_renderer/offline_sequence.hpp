@@ -237,7 +237,114 @@ struct OfflineSceneTimelineFile {
     std::vector<float> sample_times{};
 };
 
+// Immutable bounded parent topology aligned by entry index. A missing parent
+// marks a root. Construction validates the complete graph independently of any
+// dynamic frame state so later local-transform evaluation cannot discover a
+// structural cycle after earlier frames have been prepared.
+class OfflineSceneHierarchy {
+public:
+    explicit OfflineSceneHierarchy(
+        std::vector<std::optional<std::size_t>> parents)
+        : parents_(std::move(parents)) {
+        if (parents_.size() > detail::kMaxOfflineSceneEntries) {
+            throw std::invalid_argument(
+                "offline hierarchy entry count exceeds bounded scene entry limit");
+        }
+
+        for (std::size_t index = 0U; index < parents_.size(); ++index) {
+            if (!parents_[index]) {
+                continue;
+            }
+            if (*parents_[index] >= parents_.size()) {
+                throw std::out_of_range(
+                    "offline hierarchy parent index exceeds hierarchy entry count");
+            }
+            if (*parents_[index] == index) {
+                throw std::invalid_argument(
+                    "offline hierarchy entry cannot parent itself");
+            }
+        }
+
+        std::vector<unsigned char> state(parents_.size(), 0U);
+        const auto visit = [&](auto&& self, std::size_t index) -> void {
+            if (state[index] == 2U) {
+                return;
+            }
+            if (state[index] == 1U) {
+                throw std::invalid_argument(
+                    "offline hierarchy contains a parent cycle");
+            }
+            state[index] = 1U;
+            if (parents_[index]) {
+                self(self, *parents_[index]);
+            }
+            state[index] = 2U;
+        };
+        for (std::size_t index = 0U; index < parents_.size(); ++index) {
+            visit(visit, index);
+        }
+    }
+
+    [[nodiscard]] std::span<const std::optional<std::size_t>>
+    parents() const noexcept {
+        return {parents_.data(), parents_.size()};
+    }
+
+private:
+    std::vector<std::optional<std::size_t>> parents_;
+};
+
+// Dynamic hierarchical frame state owns local transforms only. The hierarchy
+// remains fixed across a prepared sequence; resolved world transforms are
+// temporary preparation data delegated into the established M92 transaction.
+struct OfflineSceneHierarchicalFrameState {
+    OfflineSceneCamera camera{};
+    std::vector<Mat4> local_transforms{};
+};
+
 namespace detail {
+
+[[nodiscard]] inline std::vector<Mat4>
+resolve_offline_hierarchy_world_transforms(
+    const OfflineSceneHierarchy& hierarchy,
+    std::span<const Mat4> local_transforms) {
+    const std::span<const std::optional<std::size_t>> parents =
+        hierarchy.parents();
+    if (local_transforms.size() != parents.size()) {
+        throw std::invalid_argument(
+            "offline hierarchy local transform count must match hierarchy entry count");
+    }
+
+    for (const Mat4& local : local_transforms) {
+        validate_spatial_affine_matrix(
+            local,
+            "offline hierarchy local transform");
+    }
+
+    std::vector<Mat4> world(
+        local_transforms.size(),
+        Mat4::identity());
+    std::vector<unsigned char> resolved(local_transforms.size(), 0U);
+
+    const auto resolve = [&](auto&& self, std::size_t index) -> const Mat4& {
+        if (resolved[index] != 0U) {
+            return world[index];
+        }
+        world[index] = parents[index]
+            ? self(self, *parents[index]) * local_transforms[index]
+            : local_transforms[index];
+        validate_spatial_affine_matrix(
+            world[index],
+            "offline hierarchy composed world transform");
+        resolved[index] = 1U;
+        return world[index];
+    };
+
+    for (std::size_t index = 0U; index < local_transforms.size(); ++index) {
+        (void)resolve(resolve, index);
+    }
+    return world;
+}
 
 [[nodiscard]] inline float offline_timeline_lerp(float a, float b, float t) {
     return a + (b - a) * t;
@@ -1155,6 +1262,39 @@ inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl
         frames,
         true,
         true);
+}
+
+// Programmatic M96 path: validates one immutable parent topology and resolves
+// every frame's local transforms into complete world transforms before
+// delegating the entire batch to M92. Ordering, visibility, camera-dependent
+// overrides, target preflight, and indexed execution therefore stay owned by
+// the existing prepared-frame transaction.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_hierarchy_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneHierarchy& hierarchy,
+    std::span<const OfflineSceneHierarchicalFrameState> frames) {
+    if (hierarchy.parents().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline hierarchy entry count must match prepared scene entry count");
+    }
+    if (frames.size() > detail::kMaxOfflineSequenceCameras) {
+        throw std::invalid_argument(
+            "offline hierarchy frame sequence exceeds bounded frame limit");
+    }
+
+    std::vector<OfflineSceneFrameState> world_frames;
+    world_frames.reserve(frames.size());
+    for (const OfflineSceneHierarchicalFrameState& frame : frames) {
+        world_frames.push_back(OfflineSceneFrameState{
+            frame.camera,
+            detail::resolve_offline_hierarchy_world_transforms(
+                hierarchy,
+                frame.local_transforms),
+        });
+    }
+
+    return prepare_offline_frame_sequence(scene, world_frames);
 }
 
 
