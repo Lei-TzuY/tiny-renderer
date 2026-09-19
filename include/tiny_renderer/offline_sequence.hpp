@@ -26,6 +26,8 @@ namespace detail {
 inline constexpr std::size_t kMaxOfflineSequenceResolvedPixels =
     16U * 1024U * 1024U;
 inline constexpr std::size_t kMaxOfflineSequenceCameras = 256U;
+inline constexpr std::size_t kMaxOfflineTimelineKeyframes = 256U;
+inline constexpr std::size_t kMaxOfflineTimelineSamples = 256U;
 inline constexpr std::string_view kOfflineCameraSequenceHeader =
     "tiny-renderer-camera-sequence-v1";
 inline constexpr std::string_view kOfflineFrameSequenceHeader =
@@ -218,7 +220,112 @@ struct OfflineSceneFrameState {
     std::vector<Mat4> model_transforms{};
 };
 
+// One programmatic keyframe in a bounded time domain. Time is an abstract
+// finite scalar owned by the caller; this layer does not assign frame-rate,
+// wall-clock, looping, or file-format semantics to it.
+struct OfflineSceneTimelineKeyframe {
+    float time{};
+    OfflineSceneFrameState frame{};
+};
+
 namespace detail {
+
+[[nodiscard]] inline float offline_timeline_lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+[[nodiscard]] inline Vec3 offline_timeline_lerp(
+    const Vec3& a,
+    const Vec3& b,
+    float t) {
+    return {
+        offline_timeline_lerp(a.x, b.x, t),
+        offline_timeline_lerp(a.y, b.y, t),
+        offline_timeline_lerp(a.z, b.z, t),
+    };
+}
+
+[[nodiscard]] inline std::size_t validate_offline_timeline_keyframes(
+    std::span<const OfflineSceneTimelineKeyframe> keyframes) {
+    if (keyframes.size() < 2U) {
+        throw std::invalid_argument(
+            "offline timeline requires at least two keyframes");
+    }
+    if (keyframes.size() > kMaxOfflineTimelineKeyframes) {
+        throw std::invalid_argument(
+            "offline timeline keyframe count exceeds bounded limit");
+    }
+
+    const std::size_t model_count =
+        keyframes.front().frame.model_transforms.size();
+    if (model_count > kMaxOfflineSceneEntries) {
+        throw std::invalid_argument(
+            "offline timeline model transform count exceeds bounded scene entry limit");
+    }
+    for (std::size_t index = 0U; index < keyframes.size(); ++index) {
+        const OfflineSceneTimelineKeyframe& keyframe = keyframes[index];
+        if (!std::isfinite(keyframe.time)) {
+            throw std::invalid_argument(
+                "offline timeline keyframe time must be finite");
+        }
+        if (index > 0U && !(keyframe.time > keyframes[index - 1U].time)) {
+            throw std::invalid_argument(
+                "offline timeline keyframe times must be strictly increasing");
+        }
+        validate_offline_scene_camera(keyframe.frame.camera);
+        if (keyframe.frame.model_transforms.size() != model_count) {
+            throw std::invalid_argument(
+                "offline timeline keyframes must use one consistent model transform count");
+        }
+        for (const Mat4& model : keyframe.frame.model_transforms) {
+            validate_spatial_affine_matrix(
+                model,
+                "offline timeline keyframe model transform");
+        }
+    }
+    return model_count;
+}
+
+[[nodiscard]] inline OfflineSceneCamera interpolate_offline_timeline_camera(
+    const OfflineSceneCamera& a,
+    const OfflineSceneCamera& b,
+    float t) {
+    OfflineSceneCamera camera;
+    camera.eye = offline_timeline_lerp(a.eye, b.eye, t);
+    camera.target = offline_timeline_lerp(a.target, b.target, t);
+    camera.up = offline_timeline_lerp(a.up, b.up, t);
+    camera.vertical_fov_radians =
+        offline_timeline_lerp(a.vertical_fov_radians, b.vertical_fov_radians, t);
+    camera.near_plane =
+        offline_timeline_lerp(a.near_plane, b.near_plane, t);
+    camera.far_plane =
+        offline_timeline_lerp(a.far_plane, b.far_plane, t);
+    validate_offline_scene_camera(camera);
+    return camera;
+}
+
+[[nodiscard]] inline Mat4 interpolate_offline_timeline_affine(
+    const Mat4& a,
+    const Mat4& b,
+    float t) {
+    Mat4 result = Mat4::identity();
+    for (std::size_t row = 0U; row < 3U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            result(row, column) =
+                offline_timeline_lerp(a(row, column), b(row, column), t);
+        }
+    }
+    // The affine bottom row is semantic state, not an interpolated quantity.
+    // Endpoints were validated above; interior samples preserve it exactly.
+    result(3U, 0U) = 0.0F;
+    result(3U, 1U) = 0.0F;
+    result(3U, 2U) = 0.0F;
+    result(3U, 3U) = 1.0F;
+    validate_spatial_affine_matrix(
+        result,
+        "offline timeline interpolated model transform");
+    return result;
+}
 
 [[noreturn]] inline void offline_frame_sequence_error(
     const std::filesystem::path& path,
@@ -343,6 +450,84 @@ inline void reject_offline_frame_sequence_extra_tokens(
 }
 
 }  // namespace detail
+
+// Samples a bounded programmatic timeline in exact caller request order.
+// Keyframe endpoints are copied without arithmetic so exact keyframe samples
+// preserve stored camera/matrix state bit-for-bit. Interior camera components
+// and the affine top 3x4 are linearly interpolated; every resulting state is
+// revalidated before it can enter prepared-scene evaluation.
+[[nodiscard]] inline std::vector<OfflineSceneFrameState>
+sample_offline_frame_timeline(
+    std::span<const OfflineSceneTimelineKeyframe> keyframes,
+    std::span<const float> sample_times) {
+    const std::size_t model_count =
+        detail::validate_offline_timeline_keyframes(keyframes);
+    if (sample_times.size() > detail::kMaxOfflineTimelineSamples) {
+        throw std::invalid_argument(
+            "offline timeline sample count exceeds bounded limit");
+    }
+
+    std::vector<OfflineSceneFrameState> frames;
+    frames.reserve(sample_times.size());
+    for (const float sample_time : sample_times) {
+        if (!std::isfinite(sample_time)) {
+            throw std::invalid_argument(
+                "offline timeline sample time must be finite");
+        }
+        if (sample_time < keyframes.front().time
+            || sample_time > keyframes.back().time) {
+            throw std::out_of_range(
+                "offline timeline sample time is outside the keyframe domain");
+        }
+
+        if (sample_time == keyframes.front().time) {
+            frames.push_back(keyframes.front().frame);
+            continue;
+        }
+
+        std::size_t upper = 1U;
+        while (upper < keyframes.size()
+               && keyframes[upper].time < sample_time) {
+            ++upper;
+        }
+        if (upper < keyframes.size()
+            && sample_time == keyframes[upper].time) {
+            frames.push_back(keyframes[upper].frame);
+            continue;
+        }
+        if (upper >= keyframes.size()) {
+            throw std::logic_error(
+                "offline timeline failed to bracket an in-domain sample");
+        }
+
+        const OfflineSceneTimelineKeyframe& left = keyframes[upper - 1U];
+        const OfflineSceneTimelineKeyframe& right = keyframes[upper];
+        const float denominator = right.time - left.time;
+        const float t = (sample_time - left.time) / denominator;
+        if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
+            throw std::logic_error(
+                "offline timeline produced an invalid interpolation parameter");
+        }
+
+        OfflineSceneFrameState frame;
+        frame.camera = detail::interpolate_offline_timeline_camera(
+            left.frame.camera,
+            right.frame.camera,
+            t);
+        frame.model_transforms.reserve(model_count);
+        for (std::size_t model_index = 0U;
+             model_index < model_count;
+             ++model_index) {
+            frame.model_transforms.push_back(
+                detail::interpolate_offline_timeline_affine(
+                    left.frame.model_transforms[model_index],
+                    right.frame.model_transforms[model_index],
+                    t));
+        }
+        frames.push_back(std::move(frame));
+    }
+    return frames;
+}
 
 // Strict bounded sidecar for exact frame samples:
 //
@@ -662,6 +847,27 @@ inline PreparedOfflineCameraSequence PreparedOfflineCameraSequence::prepare_impl
         frames,
         true,
         true);
+}
+
+
+// Samples and prepares a complete bounded timeline transaction through M92's
+// existing affine-frame preparation path. All keyframes are checked against the
+// prepared scene entry count even when the requested sample span is empty.
+[[nodiscard]] inline PreparedOfflineCameraSequence prepare_offline_timeline_sequence(
+    const PreparedOfflineMixedScene& scene,
+    std::span<const OfflineSceneTimelineKeyframe> keyframes,
+    std::span<const float> sample_times) {
+    const std::size_t scene_entry_count = scene.plan().entries().size();
+    for (const OfflineSceneTimelineKeyframe& keyframe : keyframes) {
+        if (keyframe.frame.model_transforms.size() != scene_entry_count) {
+            throw std::invalid_argument(
+                "offline timeline keyframe model transform count must match prepared scene entry count");
+        }
+    }
+
+    const std::vector<OfflineSceneFrameState> sampled_frames =
+        sample_offline_frame_timeline(keyframes, sample_times);
+    return prepare_offline_frame_sequence(scene, sampled_frames);
 }
 
 // Executes exactly one already-prepared camera entry. Only one framebuffer is

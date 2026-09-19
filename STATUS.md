@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 93 strict file-driven affine frame state
+## Architecture frontier: Milestone 94 bounded programmatic timeline evaluation
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -106,15 +106,29 @@ M93 closes the external frame-state gap without adding another renderer, sequenc
 - File-driven A/B/A execution is regression-locked both at the CLI byte boundary and against independently constructed programmatic M92 frame records. The latter comparison covers resolved RGB/hash plus every 4x sample's RGB, depth, and stencil attachments.
 - Frame matrices remain exact independent samples. M93 adds no interpolation, delta accumulation, Euler decomposition, hierarchy, keyframe curves, timing semantics, streaming, parallel execution, or performance/animation-quality claim.
 
-## Promotion after Milestone 93
+## Milestone 94 — bounded programmatic timeline evaluation
 
-The next architectural promotion should establish a **bounded programmatic time-domain/keyframe evaluator** independently of file parsing. The important boundary is semantic: M93 may later supply keyframe data, but a file format must not define interpolation behavior implicitly.
+M94 defines interpolation semantics programmatically before any file syntax is allowed to depend on them.
 
-A Milestone 94 slice should require:
+- `OfflineSceneTimelineKeyframe` binds one finite scalar time to the already-validated M92 frame state: camera plus one complete affine model transform per prepared scene entry.
+- Timelines require 2..256 strictly increasing finite keyframes and accept at most 256 requested sample times. Duplicate/non-increasing times, non-finite times, underspecified spans, inconsistent transform counts, oversized model ownership, and out-of-domain sample requests reject deterministically.
+- Exact keyframe requests copy stored frame state without interpolation arithmetic. Interior samples linearly interpolate camera scalar/vector components and the affine top 3x4 while preserving the affine bottom row exactly as `[0,0,0,1]`.
+- Every keyframe and every interpolated camera/affine transform is revalidated before prepared-scene evaluation. A later invalid interpolated camera therefore rejects the complete requested timeline transaction before any earlier sample can execute fragments.
+- `prepare_offline_timeline_sequence` checks keyframes against prepared-scene entry ownership, samples the complete requested sequence in caller order, and delegates directly to the existing M92 `prepare_offline_frame_sequence` transaction. No second renderer, prepared-scene owner, or execution path is introduced.
+- Regression coverage locks exact endpoint/interior/repeated sampling, affine bottom-row preservation, 4x mixed-transparency equivalence against explicit M92 frame records, camera/model interpolation effects on ordering/visibility, bounded-count rejection, projective-keyframe rejection, empty-request validation, and complete fail-closed behavior.
+- M94 is an abstract finite scalar-time API. It adds no file syntax, frame-rate/wall-clock semantics, Euler/quaternion decomposition, easing, looping, extrapolation, hierarchy/skeletal animation, parallel execution, or performance/animation-quality claim.
 
-- one finite, strictly increasing, bounded keyframe time domain with an explicit maximum keyframe count and deterministic rejection of duplicates, non-finite times, empty/underspecified interpolation spans, and out-of-domain sample requests;
-- keyframes reuse the existing validated camera plus complete per-entry affine transform record rather than introducing a scene graph or mutable prepared ownership;
-- interpolation semantics are specified numerically in the programmatic API first. Exact endpoint/keyframe samples must reproduce the stored frame state exactly; any between-keyframe affine interpolation must preserve the affine bottom row by construction and be revalidated before prepared-scene evaluation;
-- sampled cameras/transforms feed the existing M92 preparation transaction, so all requested sample times are evaluated and target-preflighted before the first output frame can execute;
-- deterministic regressions cover exact endpoints, a bounded interior sample, repeated sample times in caller output order, camera-dependent transparency/visibility changes, and a later invalid interpolated state rejecting the complete sampled transaction before rendering;
-- M94 must not add file syntax, Euler/quaternion decomposition, easing curves, hierarchy/skeletal animation, looping, extrapolation, asynchronous/parallel execution, or performance/animation-quality claims unless a later milestone specifies those contracts independently.
+## Promotion after Milestone 94
+
+The next architectural promotion should expose **strict file-driven timeline/keyframe state** while keeping M94 as the sole interpolation authority. The file layer may serialize validated keyframes and explicit requested sample times, but it must not define a second interpolation model or bypass M92/M94 preparation.
+
+A Milestone 95 slice should require:
+
+- one strict bounded sidecar format with an explicit version header, finite strictly increasing keyframe times, the existing 12-scalar camera state, exactly one complete affine model matrix per prepared scene entry, and explicit requested sample times;
+- parsing rejects missing/wrong headers, unknown directives, malformed/trailing tokens, duplicate/non-increasing/non-finite keyframe times, incomplete/extra transforms, projective/non-finite matrices, oversized keyframe/sample counts, and sample requests outside the declared keyframe domain before indexed output begins;
+- parsed state maps directly into `OfflineSceneTimelineKeyframe` plus sample-time records and then calls M94 `prepare_offline_timeline_sequence`; the file syntax must not reimplement interpolation, camera validation, scene evaluation, or rendering;
+- CLI integration is explicit and mutually exclusive with the existing exact camera/frame sequence modes, and is available only where the reusable mixed-transparency prepared-scene transaction is valid;
+- the complete file, timeline sampling, prepared-scene evaluation, and target preflight succeed before the first output file is emitted, so malformed later keyframes/sample requests leave zero earlier indexed outputs;
+- deterministic regressions compare file-driven output against independently constructed programmatic M94 keyframes across endpoint/interior/repeated samples, including exact resolved/hash and 4x per-sample RGB/depth/stencil equivalence;
+- M95 does not add easing curves, looping, extrapolation, frame-rate scheduling, async/parallel execution, hierarchy/skeletal animation, new renderer paths, or performance/animation-quality claims.
+

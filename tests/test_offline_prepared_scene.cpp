@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <iostream>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -607,6 +608,322 @@ void test_prepared_frame_sequence_matches_manual_per_frame_scenes() {
         "far-out frame is exact clear-target output and cannot reuse stale visibility from an earlier transform");
 }
 
+void test_bounded_timeline_sampling_matches_manual_frame_sequence() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset coverage = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F},
+        0.55F);
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F},
+        0.45F);
+    const ModelAsset blue = triangle_asset(
+        {0.10F, 0.25F, 0.85F},
+        {0.0F, 0.0F, 0.0F},
+        0.55F);
+
+    const std::array<OfflineSceneEntry, 3> base_entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(base_entries, settings);
+
+    const OfflineSceneCamera camera_a = camera_at({0.0F, 0.0F, 3.0F});
+    const OfflineSceneCamera camera_b = camera_at({1.0F, 0.25F, 3.0F});
+    const OfflineSceneCamera camera_mid = camera_at({0.5F, 0.125F, 3.0F});
+
+    const std::vector<Mat4> transforms_a{
+        Mat4::translation({-0.5F, 0.0F, 0.0F}),
+        Mat4::translation({0.25F, 0.0F, -0.25F}),
+        Mat4::translation({0.125F, 0.0F, -0.75F}),
+    };
+    const std::vector<Mat4> transforms_b{
+        Mat4::translation({0.5F, 0.0F, 0.0F}),
+        Mat4::translation({-0.25F, 0.0F, -0.75F}),
+        Mat4::translation({-0.125F, 0.0F, -0.25F}),
+    };
+    const std::vector<Mat4> transforms_mid{
+        Mat4::translation({0.0F, 0.0F, 0.0F}),
+        Mat4::translation({0.0F, 0.0F, -0.5F}),
+        Mat4::translation({0.0F, 0.0F, -0.5F}),
+    };
+
+    const std::array<OfflineSceneTimelineKeyframe, 2> keyframes{{
+        OfflineSceneTimelineKeyframe{
+            0.0F,
+            OfflineSceneFrameState{camera_a, transforms_a}},
+        OfflineSceneTimelineKeyframe{
+            2.0F,
+            OfflineSceneFrameState{camera_b, transforms_b}},
+    }};
+    const std::array<float, 4> sample_times{{0.0F, 1.0F, 0.0F, 2.0F}};
+
+    const std::vector<OfflineSceneFrameState> sampled =
+        sample_offline_frame_timeline(keyframes, sample_times);
+    check(
+        sampled.size() == sample_times.size(),
+        "bounded timeline preserves exact caller sample order and count");
+    if (sampled.size() == sample_times.size()) {
+        check(
+            sampled[1].camera.eye.x == 0.5F
+                && sampled[1].camera.eye.y == 0.125F
+                && sampled[1].camera.eye.z == 3.0F,
+            "timeline linearly interpolates camera components at the bounded interior sample");
+        check(
+            sampled[1].model_transforms[0](0U, 3U) == 0.0F
+                && sampled[1].model_transforms[1](2U, 3U) == -0.5F
+                && sampled[1].model_transforms[2](2U, 3U) == -0.5F,
+            "timeline linearly interpolates affine top-3x4 coefficients");
+        for (const Mat4& model : sampled[1].model_transforms) {
+            check(
+                model(3U, 0U) == 0.0F
+                    && model(3U, 1U) == 0.0F
+                    && model(3U, 2U) == 0.0F
+                    && model(3U, 3U) == 1.0F,
+                "timeline preserves the affine bottom row exactly");
+        }
+    }
+
+    const std::array<OfflineSceneFrameState, 4> manual_frames{{
+        OfflineSceneFrameState{camera_a, transforms_a},
+        OfflineSceneFrameState{camera_mid, transforms_mid},
+        OfflineSceneFrameState{camera_a, transforms_a},
+        OfflineSceneFrameState{camera_b, transforms_b},
+    }};
+    const PreparedOfflineCameraSequence timeline =
+        prepare_offline_timeline_sequence(
+            reusable,
+            keyframes,
+            sample_times);
+    const PreparedOfflineCameraSequence manual =
+        prepare_offline_frame_sequence(reusable, manual_frames);
+
+    check(
+        timeline.frame_count() == manual.frame_count(),
+        "timeline preparation delegates to the same bounded M92 frame transaction");
+    for (std::size_t index = 0U;
+         index < timeline.frame_count() && index < manual.frame_count();
+         ++index) {
+        const Framebuffer timeline_frame =
+            render_prepared_camera_sequence_frame(timeline, index);
+        const Framebuffer manual_frame =
+            render_prepared_camera_sequence_frame(manual, index);
+        check(
+            exact_frame_equal(timeline_frame, manual_frame),
+            "timeline sample is exact resolved and per-sample equivalent to the explicit M92 frame record");
+    }
+
+    if (timeline.frame_count() == 4U) {
+        const Framebuffer first =
+            render_prepared_camera_sequence_frame(timeline, 0U);
+        const Framebuffer interior =
+            render_prepared_camera_sequence_frame(timeline, 1U);
+        const Framebuffer repeated =
+            render_prepared_camera_sequence_frame(timeline, 2U);
+        const Framebuffer last =
+            render_prepared_camera_sequence_frame(timeline, 3U);
+        check(
+            exact_frame_equal(first, repeated),
+            "repeated sample times preserve caller order and exact deterministic output");
+        check(
+            !exact_frame_equal(first, interior)
+                && !exact_frame_equal(interior, last),
+            "camera/model interpolation observably reevaluates mixed-transparency ordering and visibility");
+    }
+}
+
+void test_bounded_timeline_validation_contract() {
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+    const OfflineSceneFrameState frame{
+        camera,
+        {Mat4::identity()},
+    };
+    const std::array<OfflineSceneTimelineKeyframe, 2> valid{{
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+        OfflineSceneTimelineKeyframe{2.0F, frame},
+    }};
+    const std::array<float, 1> one_sample{{1.0F}};
+
+    const std::array<OfflineSceneTimelineKeyframe, 1> underspecified{{
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(underspecified, one_sample); },
+        "timeline rejects an underspecified one-keyframe interpolation span");
+
+    const std::array<OfflineSceneTimelineKeyframe, 2> duplicate_times{{
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(duplicate_times, one_sample); },
+        "timeline rejects duplicate/non-increasing keyframe times");
+
+    const std::array<OfflineSceneTimelineKeyframe, 2> nonfinite_time{{
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+        OfflineSceneTimelineKeyframe{
+            std::numeric_limits<float>::infinity(),
+            frame},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(nonfinite_time, one_sample); },
+        "timeline rejects non-finite keyframe time");
+
+    const std::array<float, 1> out_of_domain{{2.5F}};
+    check_throws<std::out_of_range>(
+        [&] { (void)sample_offline_frame_timeline(valid, out_of_domain); },
+        "timeline rejects sample requests outside the bounded keyframe domain");
+
+    std::vector<float> too_many_samples(
+        detail::kMaxOfflineTimelineSamples + 1U,
+        1.0F);
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(valid, too_many_samples); },
+        "timeline rejects more than the bounded sample count before output allocation");
+
+    std::vector<OfflineSceneTimelineKeyframe> too_many_keyframes;
+    too_many_keyframes.reserve(detail::kMaxOfflineTimelineKeyframes + 1U);
+    for (std::size_t index = 0U;
+         index < detail::kMaxOfflineTimelineKeyframes + 1U;
+         ++index) {
+        too_many_keyframes.push_back(
+            OfflineSceneTimelineKeyframe{
+                static_cast<float>(index),
+                frame});
+    }
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(too_many_keyframes, one_sample); },
+        "timeline rejects more than the bounded keyframe count");
+
+    OfflineSceneFrameState too_many_models = frame;
+    too_many_models.model_transforms.assign(
+        detail::kMaxOfflineSceneEntries + 1U,
+        Mat4::identity());
+    const std::array<OfflineSceneTimelineKeyframe, 2> oversized_models{{
+        OfflineSceneTimelineKeyframe{0.0F, too_many_models},
+        OfflineSceneTimelineKeyframe{2.0F, too_many_models},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(oversized_models, one_sample); },
+        "timeline rejects model-transform ownership above the bounded scene entry limit before sample allocation");
+
+    OfflineSceneFrameState two_models = frame;
+    two_models.model_transforms.push_back(Mat4::identity());
+    const std::array<OfflineSceneTimelineKeyframe, 2> inconsistent_models{{
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+        OfflineSceneTimelineKeyframe{2.0F, two_models},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(inconsistent_models, one_sample); },
+        "timeline rejects inconsistent keyframe transform counts");
+
+    OfflineSceneFrameState projective = frame;
+    projective.model_transforms[0] =
+        Mat4::perspective(radians(55.0F), 1.0F, 0.1F, 20.0F);
+    const std::array<OfflineSceneTimelineKeyframe, 2> projective_keyframe{{
+        OfflineSceneTimelineKeyframe{0.0F, frame},
+        OfflineSceneTimelineKeyframe{2.0F, projective},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] { (void)sample_offline_frame_timeline(projective_keyframe, one_sample); },
+        "timeline validates every keyframe affine transform before sampling");
+
+    check(
+        sample_offline_frame_timeline(
+            valid,
+            std::span<const float>{}).empty(),
+        "empty timeline sample requests are a deterministic no-op after keyframe validation");
+
+    std::size_t shade_calls = 0U;
+    ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 1> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+
+    const std::array<OfflineSceneTimelineKeyframe, 2> wrong_scene_count{{
+        OfflineSceneTimelineKeyframe{
+            0.0F,
+            OfflineSceneFrameState{camera, {}}},
+        OfflineSceneTimelineKeyframe{
+            2.0F,
+            OfflineSceneFrameState{camera, {}}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_timeline_sequence(
+                reusable,
+                wrong_scene_count,
+                std::span<const float>{});
+        },
+        "timeline checks every keyframe against prepared scene entry count even for an empty sample request");
+
+    OfflineSceneCamera crossing_a = camera;
+    crossing_a.eye = {-1.0F, 0.0F, 3.0F};
+    crossing_a.target = {1.0F, 0.0F, 3.0F};
+    OfflineSceneCamera crossing_b = camera;
+    crossing_b.eye = {1.0F, 0.0F, 3.0F};
+    crossing_b.target = {-1.0F, 0.0F, 3.0F};
+    const std::array<OfflineSceneTimelineKeyframe, 2> crossing{{
+        OfflineSceneTimelineKeyframe{
+            0.0F,
+            OfflineSceneFrameState{
+                crossing_a,
+                {Mat4::identity()}}},
+        OfflineSceneTimelineKeyframe{
+            2.0F,
+            OfflineSceneFrameState{
+                crossing_b,
+                {Mat4::identity()}}},
+    }};
+    const std::array<float, 2> crossing_samples{{0.0F, 1.0F}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_timeline_sequence(
+                reusable,
+                crossing,
+                crossing_samples);
+        },
+        "later interpolated invalid camera rejects the complete timeline transaction");
+    check(
+        shade_calls == 0U,
+        "later invalid interpolated state rejects before any earlier timeline sample fragment execution");
+}
+
 void test_prepared_frame_sequence_rejects_invalid_transform_records() {
     OfflineRenderSettings settings;
     settings.width = 37U;
@@ -714,6 +1031,8 @@ int main() {
     test_camera_sequence_resource_bound();
     test_compatibility_sequence_preserves_historical_camera_capacity();
     test_prepared_frame_sequence_matches_manual_per_frame_scenes();
+    test_bounded_timeline_sampling_matches_manual_frame_sequence();
+    test_bounded_timeline_validation_contract();
     test_prepared_frame_sequence_rejects_invalid_transform_records();
     test_reusable_scene_validation_contract();
 
