@@ -1,0 +1,20 @@
+tiny-renderer-timeline-v1
+# Keyframe A: exact manifest-equivalent transforms and the baseline camera.
+keyframe 0 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+model 0.8 0 0 0.55 0 0.8 0 0 0 0 0.8 0.25 0 0 0 1
+model 0.8 0 0 -0.65 0 0.8 0 0 0 0 0.8 0 0 0 0 1
+model 0.8 0 0 0.55 0 0.8 0 0 0 0 0.8 -0.25 0 0 0 1
+end
+
+# Keyframe B: camera and complete affine transforms both move.
+keyframe 2 1 0.25 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+model 0.8 0 0 -0.55 0 0.8 0 0 0 0 0.8 0.35 0 0 0 1
+model 0.8 0 0 0.65 0 0.8 0 0 0 0 0.8 0 0 0 0 1
+model 0.8 0 0 -0.55 0 0.8 0 0 0 0 0.8 -0.35 0 0 0 1
+end
+
+# Caller output order deliberately repeats the first endpoint.
+sample 0
+sample 1
+sample 0
+sample 2
