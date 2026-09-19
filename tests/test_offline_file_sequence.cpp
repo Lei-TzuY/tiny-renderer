@@ -193,6 +193,19 @@ int run_frame_sequence_cli(
     return std::system(command.c_str());
 }
 
+int run_timeline_sequence_cli(
+    const std::filesystem::path& cli,
+    const std::filesystem::path& scene,
+    const std::filesystem::path& output,
+    const std::filesystem::path& timeline) {
+    const std::string command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(output)
+        + " 64 48 4 --timeline-sequence " + quote_path(timeline);
+    return std::system(command.c_str());
+}
+
 void test_strict_bounded_camera_sequence_loader() {
     const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
     const std::vector<OfflineSceneCamera> cameras =
@@ -402,6 +415,393 @@ void test_strict_bounded_frame_sequence_loader() {
                 0U);
         },
         "frame sidecar rejects more than the bounded frame count");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+void test_strict_bounded_timeline_sequence_loader() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const OfflineSceneTimelineFile timeline =
+        load_offline_timeline_sequence_file(
+            fixtures / "timeline_sequence_ab.trtimeline",
+            3U);
+
+    check(timeline.keyframes.size() == 2U,
+          "timeline sidecar loads exactly two bounded keyframes");
+    check(timeline.sample_times.size() == 4U,
+          "timeline sidecar preserves four explicit sample requests");
+    if (timeline.keyframes.size() == 2U) {
+        check(timeline.keyframes[0].time == 0.0F
+                  && timeline.keyframes[1].time == 2.0F,
+              "timeline keyframe times preserve exact finite file values");
+        check(!same_camera(
+                  timeline.keyframes[0].frame.camera,
+                  timeline.keyframes[1].frame.camera),
+              "timeline keyframes preserve independently specified camera state");
+        check(timeline.keyframes[0].frame.model_transforms.size() == 3U
+                  && timeline.keyframes[1].frame.model_transforms.size() == 3U,
+              "every timeline keyframe owns exactly one transform per scene entry");
+    }
+    if (timeline.sample_times.size() == 4U) {
+        check(timeline.sample_times[0] == 0.0F
+                  && timeline.sample_times[1] == 1.0F
+                  && timeline.sample_times[2] == 0.0F
+                  && timeline.sample_times[3] == 2.0F,
+              "timeline sample directives retain exact caller order and repetition");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                fixtures / "timeline_sequence_invalid_later.trtimeline",
+                3U);
+        },
+        "later out-of-domain sample rejects the complete timeline sidecar");
+
+    const std::filesystem::path root =
+        std::filesystem::current_path() / "tiny_renderer_timeline_parser_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::string camera =
+        "0 0 3 0 0 0 0 1 0 0.8726646 0.1 100";
+
+    {
+        std::ofstream missing(root / "missing_header.trtimeline");
+        missing
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "keyframe 2 " << camera << "\n"
+            << "end\n"
+            << "sample 1\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "missing_header.trtimeline",
+                0U);
+        },
+        "timeline sidecar requires the exact version header");
+
+    {
+        std::ofstream duplicate(root / "duplicate_time.trtimeline");
+        duplicate
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "sample 0\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "duplicate_time.trtimeline",
+                0U);
+        },
+        "timeline sidecar rejects duplicate or non-increasing keyframe time");
+
+    {
+        std::ofstream nonfinite(root / "nonfinite_time.trtimeline");
+        nonfinite
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "keyframe nan " << camera << "\n"
+            << "end\n"
+            << "sample 0\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "nonfinite_time.trtimeline",
+                0U);
+        },
+        "timeline sidecar rejects non-finite keyframe time");
+
+    {
+        std::ofstream phase(root / "keyframe_after_sample.trtimeline");
+        phase
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "keyframe 2 " << camera << "\n"
+            << "end\n"
+            << "sample 1\n"
+            << "keyframe 3 " << camera << "\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "keyframe_after_sample.trtimeline",
+                0U);
+        },
+        "timeline grammar rejects keyframes after sample directives begin");
+
+    {
+        std::ofstream projective(root / "projective.trtimeline");
+        projective
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "model 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\n"
+            << "end\n"
+            << "keyframe 2 " << camera << "\n"
+            << "model 1 0 0 0 0 1 0 0 0 0 1 0 0 0 -1 0\n"
+            << "end\n"
+            << "sample 1\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "projective.trtimeline",
+                1U);
+        },
+        "timeline sidecar rejects finite projective model transforms");
+
+    {
+        std::ofstream short_models(root / "short_models.trtimeline");
+        short_models
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "model 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "short_models.trtimeline",
+                2U);
+        },
+        "timeline keyframe rejects fewer transforms than prepared scene ownership");
+
+    {
+        std::ofstream trailing(root / "trailing_sample.trtimeline");
+        trailing
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "keyframe 2 " << camera << "\n"
+            << "end\n"
+            << "sample 1 extra\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "trailing_sample.trtimeline",
+                0U);
+        },
+        "timeline sample rejects unexpected trailing tokens");
+
+    {
+        std::ofstream oversized(root / "oversized_samples.trtimeline");
+        oversized
+            << "tiny-renderer-timeline-v1\n"
+            << "keyframe 0 " << camera << "\n"
+            << "end\n"
+            << "keyframe 2 " << camera << "\n"
+            << "end\n";
+        for (std::size_t i = 0U;
+             i < detail::kMaxOfflineTimelineSamples + 1U;
+             ++i) {
+            oversized << "sample 1\n";
+        }
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                root / "oversized_samples.trtimeline",
+                0U);
+        },
+        "timeline sidecar rejects more than the bounded sample count");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_timeline_sequence_file(
+                fixtures / "timeline_sequence_ab.trtimeline",
+                detail::kMaxOfflineSceneEntries + 1U);
+        },
+        "timeline sidecar rejects expected model ownership above the scene bound before allocation");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+void test_file_driven_timeline_matches_programmatic_m94() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const OfflineSceneTimelineFile file_timeline =
+        load_offline_timeline_sequence_file(
+            fixtures / "timeline_sequence_ab.trtimeline",
+            3U);
+
+    OfflineRenderSettings settings;
+    settings.width = 64U;
+    settings.height = 48U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.02F, 0.025F, 0.035F};
+
+    const ModelAsset coverage =
+        triangle_asset({0.85F, 0.15F, 0.10F}, 0.55F);
+    const ModelAsset green =
+        triangle_asset({0.10F, 0.75F, 0.20F}, 0.45F);
+    const ModelAsset blue =
+        triangle_asset({0.10F, 0.25F, 0.85F}, 0.55F);
+
+    const std::array<OfflineSceneEntry, 3> entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene prepared_scene =
+        prepare_offline_mixed_scene(entries, settings);
+
+    OfflineSceneCamera camera_a = fixture_frame_camera();
+    OfflineSceneCamera camera_b = camera_a;
+    camera_b.eye = {1.0F, 0.25F, 3.0F};
+    const std::vector<Mat4> transforms_a{
+        fixture_affine_transform(0.55F, 0.25F),
+        fixture_affine_transform(-0.65F, 0.0F),
+        fixture_affine_transform(0.55F, -0.25F),
+    };
+    const std::vector<Mat4> transforms_b{
+        fixture_affine_transform(-0.55F, 0.35F),
+        fixture_affine_transform(0.65F, 0.0F),
+        fixture_affine_transform(-0.55F, -0.35F),
+    };
+    const std::array<OfflineSceneTimelineKeyframe, 2> programmatic_keyframes{{
+        OfflineSceneTimelineKeyframe{
+            0.0F,
+            OfflineSceneFrameState{camera_a, transforms_a}},
+        OfflineSceneTimelineKeyframe{
+            2.0F,
+            OfflineSceneFrameState{camera_b, transforms_b}},
+    }};
+    const std::array<float, 4> programmatic_samples{{0.0F, 1.0F, 0.0F, 2.0F}};
+
+    const PreparedOfflineCameraSequence file_sequence =
+        prepare_offline_timeline_sequence(
+            prepared_scene,
+            file_timeline.keyframes,
+            file_timeline.sample_times);
+    const PreparedOfflineCameraSequence programmatic_sequence =
+        prepare_offline_timeline_sequence(
+            prepared_scene,
+            programmatic_keyframes,
+            programmatic_samples);
+
+    check(file_sequence.frame_count() == 4U
+              && file_sequence.frame_count() == programmatic_sequence.frame_count(),
+          "file timeline and independent programmatic M94 timeline prepare the same sample count");
+    if (file_sequence.frame_count() != programmatic_sequence.frame_count()) {
+        return;
+    }
+
+    std::vector<Framebuffer> rendered;
+    rendered.reserve(file_sequence.frame_count());
+    for (std::size_t index = 0U; index < file_sequence.frame_count(); ++index) {
+        const Framebuffer file_frame =
+            render_prepared_camera_sequence_frame(file_sequence, index);
+        const Framebuffer programmatic_frame =
+            render_prepared_camera_sequence_frame(programmatic_sequence, index);
+        check(
+            exact_frame_equal(file_frame, programmatic_frame),
+            "file timeline sample is exact resolved/hash and 4x RGB/depth/stencil equivalent to independent M94 state");
+        rendered.push_back(file_frame);
+    }
+    if (rendered.size() == 4U) {
+        check(exact_frame_equal(rendered[0], rendered[2]),
+              "repeated file sample time reproduces exact deterministic output");
+        check(!exact_frame_equal(rendered[0], rendered[1])
+                  && !exact_frame_equal(rendered[1], rendered[3]),
+              "file-driven interior sampling observably applies M94 camera/model interpolation");
+    }
+}
+
+void test_file_driven_timeline_cli_transaction(const char* argv0) {
+    const std::filesystem::path cli = render_cli_path(argv0);
+    check(std::filesystem::exists(cli),
+          "timeline integration locates tiny_renderer_render sibling executable");
+    if (!std::filesystem::exists(cli)) {
+        return;
+    }
+
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::filesystem::path scene =
+        fixtures / "flat_scene_sequence_mixed.trscene";
+    const std::filesystem::path timeline =
+        fixtures / "timeline_sequence_ab.trtimeline";
+    const std::filesystem::path invalid =
+        fixtures / "timeline_sequence_invalid_later.trtimeline";
+    const std::filesystem::path frames =
+        fixtures / "frame_sequence_aba.trframes";
+
+    const std::filesystem::path root =
+        std::filesystem::current_path() / "tiny_renderer_timeline_cli_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::filesystem::path base = root / "timeline.ppm";
+    check(run_timeline_sequence_cli(cli, scene, base, timeline) == 0,
+          "strict file-driven timeline renders through the shared sequence transaction");
+    const std::array<std::filesystem::path, 4> outputs{{
+        indexed_output(base, 0U),
+        indexed_output(base, 1U),
+        indexed_output(base, 2U),
+        indexed_output(base, 3U),
+    }};
+    for (const auto& output : outputs) {
+        check(std::filesystem::exists(output),
+              "timeline CLI creates every explicit sampled indexed output");
+    }
+    check(!std::filesystem::exists(base),
+          "timeline CLI never writes an ambiguous unsuffixed output");
+    if (std::filesystem::exists(outputs[0])
+        && std::filesystem::exists(outputs[1])
+        && std::filesystem::exists(outputs[2])
+        && std::filesystem::exists(outputs[3])) {
+        const std::vector<char> endpoint = read_binary_file(outputs[0]);
+        const std::vector<char> interior = read_binary_file(outputs[1]);
+        const std::vector<char> repeated = read_binary_file(outputs[2]);
+        const std::vector<char> final_frame = read_binary_file(outputs[3]);
+        check(endpoint == repeated,
+              "repeated timeline sample is byte-identical at the CLI boundary");
+        check(endpoint != interior && interior != final_frame,
+              "interior timeline output differs from both endpoint outputs");
+    }
+
+    const std::filesystem::path invalid_base = root / "invalid.ppm";
+    check(run_timeline_sequence_cli(cli, scene, invalid_base, invalid) != 0,
+          "later invalid timeline sample rejects the complete CLI transaction");
+    check(!std::filesystem::exists(invalid_base)
+              && !std::filesystem::exists(indexed_output(invalid_base, 0U))
+              && !std::filesystem::exists(indexed_output(invalid_base, 1U)),
+          "later invalid timeline state leaves zero earlier indexed outputs");
+
+    const std::filesystem::path conflict_base = root / "conflict.ppm";
+    const std::string conflict_command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(conflict_base)
+        + " 64 48 4 --timeline-sequence " + quote_path(timeline)
+        + " --frame-sequence " + quote_path(frames);
+    check(std::system(conflict_command.c_str()) != 0,
+          "timeline and exact-frame sidecars are rejected as ambiguous together");
+    check(!std::filesystem::exists(conflict_base)
+              && !std::filesystem::exists(indexed_output(conflict_base, 0U)),
+          "timeline sidecar option conflict rejects before output");
 
     std::filesystem::remove_all(root, ignored);
 }
@@ -665,10 +1065,13 @@ void test_file_driven_cli_sequence_transaction(const char* argv0) {
 int main(int argc, char** argv) {
     test_strict_bounded_camera_sequence_loader();
     test_strict_bounded_frame_sequence_loader();
+    test_strict_bounded_timeline_sequence_loader();
     test_file_driven_frame_records_match_programmatic_equivalent();
+    test_file_driven_timeline_matches_programmatic_m94();
     if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
         test_file_driven_cli_sequence_transaction(argv[0]);
         test_file_driven_affine_frame_sequence_transaction(argv[0]);
+        test_file_driven_timeline_cli_transaction(argv[0]);
     } else {
         check(false, "camera sequence integration test executable path is available");
     }
