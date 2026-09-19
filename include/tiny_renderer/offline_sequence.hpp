@@ -32,6 +32,8 @@ inline constexpr std::string_view kOfflineCameraSequenceHeader =
     "tiny-renderer-camera-sequence-v1";
 inline constexpr std::string_view kOfflineFrameSequenceHeader =
     "tiny-renderer-frame-sequence-v1";
+inline constexpr std::string_view kOfflineTimelineSequenceHeader =
+    "tiny-renderer-timeline-v1";
 
 [[nodiscard]] inline float offline_sequence_aspect(
     const OfflineRenderSettings& settings) {
@@ -228,6 +230,13 @@ struct OfflineSceneTimelineKeyframe {
     OfflineSceneFrameState frame{};
 };
 
+// Strict file-facing timeline data is kept separate from sampled frame state.
+// The loader owns syntax only; M94 remains the sole interpolation authority.
+struct OfflineSceneTimelineFile {
+    std::vector<OfflineSceneTimelineKeyframe> keyframes{};
+    std::vector<float> sample_times{};
+};
+
 namespace detail {
 
 [[nodiscard]] inline float offline_timeline_lerp(float a, float b, float t) {
@@ -336,117 +345,177 @@ namespace detail {
         + std::to_string(line) + ": " + message);
 }
 
-[[nodiscard]] inline float parse_offline_frame_sequence_float(
+[[noreturn]] inline void offline_timeline_sequence_error(
+    const std::filesystem::path& path,
+    std::size_t line,
+    const std::string& message) {
+    throw std::invalid_argument(
+        "offline timeline " + path.string() + ": line "
+        + std::to_string(line) + ": " + message);
+}
+
+using OfflineSequenceErrorFunction = void (*)(
+    const std::filesystem::path&,
+    std::size_t,
+    const std::string&);
+
+[[nodiscard]] inline float parse_offline_sequence_float(
     const std::filesystem::path& path,
     std::size_t line,
     std::string_view token,
-    const char* label) {
+    const char* label,
+    OfflineSequenceErrorFunction error) {
     std::size_t consumed = 0U;
     float value = 0.0F;
     try {
         value = std::stof(std::string(token), &consumed);
     } catch (const std::exception&) {
-        offline_frame_sequence_error(
-            path, line, std::string(label) + " must be a finite number");
+        error(path, line, std::string(label) + " must be a finite number");
     }
     if (consumed != token.size() || !std::isfinite(value)) {
-        offline_frame_sequence_error(
-            path, line, std::string(label) + " must be a finite number");
+        error(path, line, std::string(label) + " must be a finite number");
     }
     return value;
+}
+
+inline void reject_offline_sequence_extra_tokens(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::istringstream& input,
+    OfflineSequenceErrorFunction error) {
+    std::string extra;
+    if (input >> extra) {
+        error(path, line, "unexpected trailing token '" + extra + "'");
+    }
+}
+
+[[nodiscard]] inline OfflineSceneCamera parse_offline_sequence_camera(
+    const std::filesystem::path& path,
+    std::size_t line_number,
+    std::istringstream& line,
+    const char* record_label,
+    OfflineSequenceErrorFunction error) {
+    std::array<std::string, 12> tokens{};
+    for (std::string& token : tokens) {
+        if (!(line >> token)) {
+            error(
+                path,
+                line_number,
+                std::string(record_label)
+                    + " requires EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR");
+        }
+    }
+    reject_offline_sequence_extra_tokens(path, line_number, line, error);
+
+    OfflineSceneCamera camera;
+    camera.eye = {
+        parse_offline_sequence_float(path, line_number, tokens[0], "camera eye X", error),
+        parse_offline_sequence_float(path, line_number, tokens[1], "camera eye Y", error),
+        parse_offline_sequence_float(path, line_number, tokens[2], "camera eye Z", error),
+    };
+    camera.target = {
+        parse_offline_sequence_float(path, line_number, tokens[3], "camera target X", error),
+        parse_offline_sequence_float(path, line_number, tokens[4], "camera target Y", error),
+        parse_offline_sequence_float(path, line_number, tokens[5], "camera target Z", error),
+    };
+    camera.up = {
+        parse_offline_sequence_float(path, line_number, tokens[6], "camera up X", error),
+        parse_offline_sequence_float(path, line_number, tokens[7], "camera up Y", error),
+        parse_offline_sequence_float(path, line_number, tokens[8], "camera up Z", error),
+    };
+    camera.vertical_fov_radians = parse_offline_sequence_float(
+        path, line_number, tokens[9], "camera vertical field of view", error);
+    camera.near_plane = parse_offline_sequence_float(
+        path, line_number, tokens[10], "camera near plane", error);
+    camera.far_plane = parse_offline_sequence_float(
+        path, line_number, tokens[11], "camera far plane", error);
+
+    try {
+        validate_offline_scene_camera(camera);
+    } catch (const std::invalid_argument& caught) {
+        error(path, line_number, caught.what());
+    }
+    return camera;
+}
+
+[[nodiscard]] inline Mat4 parse_offline_sequence_model_matrix(
+    const std::filesystem::path& path,
+    std::size_t line_number,
+    std::istringstream& line,
+    const char* transform_label,
+    OfflineSequenceErrorFunction error) {
+    std::array<std::string, 16> tokens{};
+    for (std::string& token : tokens) {
+        if (!(line >> token)) {
+            error(
+                path,
+                line_number,
+                "model requires 16 row-major affine matrix values");
+        }
+    }
+    reject_offline_sequence_extra_tokens(path, line_number, line, error);
+
+    Mat4 matrix{};
+    for (std::size_t row = 0U; row < 4U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            const std::size_t index = row * 4U + column;
+            matrix(row, column) = parse_offline_sequence_float(
+                path,
+                line_number,
+                tokens[index],
+                "model matrix value",
+                error);
+        }
+    }
+    try {
+        validate_spatial_affine_matrix(matrix, transform_label);
+    } catch (const std::invalid_argument& caught) {
+        error(path, line_number, caught.what());
+    }
+    return matrix;
+}
+
+// M93 compatibility wrappers preserve the original frame-sequence diagnostics
+// while sharing numeric/camera/matrix parsing with the M95 timeline format.
+[[nodiscard]] inline float parse_offline_frame_sequence_float(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::string_view token,
+    const char* label) {
+    return parse_offline_sequence_float(
+        path, line, token, label, offline_frame_sequence_error);
 }
 
 inline void reject_offline_frame_sequence_extra_tokens(
     const std::filesystem::path& path,
     std::size_t line,
     std::istringstream& input) {
-    std::string extra;
-    if (input >> extra) {
-        offline_frame_sequence_error(
-            path, line, "unexpected trailing token '" + extra + "'");
-    }
+    reject_offline_sequence_extra_tokens(
+        path, line, input, offline_frame_sequence_error);
 }
 
 [[nodiscard]] inline OfflineSceneCamera parse_offline_frame_camera(
     const std::filesystem::path& path,
     std::size_t line_number,
     std::istringstream& line) {
-    std::array<std::string, 12> tokens{};
-    for (std::string& token : tokens) {
-        if (!(line >> token)) {
-            offline_frame_sequence_error(
-                path,
-                line_number,
-                "frame requires EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR");
-        }
-    }
-    reject_offline_frame_sequence_extra_tokens(path, line_number, line);
-
-    OfflineSceneCamera camera;
-    camera.eye = {
-        parse_offline_frame_sequence_float(path, line_number, tokens[0], "camera eye X"),
-        parse_offline_frame_sequence_float(path, line_number, tokens[1], "camera eye Y"),
-        parse_offline_frame_sequence_float(path, line_number, tokens[2], "camera eye Z"),
-    };
-    camera.target = {
-        parse_offline_frame_sequence_float(path, line_number, tokens[3], "camera target X"),
-        parse_offline_frame_sequence_float(path, line_number, tokens[4], "camera target Y"),
-        parse_offline_frame_sequence_float(path, line_number, tokens[5], "camera target Z"),
-    };
-    camera.up = {
-        parse_offline_frame_sequence_float(path, line_number, tokens[6], "camera up X"),
-        parse_offline_frame_sequence_float(path, line_number, tokens[7], "camera up Y"),
-        parse_offline_frame_sequence_float(path, line_number, tokens[8], "camera up Z"),
-    };
-    camera.vertical_fov_radians = parse_offline_frame_sequence_float(
-        path, line_number, tokens[9], "camera vertical field of view");
-    camera.near_plane = parse_offline_frame_sequence_float(
-        path, line_number, tokens[10], "camera near plane");
-    camera.far_plane = parse_offline_frame_sequence_float(
-        path, line_number, tokens[11], "camera far plane");
-
-    try {
-        validate_offline_scene_camera(camera);
-    } catch (const std::invalid_argument& error) {
-        offline_frame_sequence_error(path, line_number, error.what());
-    }
-    return camera;
+    return parse_offline_sequence_camera(
+        path,
+        line_number,
+        line,
+        "frame",
+        offline_frame_sequence_error);
 }
 
 [[nodiscard]] inline Mat4 parse_offline_frame_model_matrix(
     const std::filesystem::path& path,
     std::size_t line_number,
     std::istringstream& line) {
-    std::array<std::string, 16> tokens{};
-    for (std::string& token : tokens) {
-        if (!(line >> token)) {
-            offline_frame_sequence_error(
-                path,
-                line_number,
-                "model requires 16 row-major affine matrix values");
-        }
-    }
-    reject_offline_frame_sequence_extra_tokens(path, line_number, line);
-
-    Mat4 matrix{};
-    for (std::size_t row = 0U; row < 4U; ++row) {
-        for (std::size_t column = 0U; column < 4U; ++column) {
-            const std::size_t index = row * 4U + column;
-            matrix(row, column) = parse_offline_frame_sequence_float(
-                path,
-                line_number,
-                tokens[index],
-                "model matrix value");
-        }
-    }
-    try {
-        validate_spatial_affine_matrix(
-            matrix,
-            "offline frame model transform");
-    } catch (const std::invalid_argument& error) {
-        offline_frame_sequence_error(path, line_number, error.what());
-    }
-    return matrix;
+    return parse_offline_sequence_model_matrix(
+        path,
+        line_number,
+        line,
+        "offline frame model transform",
+        offline_frame_sequence_error);
 }
 
 }  // namespace detail
@@ -527,6 +596,245 @@ sample_offline_frame_timeline(
         frames.push_back(std::move(frame));
     }
     return frames;
+}
+
+// Strict bounded sidecar for programmatic M94 timeline state:
+//
+//   tiny-renderer-timeline-v1
+//   keyframe TIME EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR
+//   model M00 M01 M02 M03 M10 M11 M12 M13 M20 M21 M22 M23 M30 M31 M32 M33
+//   ... exactly expected_model_count model records ...
+//   end
+//   ... at least two strictly increasing keyframes ...
+//   sample TIME
+//   ... one or more sample requests in caller output order ...
+//
+// Keyframes must precede all sample directives. Parsing validates bounded
+// syntax, camera state, affine model records, keyframe ordering, and sample
+// domain membership, but performs no interpolation. M94 sampling/preparation
+// remains the only owner of interpolation semantics.
+[[nodiscard]] inline OfflineSceneTimelineFile load_offline_timeline_sequence_file(
+    const std::filesystem::path& path,
+    std::size_t expected_model_count) {
+    if (expected_model_count > detail::kMaxOfflineSceneEntries) {
+        throw std::invalid_argument(
+            "offline timeline expected model count exceeds bounded scene entry limit");
+    }
+
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error(
+            "failed to open offline timeline: " + path.string());
+    }
+
+    OfflineSceneTimelineFile result;
+    std::optional<OfflineSceneTimelineKeyframe> current;
+    bool header_seen = false;
+    bool samples_started = false;
+    std::string line_text;
+    std::size_t line_number = 0U;
+
+    while (std::getline(input, line_text)) {
+        ++line_number;
+        if (detail::offline_sequence_ignorable_line(line_text)) {
+            continue;
+        }
+
+        std::istringstream line(line_text);
+        std::string directive;
+        line >> directive;
+
+        if (!header_seen) {
+            if (directive != detail::kOfflineTimelineSequenceHeader) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "first non-comment line must be tiny-renderer-timeline-v1");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_timeline_sequence_error);
+            header_seen = true;
+            continue;
+        }
+
+        if (directive == "keyframe") {
+            if (samples_started) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframes must precede all sample directives");
+            }
+            if (current) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "new keyframe encountered before previous keyframe end");
+            }
+            if (result.keyframes.size() >= detail::kMaxOfflineTimelineKeyframes) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe count exceeds bounded timeline limit");
+            }
+
+            std::string time_token;
+            if (!(line >> time_token)) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe requires TIME followed by camera state");
+            }
+            const float time = detail::parse_offline_sequence_float(
+                path,
+                line_number,
+                time_token,
+                "keyframe time",
+                detail::offline_timeline_sequence_error);
+            if (!result.keyframes.empty()
+                && !(time > result.keyframes.back().time)) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe times must be strictly increasing");
+            }
+
+            current.emplace();
+            current->time = time;
+            current->frame.camera = detail::parse_offline_sequence_camera(
+                path,
+                line_number,
+                line,
+                "keyframe",
+                detail::offline_timeline_sequence_error);
+            current->frame.model_transforms.reserve(expected_model_count);
+            continue;
+        }
+
+        if (directive == "model") {
+            if (!current) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "model record requires an active keyframe");
+            }
+            if (current->frame.model_transforms.size() >= expected_model_count) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "model transform count exceeds prepared scene entry count");
+            }
+            current->frame.model_transforms.push_back(
+                detail::parse_offline_sequence_model_matrix(
+                    path,
+                    line_number,
+                    line,
+                    "offline timeline keyframe model transform",
+                    detail::offline_timeline_sequence_error));
+            continue;
+        }
+
+        if (directive == "end") {
+            if (!current) {
+                detail::offline_timeline_sequence_error(
+                    path, line_number, "end requires an active keyframe");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_timeline_sequence_error);
+            if (current->frame.model_transforms.size() != expected_model_count) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe model transform count must match prepared scene entry count");
+            }
+            result.keyframes.push_back(std::move(*current));
+            current.reset();
+            continue;
+        }
+
+        if (directive == "sample") {
+            if (current) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample cannot appear inside an active keyframe");
+            }
+            if (result.keyframes.size() < 2U) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "samples require at least two completed keyframes");
+            }
+            samples_started = true;
+            if (result.sample_times.size() >= detail::kMaxOfflineTimelineSamples) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample count exceeds bounded timeline limit");
+            }
+            std::string time_token;
+            if (!(line >> time_token)) {
+                detail::offline_timeline_sequence_error(
+                    path, line_number, "sample requires TIME");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_timeline_sequence_error);
+            const float sample_time = detail::parse_offline_sequence_float(
+                path,
+                line_number,
+                time_token,
+                "sample time",
+                detail::offline_timeline_sequence_error);
+            if (sample_time < result.keyframes.front().time
+                || sample_time > result.keyframes.back().time) {
+                detail::offline_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample time is outside the keyframe domain");
+            }
+            result.sample_times.push_back(sample_time);
+            continue;
+        }
+
+        detail::offline_timeline_sequence_error(
+            path, line_number, "unknown directive '" + directive + "'");
+    }
+
+    if (!header_seen) {
+        throw std::invalid_argument(
+            "offline timeline " + path.string()
+            + ": missing tiny-renderer-timeline-v1 header");
+    }
+    if (current) {
+        detail::offline_timeline_sequence_error(
+            path,
+            line_number,
+            "unterminated keyframe record requires end");
+    }
+    if (result.keyframes.size() < 2U) {
+        throw std::invalid_argument(
+            "offline timeline " + path.string()
+            + ": at least two keyframe records are required");
+    }
+    if (result.sample_times.empty()) {
+        throw std::invalid_argument(
+            "offline timeline " + path.string()
+            + ": at least one sample record is required");
+    }
+
+    // Reuse M94's semantic keyframe validator without sampling or allocating
+    // interpolated frames. The parser therefore cannot diverge from the
+    // programmatic time-domain contract.
+    (void)detail::validate_offline_timeline_keyframes(result.keyframes);
+    return result;
 }
 
 // Strict bounded sidecar for exact frame samples:
