@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 103 bounded two-clip local-space transform-graph blending
+## Architecture frontier: Milestone 104 bounded programmatic independent-time blend schedule
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -248,17 +248,34 @@ M103 composes two independently authored M102 sparse clips over one immutable tr
 - A batch whose first blended sample composes safely but whose later sample only overflows after local-space parent/child blending rejects the complete batch before any earlier sample can execute fragments. This also guards against replacing local-space blending with world-matrix blending.
 - M103 adds no file syntax, per-node blend masks, additive blending, N-way layers, source-time remapping, easing/looping/extrapolation, topology animation/reparenting, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
 
-## Promotion after Milestone 103
+## Milestone 104 — bounded programmatic independent-time blend schedule
 
-Uniform-weight, same-time two-clip blending is now executable and transactional. The next architectural limitation is that both clips must be sampled at the same caller time and use one constant blend weight for the whole batch. Milestone 104 should establish a **bounded programmatic blend schedule with independent source times and per-sample weights**.
+M104 lifts M103's same-source-time and constant-weight restriction while preserving the exact same local-space blend and M99/M92 transaction semantics.
 
-A Milestone 104 slice should require:
+- `OfflineSceneSparseClipBlendScheduleEntry` owns one output record with finite independent `left_time`, finite independent `right_time`, and one finite blend `weight` in `[0,1]`.
+- A schedule contains at most 256 caller-ordered records. The complete schedule is checked for finite source times and valid weights before source sampling begins.
+- Left and right source-time arrays are built independently and materialized as two complete M102 batches. Clips may therefore use different finite domains/durations without looping, extrapolation, or retiming hidden inside the sampler.
+- M104 factors complete-frame combination into `detail::blend_offline_transform_graph_frame_state`. M103 constant-weight blending and M104 scheduled blending share this primitive, including exact weight-0/weight-1 passthrough and established camera/affine interpolation.
+- No scheduled output frame is blended until **both** complete source batches have materialized successfully. A later invalid source time in either clip therefore rejects before any scheduled frame reaches M99/M92.
+- `blend_offline_sparse_transform_graph_clip_schedule` blends each matched complete local frame using that schedule record's weight; parent/child composition remains absent from this layer.
+- `prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence` validates prepared-entry bindings and both clip node counts against the immutable graph, then delegates the complete scheduled local-frame batch to M99 and finally M92.
+- A schedule whose left/right times are equal and whose weights are constant is exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to M103.
+- A cross-fade regression uses different left/right clip domains, independently advancing source times, endpoint/interior weights, repeated requests, and out-of-order records; it is exact-equivalent to independently sampled M102 source frames, established local interpolation, and M99 preparation.
+- Validation regressions cover unequal clip ownership, non-finite source times, invalid per-record weights, schedule bound overflow, graph-node ownership mismatch, later invalid right-source time, invalid right time hidden behind weight zero, and valid empty schedules.
+- A first safe scheduled sample followed by a later independently timed local blend whose transform-only parent/child composition overflows rejects the complete batch before any earlier sample can execute fragments.
+- M104 adds no file grammar, per-node masks, additive/N-way layers, easing/looping/extrapolation, topology animation/reparenting, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
 
-- one bounded caller-ordered schedule record per output sample containing finite `left_time`, finite `right_time`, and finite `weight` in `[0,1]`;
-- left and right source times are sampled independently through M102, so clips may have different valid domains/durations without adding looping or extrapolation;
-- the complete left-time and right-time batches are validated/materialized before any scheduled output frame is blended or sent to M99;
-- each schedule record reuses M103 endpoint passthrough and local-space camera/affine blend semantics. No world-transform blending or alternate interpolation formula is permitted;
-- a schedule whose `left_time == right_time` for every record and whose weights are constant must be exact-equivalent to M103;
-- a cross-fade regression must cover different clip domains, independently advancing source times, varying endpoint/interior weights, repeated/out-of-order schedule records, and exact comparison against independently materialized M102-local/M99 reference frames;
-- any invalid later source time, invalid weight, node-count mismatch, or later composed-world overflow rejects the entire scheduled batch before M92 execution;
-- M104 remains programmatic and two-source only. It adds no file grammar, per-node masks, additive/N-way animation layers, easing/looping/extrapolation, topology animation, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
+## Promotion after Milestone 104
+
+Independent source-time scheduling makes two-clip cross-fades expressive at the batch level. The next architectural limitation is that every graph node still receives the same per-sample blend weight. Milestone 105 should establish a **bounded programmatic per-node blend mask** layered over M104.
+
+A Milestone 105 slice should require:
+
+- one immutable validated mask with exactly one finite weight in `[0,1]` per graph node plus one finite camera weight in `[0,1]`;
+- one M104 schedule record still supplies the per-output global blend weight. Effective camera/node weights are bounded products of global weight and the corresponding mask weight;
+- an all-ones mask must be exact-equivalent to M104, while a zero node mask must preserve that node's left-source local transform exactly even when other nodes cross-fade;
+- mask application occurs only on complete M102 graph-local frames and strictly before M99 composition. A masked transform-only pivot must influence all descendants through ordinary graph composition rather than any world-space patch;
+- mask node count must match the immutable graph and both sampled source frames before blending. Non-finite/out-of-range mask weights, ownership mismatch, invalid source times, or invalid schedule weights reject the whole batch before M99/M92;
+- a regression should blend one transform-only pivot while pinning one render-bound child to the left clip, proving independently controllable local graph regions and exact comparison against a manually materialized masked-local M99 reference;
+- later masked local/composed overflow must reject the complete requested batch before any earlier frame executes;
+- M105 remains programmatic and two-source only. It adds no file syntax, additive blending, N-way layer stacks, skeletal skinning, easing/looping/extrapolation, topology animation, parallel execution, alternate raster path, or performance claim.
