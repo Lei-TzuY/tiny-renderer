@@ -438,6 +438,14 @@ struct OfflineSceneSparseTransformTrack {
     std::vector<OfflineSceneSparseTransformKeyframe> keyframes{};
 };
 
+// M104 one-output scheduling record. Source times are independent so clips with
+// different bounded domains can cross-fade without looping or extrapolation.
+struct OfflineSceneSparseClipBlendScheduleEntry {
+    float left_time{};
+    float right_time{};
+    float weight{};
+};
+
 // Strict file-facing M98 state. The sidecar owns one fixed validated hierarchy
 // plus hierarchy-local keyframes and caller-ordered sample requests. Parsing
 // does not interpolate local transforms or resolve world transforms.
@@ -877,6 +885,48 @@ validate_offline_transform_graph_timeline_keyframes(
         result,
         "offline timeline interpolated model transform");
     return result;
+}
+
+inline void validate_offline_sparse_clip_blend_weight(float weight) {
+    if (!std::isfinite(weight) || weight < 0.0F || weight > 1.0F) {
+        throw std::invalid_argument(
+            "offline sparse clip blend weight must be finite and within [0, 1]");
+    }
+}
+
+[[nodiscard]] inline OfflineSceneTransformGraphFrameState
+blend_offline_transform_graph_frame_state(
+    const OfflineSceneTransformGraphFrameState& left,
+    const OfflineSceneTransformGraphFrameState& right,
+    float weight) {
+    validate_offline_sparse_clip_blend_weight(weight);
+    if (left.local_transforms.size() != right.local_transforms.size()) {
+        throw std::invalid_argument(
+            "offline sparse clip blend frame local ownership must match");
+    }
+    if (weight == 0.0F) {
+        return left;
+    }
+    if (weight == 1.0F) {
+        return right;
+    }
+
+    OfflineSceneTransformGraphFrameState blended;
+    blended.camera = interpolate_offline_timeline_camera(
+        left.camera,
+        right.camera,
+        weight);
+    blended.local_transforms.reserve(left.local_transforms.size());
+    for (std::size_t local_index = 0U;
+         local_index < left.local_transforms.size();
+         ++local_index) {
+        blended.local_transforms.push_back(
+            interpolate_offline_timeline_affine(
+                left.local_transforms[local_index],
+                right.local_transforms[local_index],
+                weight));
+    }
+    return blended;
 }
 
 template <
@@ -1414,10 +1464,7 @@ blend_offline_sparse_transform_graph_clips(
     const OfflineSceneSparseTransformGraphClip& right_clip,
     std::span<const float> sample_times,
     float weight) {
-    if (!std::isfinite(weight) || weight < 0.0F || weight > 1.0F) {
-        throw std::invalid_argument(
-            "offline sparse clip blend weight must be finite and within [0, 1]");
-    }
+    detail::validate_offline_sparse_clip_blend_weight(weight);
 
     const std::size_t local_count =
         left_clip.default_local_transforms().size();
@@ -1451,32 +1498,72 @@ blend_offline_sparse_transform_graph_clips(
     for (std::size_t frame_index = 0U;
          frame_index < left_frames.size();
          ++frame_index) {
-        const OfflineSceneTransformGraphFrameState& left =
-            left_frames[frame_index];
-        const OfflineSceneTransformGraphFrameState& right =
-            right_frames[frame_index];
-        if (left.local_transforms.size() != local_count
-            || right.local_transforms.size() != local_count) {
-            throw std::logic_error(
-                "offline sparse clip blend sampled frame lost graph-local ownership");
-        }
+        blended_frames.push_back(
+            detail::blend_offline_transform_graph_frame_state(
+                left_frames[frame_index],
+                right_frames[frame_index],
+                weight));
+    }
+    return blended_frames;
+}
 
-        OfflineSceneTransformGraphFrameState blended;
-        blended.camera = detail::interpolate_offline_timeline_camera(
-            left.camera,
-            right.camera,
-            weight);
-        blended.local_transforms.reserve(local_count);
-        for (std::size_t local_index = 0U;
-             local_index < local_count;
-             ++local_index) {
-            blended.local_transforms.push_back(
-                detail::interpolate_offline_timeline_affine(
-                    left.local_transforms[local_index],
-                    right.local_transforms[local_index],
-                    weight));
+// M104 schedules independent source times and a per-output blend weight. The
+// complete left and right source batches are materialized before any output
+// frame is blended, preserving fail-closed transaction semantics above M99.
+[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
+blend_offline_sparse_transform_graph_clip_schedule(
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const OfflineSceneSparseClipBlendScheduleEntry> schedule) {
+    if (schedule.size() > detail::kMaxOfflineTimelineSamples) {
+        throw std::invalid_argument(
+            "offline sparse clip blend schedule exceeds bounded sample limit");
+    }
+
+    const std::size_t local_count =
+        left_clip.default_local_transforms().size();
+    if (right_clip.default_local_transforms().size() != local_count) {
+        throw std::invalid_argument(
+            "offline sparse clip blend schedule requires equal graph-local ownership");
+    }
+
+    std::vector<float> left_times;
+    std::vector<float> right_times;
+    left_times.reserve(schedule.size());
+    right_times.reserve(schedule.size());
+    for (const OfflineSceneSparseClipBlendScheduleEntry& entry : schedule) {
+        if (!std::isfinite(entry.left_time)
+            || !std::isfinite(entry.right_time)) {
+            throw std::invalid_argument(
+                "offline sparse clip blend schedule source times must be finite");
         }
-        blended_frames.push_back(std::move(blended));
+        detail::validate_offline_sparse_clip_blend_weight(entry.weight);
+        left_times.push_back(entry.left_time);
+        right_times.push_back(entry.right_time);
+    }
+
+    const std::vector<OfflineSceneTransformGraphFrameState> left_frames =
+        sample_offline_sparse_transform_graph_clip(
+            left_clip,
+            left_times);
+    const std::vector<OfflineSceneTransformGraphFrameState> right_frames =
+        sample_offline_sparse_transform_graph_clip(
+            right_clip,
+            right_times);
+    if (left_frames.size() != schedule.size()
+        || right_frames.size() != schedule.size()) {
+        throw std::logic_error(
+            "offline sparse clip blend schedule sampling produced mismatched frame counts");
+    }
+
+    std::vector<OfflineSceneTransformGraphFrameState> blended_frames;
+    blended_frames.reserve(schedule.size());
+    for (std::size_t index = 0U; index < schedule.size(); ++index) {
+        blended_frames.push_back(
+            detail::blend_offline_transform_graph_frame_state(
+                left_frames[index],
+                right_frames[index],
+                schedule[index].weight));
     }
     return blended_frames;
 }
@@ -3022,6 +3109,39 @@ prepare_offline_sparse_transform_graph_clip_blend_sequence(
             right_clip,
             sample_times,
             weight);
+    return prepare_offline_transform_graph_sequence(
+        scene,
+        graph,
+        blended_frames);
+}
+
+// Programmatic M104 path: validates graph/scene/clip ownership, materializes
+// both independent source-time batches and their per-output local-space blends,
+// then delegates the complete scheduled batch through M99 and M92.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneTransformGraph& graph,
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const OfflineSceneSparseClipBlendScheduleEntry> schedule) {
+    if (graph.render_entry_nodes().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline sparse clip blend schedule render binding count must match prepared scene entry count");
+    }
+
+    const std::size_t graph_node_count = graph.parents().size();
+    if (left_clip.default_local_transforms().size() != graph_node_count
+        || right_clip.default_local_transforms().size() != graph_node_count) {
+        throw std::invalid_argument(
+            "offline sparse clip blend schedule local ownership must match graph node count");
+    }
+
+    const std::vector<OfflineSceneTransformGraphFrameState> blended_frames =
+        blend_offline_sparse_transform_graph_clip_schedule(
+            left_clip,
+            right_clip,
+            schedule);
     return prepare_offline_transform_graph_sequence(
         scene,
         graph,
