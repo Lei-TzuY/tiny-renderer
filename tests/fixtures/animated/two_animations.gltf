@@ -1,0 +1,85 @@
+{
+  "asset": {"version": "2.0"},
+  "buffers": [
+    {"uri": "skinned_triangle.bin", "byteLength": 372}
+  ],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+    {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+    {"buffer": 0, "byteOffset": 72, "byteLength": 12},
+    {"buffer": 0, "byteOffset": 84, "byteLength": 48},
+    {"buffer": 0, "byteOffset": 132, "byteLength": 6},
+    {"buffer": 0, "byteOffset": 140, "byteLength": 128},
+    {"buffer": 0, "byteOffset": 268, "byteLength": 8},
+    {"buffer": 0, "byteOffset": 276, "byteLength": 32},
+    {"buffer": 0, "byteOffset": 308, "byteLength": 8},
+    {"buffer": 0, "byteOffset": 316, "byteLength": 24},
+    {"buffer": 0, "byteOffset": 340, "byteLength": 8},
+    {"buffer": 0, "byteOffset": 348, "byteLength": 24}
+  ],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [-0.5, -0.5, 0.0], "max": [0.5, 0.5, 0.0]},
+    {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5121, "count": 3, "type": "VEC4"},
+    {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"},
+    {"bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR"},
+    {"bufferView": 5, "componentType": 5126, "count": 2, "type": "MAT4"},
+    {"bufferView": 6, "componentType": 5126, "count": 2, "type": "SCALAR"},
+    {"bufferView": 7, "componentType": 5126, "count": 2, "type": "VEC4"},
+    {"bufferView": 8, "componentType": 5126, "count": 2, "type": "SCALAR"},
+    {"bufferView": 9, "componentType": 5126, "count": 2, "type": "VEC3"},
+    {"bufferView": 10, "componentType": 5126, "count": 2, "type": "SCALAR"},
+    {"bufferView": 11, "componentType": 5126, "count": 2, "type": "VEC3"}
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "JOINTS_0": 2,
+            "WEIGHTS_0": 3
+          },
+          "indices": 4,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {"mesh": 0, "skin": 0, "translation": [4.0, 0.0, 0.0]},
+    {"children": [3], "translation": [0.1, 0.0, 0.0]},
+    {"translation": [0.25, 0.0, 0.0]},
+    {"children": [2], "translation": [0.05, 0.0, 0.0]}
+  ],
+  "skins": [
+    {"inverseBindMatrices": 5, "joints": [2, 1], "skeleton": 1}
+  ],
+  "animations": [
+    {
+      "name": "FullPose",
+      "samplers": [
+        {"input": 6, "output": 7, "interpolation": "LINEAR"},
+        {"input": 8, "output": 9},
+        {"input": 10, "output": 11, "interpolation": "LINEAR"}
+      ],
+      "channels": [
+        {"sampler": 1, "target": {"node": 2, "path": "translation"}},
+        {"sampler": 2, "target": {"node": 1, "path": "scale"}},
+        {"sampler": 0, "target": {"node": 1, "path": "rotation"}}
+      ]
+    },
+    {
+      "name": "ChildShift",
+      "samplers": [
+        {"input": 8, "output": 9}
+      ],
+      "channels": [
+        {"sampler": 0, "target": {"node": 2, "path": "translation"}}
+      ]
+    }
+  ],
+  "scenes": [{"nodes": [0, 1]}],
+  "scene": 0
+}
