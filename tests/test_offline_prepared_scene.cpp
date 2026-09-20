@@ -3152,6 +3152,444 @@ void test_programmatic_sparse_clip_blend_schedule_validation_contract() {
         "valid blend schedule accepts an empty request after complete ownership validation");
 }
 
+
+void test_programmatic_sparse_clip_blend_mask_equivalence_and_local_regions() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+
+    const OfflineSceneCamera left_camera =
+        camera_at({-0.40F, 0.0F, 3.0F});
+    const OfflineSceneCamera right_camera =
+        camera_at({0.40F, 0.0F, 3.0F});
+
+    const Mat4 left_pivot_a =
+        Mat4::translation({-0.60F, 0.0F, -0.35F});
+    const Mat4 left_pivot_b =
+        Mat4::translation({-0.20F, 0.0F, -0.35F});
+    const Mat4 right_pivot_a =
+        Mat4::translation({0.20F, 0.0F, -0.35F});
+    const Mat4 right_pivot_b =
+        Mat4::translation({0.80F, 0.0F, -0.35F});
+    const Mat4 left_red =
+        Mat4::translation({-0.25F, 0.0F, 0.0F});
+    const Mat4 right_red =
+        Mat4::translation({0.25F, 0.0F, 0.0F});
+    const Mat4 left_green =
+        Mat4::translation({0.30F, 0.0F, -0.12F});
+    const Mat4 right_green =
+        Mat4::translation({-0.30F, 0.0F, -0.12F});
+
+    const OfflineSceneSparseTransformGraphClip left_clip(
+        0.0F,
+        2.0F,
+        left_camera,
+        {left_pivot_a, left_red, left_green},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {{0.0F, left_pivot_a}, {2.0F, left_pivot_b}}},
+        });
+    const OfflineSceneSparseTransformGraphClip right_clip(
+        10.0F,
+        14.0F,
+        right_camera,
+        {right_pivot_a, right_red, right_green},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {{10.0F, right_pivot_a}, {14.0F, right_pivot_b}}},
+        });
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 4> schedule{{
+        {0.0F, 10.0F, 0.0F},
+        {1.0F, 12.0F, 0.5F},
+        {2.0F, 14.0F, 1.0F},
+        {1.0F, 12.0F, 0.5F},
+    }};
+
+    const OfflineSceneSparseClipBlendMask all_ones(
+        1.0F,
+        {1.0F, 1.0F, 1.0F});
+    const PreparedOfflineCameraSequence unmasked =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            schedule);
+    const PreparedOfflineCameraSequence masked_all_ones =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            schedule,
+            all_ones);
+
+    check(
+        unmasked.frame_count() == masked_all_ones.frame_count()
+            && unmasked.frame_count() == schedule.size(),
+        "all-ones per-node blend mask preserves M104 scheduled output ownership");
+    for (std::size_t index = 0U;
+         index < unmasked.frame_count()
+             && index < masked_all_ones.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(unmasked, index),
+                render_prepared_camera_sequence_frame(
+                    masked_all_ones, index)),
+            "all-ones per-node blend mask is exact resolved/hash and 4x per-sample equivalent to M104");
+    }
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 1>
+        masked_schedule{{{1.0F, 12.0F, 0.5F}}};
+    const OfflineSceneSparseClipBlendMask regional_mask(
+        0.0F,
+        {
+            1.0F,  // blend transform-only pivot at global schedule weight
+            0.0F,  // pin red render node to left local state
+            0.5F,  // partially blend green render node
+        });
+
+    const std::vector<OfflineSceneTransformGraphFrameState> masked_frames =
+        blend_offline_sparse_transform_graph_clip_schedule_masked(
+            left_clip,
+            right_clip,
+            masked_schedule,
+            regional_mask);
+    const std::array<float, 1> left_time{{1.0F}};
+    const std::array<float, 1> right_time{{12.0F}};
+    const auto left_sampled =
+        sample_offline_sparse_transform_graph_clip(left_clip, left_time);
+    const auto right_sampled =
+        sample_offline_sparse_transform_graph_clip(right_clip, right_time);
+
+    check(masked_frames.size() == 1U,
+          "regional per-node blend mask materializes the requested complete local frame");
+    if (masked_frames.size() == 1U
+        && left_sampled.size() == 1U
+        && right_sampled.size() == 1U) {
+        check(
+            masked_frames[0].camera.eye.x
+                == left_sampled[0].camera.eye.x,
+            "zero camera mask preserves left-source camera exactly");
+        check(
+            exact_matrix_equal(
+                masked_frames[0].local_transforms[1],
+                left_sampled[0].local_transforms[1]),
+            "zero node mask preserves pinned render-node local transform bit-exact");
+
+        const Mat4 expected_pivot =
+            detail::interpolate_offline_timeline_affine(
+                left_sampled[0].local_transforms[0],
+                right_sampled[0].local_transforms[0],
+                0.5F);
+        const Mat4 expected_green =
+            detail::interpolate_offline_timeline_affine(
+                left_sampled[0].local_transforms[2],
+                right_sampled[0].local_transforms[2],
+                0.25F);
+        check(
+            exact_matrix_equal(
+                masked_frames[0].local_transforms[0],
+                expected_pivot)
+                && exact_matrix_equal(
+                    masked_frames[0].local_transforms[2],
+                    expected_green),
+            "per-node mask applies global-times-mask effective weights independently");
+
+        const std::vector<Mat4> left_world =
+            detail::resolve_offline_transform_graph_render_world_transforms(
+                graph,
+                left_sampled[0].local_transforms);
+        const std::vector<Mat4> masked_world =
+            detail::resolve_offline_transform_graph_render_world_transforms(
+                graph,
+                masked_frames[0].local_transforms);
+        check(
+            left_world.size() == 2U
+                && masked_world.size() == 2U
+                && std::fabs(
+                    left_world[0](0U, 3U)
+                    - masked_world[0](0U, 3U)) > 1.0e-4F,
+            "blended transform-only pivot moves a locally pinned render child through ordinary graph composition");
+    }
+
+    std::vector<OfflineSceneTransformGraphFrameState> reference_frames;
+    if (left_sampled.size() == 1U && right_sampled.size() == 1U) {
+        OfflineSceneTransformGraphFrameState reference;
+        reference.camera = left_sampled[0].camera;
+        reference.local_transforms.push_back(
+            detail::interpolate_offline_timeline_affine(
+                left_sampled[0].local_transforms[0],
+                right_sampled[0].local_transforms[0],
+                0.5F));
+        reference.local_transforms.push_back(
+            left_sampled[0].local_transforms[1]);
+        reference.local_transforms.push_back(
+            detail::interpolate_offline_timeline_affine(
+                left_sampled[0].local_transforms[2],
+                right_sampled[0].local_transforms[2],
+                0.25F));
+        reference_frames.push_back(std::move(reference));
+    }
+
+    const PreparedOfflineCameraSequence masked_sequence =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            masked_schedule,
+            regional_mask);
+    const PreparedOfflineCameraSequence reference_sequence =
+        prepare_offline_transform_graph_sequence(
+            reusable,
+            graph,
+            reference_frames);
+    check(
+        masked_sequence.frame_count() == 1U
+            && reference_sequence.frame_count() == 1U
+            && exact_frame_equal(
+                render_prepared_camera_sequence_frame(masked_sequence, 0U),
+                render_prepared_camera_sequence_frame(reference_sequence, 0U)),
+        "regional per-node blend mask is exact-equivalent to independently materialized masked-local M99 state");
+}
+
+void test_programmatic_sparse_clip_blend_mask_validation_contract() {
+    const OfflineSceneCamera camera =
+        camera_at({0.0F, 0.0F, 3.0F});
+    const Mat4 identity = Mat4::identity();
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseClipBlendMask(
+                std::numeric_limits<float>::quiet_NaN(),
+                {1.0F});
+        },
+        "blend mask rejects non-finite camera weight");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseClipBlendMask(
+                1.1F,
+                {1.0F});
+        },
+        "blend mask rejects camera weight above one");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseClipBlendMask(
+                1.0F,
+                {-0.1F});
+        },
+        "blend mask rejects node weight below zero");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseClipBlendMask(
+                1.0F,
+                {std::numeric_limits<float>::infinity()});
+        },
+        "blend mask rejects non-finite node weight");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseClipBlendMask(
+                1.0F,
+                std::vector<float>(
+                    detail::kMaxOfflineTransformGraphNodes + 1U,
+                    1.0F));
+        },
+        "blend mask node ownership is bounded to the transform-graph limit");
+
+    const OfflineSceneSparseTransformGraphClip left_clip(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {});
+    const OfflineSceneSparseTransformGraphClip right_clip(
+        10.0F,
+        14.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {});
+    const OfflineSceneSparseClipBlendMask wrong_count_mask(
+        1.0F,
+        {1.0F, 1.0F});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clip_schedule_masked(
+                left_clip,
+                right_clip,
+                std::span<const OfflineSceneSparseClipBlendScheduleEntry>{},
+                wrong_count_mask);
+        },
+        "masked blend rejects mask node-count mismatch even for empty schedules");
+
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::nullopt,
+        },
+        {1U, 2U});
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+                reusable,
+                graph,
+                left_clip,
+                right_clip,
+                std::span<const OfflineSceneSparseClipBlendScheduleEntry>{},
+                wrong_count_mask);
+        },
+        "masked blend schedule requires mask node ownership to match immutable graph");
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 2>
+        invalid_later_source{{
+            {0.0F, 10.0F, 0.5F},
+            {1.0F, 99.0F, 0.5F},
+        }};
+    const OfflineSceneSparseClipBlendMask all_ones(
+        1.0F,
+        {1.0F, 1.0F, 1.0F});
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+                reusable,
+                graph,
+                left_clip,
+                right_clip,
+                invalid_later_source,
+                all_ones);
+        },
+        "masked blend preserves M104 fail-closed validation of later invalid source times");
+    check(
+        shade_calls == 0U,
+        "later invalid masked-blend source time rejects before any earlier fragment execution");
+
+    const float large =
+        std::numeric_limits<float>::max() / 4.0F;
+    Mat4 large_scale = Mat4::identity();
+    large_scale(0U, 0U) = large;
+    const OfflineSceneSparseTransformGraphClip left_overflow(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {{0.0F, identity}, {2.0F, large_scale}}},
+        });
+    const OfflineSceneSparseTransformGraphClip right_overflow(
+        10.0F,
+        14.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                1U,
+                {{10.0F, identity}, {14.0F, large_scale}}},
+        });
+    const OfflineSceneSparseClipBlendMask half_parent_child(
+        0.0F,
+        {0.5F, 0.5F, 0.0F});
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 2>
+        safe_then_overflow{{
+            {0.0F, 10.0F, 1.0F},
+            {2.0F, 14.0F, 1.0F},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+                reusable,
+                graph,
+                left_overflow,
+                right_overflow,
+                safe_then_overflow,
+                half_parent_child);
+        },
+        "later masked local blend whose parent-child composition overflows rejects the complete batch");
+    check(
+        shade_calls == 0U,
+        "later masked composition overflow rejects before any earlier safe frame fragment execution");
+
+    const PreparedOfflineCameraSequence empty =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            std::span<const OfflineSceneSparseClipBlendScheduleEntry>{},
+            all_ones);
+    check(
+        empty.frame_count() == 0U,
+        "valid masked blend accepts an empty schedule after complete ownership validation");
+}
+
 void test_programmatic_transform_graph_timeline_matches_m97_and_local_reference() {
     OfflineRenderSettings settings;
     settings.width = 61U;
@@ -4165,6 +4603,8 @@ int main() {
     test_programmatic_sparse_clip_blend_validation_contract();
     test_programmatic_sparse_clip_blend_schedule_crossfade_and_m103_equivalence();
     test_programmatic_sparse_clip_blend_schedule_validation_contract();
+    test_programmatic_sparse_clip_blend_mask_equivalence_and_local_regions();
+    test_programmatic_sparse_clip_blend_mask_validation_contract();
     test_programmatic_transform_graph_timeline_matches_m97_and_local_reference();
     test_programmatic_transform_graph_timeline_validation_contract();
     test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
