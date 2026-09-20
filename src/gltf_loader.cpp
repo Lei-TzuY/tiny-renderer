@@ -23,6 +23,7 @@
 
 #include "tiny_renderer/affine_timeline.hpp"
 #include "tiny_renderer/quaternion.hpp"
+#include "tiny_renderer/skeletal_trs_timeline.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -597,7 +598,12 @@ void reject_member(
     return result;
 }
 
-[[nodiscard]] Mat4 parse_node_local(
+struct ParsedNodeTransform {
+    Mat4 local{Mat4::identity()};
+    std::optional<SkeletalTrs> semantic_trs{};
+};
+
+[[nodiscard]] ParsedNodeTransform parse_node_transform(
     const std::map<std::string, JsonValue>& object) {
     const JsonValue* matrix_value = optional_member(object, "matrix");
     const bool has_trs =
@@ -620,29 +626,33 @@ void reject_member(
         validate_gltf_affine_matrix(
             matrix,
             "glTF node matrix");
-        return matrix;
+        return {matrix, std::nullopt};
     }
 
-    Vec3 translation{0.0F, 0.0F, 0.0F};
+    SkeletalTrs semantic;
     if (const JsonValue* value =
             optional_member(object, "translation")) {
         const auto values = number_array(
             *value, 3U, "node translation");
-        translation = {values[0], values[1], values[2]};
+        semantic.translation = {
+            values[0],
+            values[1],
+            values[2],
+        };
     }
-
-    Vec3 scale{1.0F, 1.0F, 1.0F};
     if (const JsonValue* value = optional_member(object, "scale")) {
         const auto values = number_array(*value, 3U, "node scale");
-        scale = {values[0], values[1], values[2]};
+        semantic.scale = {
+            values[0],
+            values[1],
+            values[2],
+        };
     }
-
-    Quaternion rotation{};
     if (const JsonValue* value =
             optional_member(object, "rotation")) {
         const auto values = number_array(
             *value, 4U, "node rotation");
-        rotation = {
+        semantic.rotation = {
             values[0],
             values[1],
             values[2],
@@ -650,22 +660,18 @@ void reject_member(
         };
     }
 
-    Mat4 rotation_matrix;
+    Mat4 local;
     try {
-        rotation_matrix =
-            quaternion_rotation_matrix(rotation);
+        local = detail::compose_skeletal_trs(
+            semantic,
+            "glTF node semantic TRS");
     } catch (const std::invalid_argument& error) {
         fail(error.what());
     }
-
-    const Mat4 local =
-        Mat4::translation(translation)
-        * rotation_matrix
-        * Mat4::scale(scale);
     validate_gltf_affine_matrix(
         local,
         "glTF node local transform");
-    return local;
+    return {local, semantic};
 }
 
 struct BufferViewInfo {
@@ -687,6 +693,7 @@ struct AccessorInfo {
 
 struct NodeInfo {
     Mat4 local{Mat4::identity()};
+    std::optional<SkeletalTrs> semantic_trs{};
     std::vector<std::size_t> children{};
     std::optional<std::size_t> mesh{};
     std::optional<std::size_t> skin{};
@@ -1206,7 +1213,10 @@ void require_accessor_shape(
         reject_member(object, "camera", "node");
 
         NodeInfo node;
-        node.local = parse_node_local(object);
+        const ParsedNodeTransform transform =
+            parse_node_transform(object);
+        node.local = transform.local;
+        node.semantic_trs = transform.semantic_trs;
         if (const JsonValue* children =
                 optional_member(object, "children")) {
             const auto& child_array =
