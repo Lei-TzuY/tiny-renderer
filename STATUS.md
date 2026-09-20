@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 107 normal-aware linear-blend skinning
+## Architecture frontier: Milestone 108 bounded programmatic skeletal pose resolver
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -319,18 +319,38 @@ M107 removes M106's deliberate fixed-light restriction by extending the same obj
 - Heterogeneous prepared-list regression places a valid lit skinned entry before a later singular-normal entry and proves the complete list rejects before earlier RGB/depth/stencil ownership.
 - M107 remains programmatic single-pose LBS. It adds no skeleton topology, inverse-bind ownership, animated palettes, skeletal file import, dual-quaternion skinning, morph targets, IK/constraints, GPU execution, parallel path, or performance claim.
 
-## Promotion after Milestone 107
+## Milestone 108 — bounded programmatic skeletal pose resolver
 
-Position and normal deformation are now integrated, but callers still have to precompose every final skin matrix externally. The next architectural gap is explicit skeletal ownership. Milestone 108 should establish a **bounded programmatic skeletal pose resolver** that owns joint topology and inverse-bind transforms, resolves one local joint pose, and produces the exact skin palette consumed by M107.
+M108 adds explicit immutable skeletal ownership above M107 without creating a second deformation or raster path.
 
-A Milestone 108 slice should require:
+- `SkeletalRig` owns 1..256 joints, one optional parent per joint, one finite affine inverse-bind matrix per joint, and the canonical-vertex skin bindings that reference those joints.
+- Joint declaration order is arbitrary. Construction rejects out-of-range/self parents, cycles, inverse-bind count mismatch, non-finite/projective inverse binds, empty/oversized rigs, empty vertex ownership, and influences that reference joints outside the rig.
+- `SkeletalPoseState` owns one shared immutable rig plus exactly one finite affine local transform per joint. Intrinsic local validation occurs at construction, but hierarchy composition is intentionally deferred.
+- Pose resolution recursively computes every world joint as `parent_world * local`, validates every composed world transform, then computes every final skin matrix as `world_joint * inverse_bind`.
+- The resolved palette is materialized only through the existing `SkinningState` contract. M108 therefore cannot bypass M106/M107 influence, affine, position, normal, and joint-palette validation.
+- `ModelRenderOptions` accepts either a direct resolved `SkinningState` or one deferred `SkeletalPoseState`, never both. Canonical mesh/binding cardinality is validated at prepared-model construction.
+- The single `prepare_object_space_mesh` gateway resolves a deferred skeletal pose into a temporary immutable M107 skin state before any LBS/M35 work. Camera rendering, prepared models/instances/lists, and all directional/point/spot shadow capture therefore keep the established deformation/raster paths.
+- Heterogeneous prepared-list preparation resolves every deferred pose and completes every object-space mesh before the first draw. A later valid-local pose whose `world * inverse_bind` overflows therefore rejects the complete list before an earlier valid entry can own RGB/depth/stencil.
+- Root-only skeleton resolution is exact-equivalent to independently precomposed M107 skin matrices under normal-aware fixed lighting.
+- An arbitrary-order chain whose logical root is declared after a child is exact-equivalent to independently composed M107 skin matrices for camera output and shadow depth, including after caller rig/pose handles are released; the prepared submission owns the shared immutable state.
+- A bind-compatible two-joint pose whose world transforms cancel the owned inverse binds reduces exactly to canonical geometry, including blended vertex influence ownership.
+- Validation regressions cover bounded capacity, inverse-bind cardinality, out-of-range/self/cyclic parents, projective inverse binds, invalid joint influence ownership, null/mismatched/projective poses, direct+skeletal binding conflict, mesh/binding ownership mismatch, parent-composition overflow, and final `world * inverse_bind` overflow.
+- Canonical painter sorting and prepared spatial planning reject deferred skeletal poses because immutable canonical bounds cannot represent position-changing skeletal execution.
+- M108 is programmatic single-pose skeletal resolution only. It adds no skeletal timeline, file/glTF skin import, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, parallel path, or performance claim.
 
-- one immutable skeleton with 1..256 joints, exactly one optional parent per joint, one finite affine inverse-bind matrix per joint, and the existing canonical-vertex skin bindings aligned to that skeleton's joint count;
-- arbitrary parent declaration order is accepted, while out-of-range/self-parent/cyclic topology, binding/palette ownership mismatch, non-finite/projective inverse binds, and capacity overflow fail closed at construction;
-- one pose supplies exactly one finite affine local transform per joint. World joints resolve as `parent_world * local` with roots using local directly, independent of declaration order;
-- final skin matrices are computed only after complete world-pose resolution as `world_joint * inverse_bind`, then validated through the existing `SkinningState` contract rather than bypassing it;
-- a root-only skeleton and an arbitrary-order chain must produce rendering exactly equivalent to independently precomposed M107 skin matrices, including normal-aware fixed lighting;
-- a bind-compatible pose whose composed world transforms are inverse to the owned inverse-bind transforms should reduce to identity skin matrices and remain exact-equivalent to canonical geometry;
-- later joint composition or `world * inverse_bind` overflow must reject before any prepared-list framebuffer mutation;
-- prepared lifetime must own skeleton/bind state independently from caller temporaries, while camera/shadow continue to consume only the resulting M107 skin state and never a new raster path;
-- M108 is programmatic single-pose skeleton resolution only. It adds no animation timeline, file import/glTF skin parsing, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, or performance claim.
+## Promotion after Milestone 108
+
+The renderer now owns skeleton topology, inverse binds, one complete local pose, and the full M107 deformation path. The next architectural gap is temporal skeletal state. Milestone 109 should add a **bounded programmatic skeletal local-pose timeline** that samples joint-local transforms first, then delegates each sampled pose through the exact M108 resolver.
+
+A Milestone 109 slice should require:
+
+- one immutable M108 `SkeletalRig` plus 2..256 finite strictly increasing keyframes, each owning exactly one finite affine local transform per joint, and 0..256 caller-ordered finite sample times inside the closed keyframe domain;
+- exact keyframe sample requests copy the stored local pose without interpolation arithmetic;
+- interior samples reuse the established bounded affine top-3x4 interpolation semantics already used by M94/M100 rather than creating a skeletal-only interpolation rule;
+- interpolation occurs **per joint in local space before hierarchy composition and before `world * inverse_bind`**. Interpolating world joints or final skin matrices is explicitly outside the contract;
+- each sampled local pose resolves through M108 and then M107; camera/shadow/model execution remain unchanged;
+- root-only and arbitrary-order-chain timelines must be exact-equivalent to independently sampled-local-then-M108 references, including normal-aware fixed lighting and shadow silhouettes;
+- a child-under-animated-parent midpoint must observably differ from endpoint-world interpolation and match a local-interpolate-then-compose manual reference;
+- repeated and out-of-order sample requests must be deterministic; exact endpoints must preserve stored affine values bit-for-bit;
+- invalid keyframe counts/times/local cardinality, non-finite/projective locals, out-of-domain/non-finite sample times, capacity overflow, and a later interpolated pose whose hierarchy or final skin composition overflows must reject the complete requested batch before any earlier framebuffer mutation;
+- M109 is dense programmatic skeletal animation only. It adds no sparse tracks, clip blending, file/glTF animation parsing, easing/looping/extrapolation, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, or performance claim.
