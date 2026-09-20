@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -197,17 +198,62 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
             options.fixed_lights)) {
         throw std::invalid_argument("normal mapping requires an enabled fixed light");
     }
-    if (options.skinning_state
-        && detail::fixed_lighting_enabled(
-            options.directional_light,
-            options.point_light,
-            options.fixed_lights)) {
-        throw std::invalid_argument(
-            "single-pose skinning does not yet support fixed-light normal deformation");
-    }
     if (sampler_needed) {
         validate_sampler(options.sampler);
     }
+}
+
+bool same_normal_binding(
+    const NormalBinding& left,
+    const NormalBinding& right) {
+    return left.x == right.x
+        && left.y == right.y
+        && left.z == right.z;
+}
+
+[[nodiscard]] std::optional<NormalBinding>
+skinning_normal_binding_for(
+    const ModelAsset& asset,
+    const ModelRenderOptions& options) {
+    if (!options.skinning_state
+        || !detail::fixed_lighting_enabled(
+            options.directional_light,
+            options.point_light,
+            options.fixed_lights)) {
+        return std::nullopt;
+    }
+
+    std::optional<NormalBinding> selected;
+    for (const MaterialDraw& draw : asset.draws) {
+        const NormalBinding* candidate =
+            detail::active_normal_binding(
+                options.directional_light,
+                options.point_light,
+                options.fixed_lights,
+                draw.material);
+        if (candidate == nullptr) {
+            continue;
+        }
+        if (selected && !same_normal_binding(*selected, *candidate)) {
+            throw std::logic_error(
+                "validated fixed lighting lost its shared normal binding");
+        }
+        selected = *candidate;
+    }
+    return selected;
+}
+
+[[nodiscard]] detail::PreparedObjectSpaceMesh
+prepare_model_object_space_mesh(
+    const ModelAsset& asset,
+    const ModelRenderOptions& options) {
+    const std::optional<NormalBinding> normal_binding =
+        skinning_normal_binding_for(asset, options);
+    return detail::prepare_object_space_mesh(
+        options.skinning_state,
+        options.vertex_program,
+        asset.mesh,
+        normal_binding ? &*normal_binding : nullptr);
 }
 
 TextureBinding texture_binding_for(const MaterialDraw& draw, const ModelRenderOptions& options) {
@@ -494,10 +540,9 @@ std::vector<detail::PreparedObjectSpaceMesh> prepare_and_preflight_prepared_mode
     std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(entries.size());
     for (const PreparedModelListEntry& entry : entries) {
-        meshes.push_back(detail::prepare_object_space_mesh(
-            entry.prepared->options().skinning_state,
-            entry.prepared->options().vertex_program,
-            entry.prepared->asset().mesh));
+        meshes.push_back(prepare_model_object_space_mesh(
+            entry.prepared->asset(),
+            entry.prepared->options()));
     }
 
     for (std::size_t i = 0U; i < entries.size(); ++i) {
@@ -533,10 +578,9 @@ void draw_prepared_model_instances(
     std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(models.size());
     for (std::size_t i = 0U; i < models.size(); ++i) {
-        meshes.push_back(detail::prepare_object_space_mesh(
-            prepared.options().skinning_state,
-            prepared.options().vertex_program,
-            prepared.asset().mesh));
+        meshes.push_back(prepare_model_object_space_mesh(
+            prepared.asset(),
+            prepared.options()));
     }
 
     for (std::size_t i = 0U; i < models.size(); ++i) {
@@ -569,10 +613,9 @@ void draw_prepared_model_instances(
     std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(mvps.size());
     for (std::size_t i = 0U; i < mvps.size(); ++i) {
-        meshes.push_back(detail::prepare_object_space_mesh(
-            prepared.options().skinning_state,
-            prepared.options().vertex_program,
-            prepared.asset().mesh));
+        meshes.push_back(prepare_model_object_space_mesh(
+            prepared.asset(),
+            prepared.options()));
     }
 
     for (std::size_t i = 0U; i < mvps.size(); ++i) {
@@ -684,10 +727,7 @@ void draw_model_asset(
     ModelRenderOptions options) {
     validate_static_model_state(asset, options);
     const detail::PreparedObjectSpaceMesh programmed =
-        detail::prepare_object_space_mesh(
-        options.skinning_state,
-        options.vertex_program,
-        asset.mesh);
+        prepare_model_object_space_mesh(asset, options);
     const Mesh& mesh = programmed.get();
 
     draw_validated_model_impl(
@@ -731,10 +771,7 @@ void draw_model_asset(
     ModelRenderOptions options) {
     validate_static_model_state(asset, options);
     const detail::PreparedObjectSpaceMesh programmed =
-        detail::prepare_object_space_mesh(
-        options.skinning_state,
-        options.vertex_program,
-        asset.mesh);
+        prepare_model_object_space_mesh(asset, options);
     const Mesh& mesh = programmed.get();
 
     draw_validated_model_impl(
