@@ -210,8 +210,9 @@ inline void validate_skinning_normal_binding(
     return result;
 }
 
-// Owns the complete object-space deformation result when skinning and/or the
-// M35 vertex program is active; otherwise it aliases the canonical mesh.
+// Owns the complete object-space deformation result when active morphing,
+// skinning, and/or the M35 vertex program is active; otherwise it aliases the
+// canonical mesh. The canonical ordering is morph -> skinning -> M35.
 struct PreparedObjectSpaceMesh {
     const Mesh* source{nullptr};
     std::optional<Mesh> transformed{};
