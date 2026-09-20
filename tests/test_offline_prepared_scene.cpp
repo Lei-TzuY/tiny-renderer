@@ -1222,6 +1222,379 @@ void test_programmatic_hierarchy_validation_contract() {
 }
 
 
+
+void test_programmatic_transform_graph_matches_hierarchy_and_group_reference() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    // A 1:1 graph is an exact semantic replacement for the M96 hierarchy.
+    // The child points forward to node/entry 1 to retain arbitrary parent order.
+    const OfflineSceneHierarchy hierarchy({
+        std::optional<std::size_t>{1U},
+        std::nullopt,
+    });
+    const OfflineSceneTransformGraph one_to_one_graph(
+        {
+            std::optional<std::size_t>{1U},
+            std::nullopt,
+        },
+        {0U, 1U});
+    const std::vector<Mat4> local_a{
+        Mat4::translation({0.30F, 0.0F, -0.15F}),
+        Mat4::translation({-0.45F, 0.0F, -0.20F}),
+    };
+    const std::vector<Mat4> local_b{
+        Mat4::translation({-0.25F, 0.0F, -0.10F}),
+        Mat4::translation({0.35F, 0.0F, -0.45F}),
+    };
+    const std::array<OfflineSceneHierarchicalFrameState, 2> hierarchy_frames{{
+        OfflineSceneHierarchicalFrameState{camera, local_a},
+        OfflineSceneHierarchicalFrameState{camera, local_b},
+    }};
+    const std::array<OfflineSceneTransformGraphFrameState, 2> graph_frames{{
+        OfflineSceneTransformGraphFrameState{camera, local_a},
+        OfflineSceneTransformGraphFrameState{camera, local_b},
+    }};
+
+    const PreparedOfflineCameraSequence hierarchical =
+        prepare_offline_hierarchy_sequence(
+            reusable,
+            hierarchy,
+            hierarchy_frames);
+    const PreparedOfflineCameraSequence graph_sequence =
+        prepare_offline_transform_graph_sequence(
+            reusable,
+            one_to_one_graph,
+            graph_frames);
+    check(
+        hierarchical.frame_count() == graph_sequence.frame_count()
+            && graph_sequence.frame_count() == 2U,
+        "1:1 transform graph preserves M96 frame ownership");
+    for (std::size_t index = 0U;
+         index < hierarchical.frame_count()
+             && index < graph_sequence.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(hierarchical, index),
+                render_prepared_camera_sequence_frame(graph_sequence, index)),
+            "1:1 transform graph is exact resolved/hash and 4x per-sample equivalent to M96 hierarchy execution");
+    }
+
+    // Node 0 is a non-renderable pivot. Nodes 1 and 2 are independently
+    // bound to prepared entries 0 and 1. Moving/scaling the pivot must move
+    // both render entries without changing M92 ownership or execution order.
+    const OfflineSceneTransformGraph grouped_graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+    const Mat4 pivot_a =
+        Mat4::translation({-0.20F, 0.0F, -0.30F})
+        * Mat4::scale({1.0F, 1.0F, 1.0F});
+    const Mat4 pivot_b =
+        Mat4::translation({0.25F, 0.0F, -0.40F})
+        * Mat4::scale({1.4F, 1.0F, 1.0F});
+    const Mat4 child_red =
+        Mat4::translation({-0.30F, 0.0F, 0.0F});
+    const Mat4 child_green =
+        Mat4::translation({0.30F, 0.0F, -0.15F});
+    const std::array<OfflineSceneTransformGraphFrameState, 2> grouped_frames{{
+        OfflineSceneTransformGraphFrameState{
+            camera,
+            {pivot_a, child_red, child_green}},
+        OfflineSceneTransformGraphFrameState{
+            camera,
+            {pivot_b, child_red, child_green}},
+    }};
+    const std::array<OfflineSceneFrameState, 2> manual_world_frames{{
+        OfflineSceneFrameState{
+            camera,
+            {pivot_a * child_red, pivot_a * child_green}},
+        OfflineSceneFrameState{
+            camera,
+            {pivot_b * child_red, pivot_b * child_green}},
+    }};
+
+    const PreparedOfflineCameraSequence grouped =
+        prepare_offline_transform_graph_sequence(
+            reusable,
+            grouped_graph,
+            grouped_frames);
+    const PreparedOfflineCameraSequence manual =
+        prepare_offline_frame_sequence(
+            reusable,
+            manual_world_frames);
+    check(
+        grouped.frame_count() == manual.frame_count()
+            && grouped.frame_count() == 2U,
+        "transform-only pivot graph preserves prepared render-entry frame count");
+    for (std::size_t index = 0U;
+         index < grouped.frame_count() && index < manual.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(grouped, index),
+                render_prepared_camera_sequence_frame(manual, index)),
+            "transform-only pivot graph matches independently composed M92 render-entry world transforms exactly");
+    }
+    if (grouped.frame_count() == 2U) {
+        check(
+            !exact_frame_equal(
+                render_prepared_camera_sequence_frame(grouped, 0U),
+                render_prepared_camera_sequence_frame(grouped, 1U)),
+            "moving one non-renderable pivot observably moves its multiple mapped render descendants");
+    }
+}
+
+void test_programmatic_transform_graph_validation_contract() {
+    check_throws<std::out_of_range>(
+        [] {
+            (void)OfflineSceneTransformGraph(
+                {std::optional<std::size_t>{1U}},
+                {0U});
+        },
+        "transform graph rejects out-of-range parent references");
+    check_throws<std::invalid_argument>(
+        [] {
+            (void)OfflineSceneTransformGraph(
+                {std::optional<std::size_t>{0U}},
+                {0U});
+        },
+        "transform graph rejects self-parenting");
+    check_throws<std::invalid_argument>(
+        [] {
+            (void)OfflineSceneTransformGraph(
+                {
+                    std::optional<std::size_t>{1U},
+                    std::optional<std::size_t>{0U},
+                },
+                {0U});
+        },
+        "transform graph rejects cycles independent of node order");
+    check_throws<std::out_of_range>(
+        [] {
+            (void)OfflineSceneTransformGraph(
+                {std::nullopt},
+                {1U});
+        },
+        "transform graph rejects render bindings outside graph ownership");
+    check_throws<std::invalid_argument>(
+        [] {
+            (void)OfflineSceneTransformGraph(
+                {std::nullopt, std::nullopt},
+                {0U, 0U});
+        },
+        "transform graph rejects duplicate render-entry node bindings");
+
+    std::vector<std::optional<std::size_t>> too_many_nodes(
+        detail::kMaxOfflineTransformGraphNodes + 1U,
+        std::nullopt);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneTransformGraph(
+                too_many_nodes,
+                {});
+        },
+        "transform graph rejects node ownership above the bounded graph limit");
+
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    const OfflineSceneTransformGraph missing_binding_graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U});
+    const std::array<OfflineSceneTransformGraphFrameState, 1>
+        missing_binding_frame{{
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity(),
+                }},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_sequence(
+                reusable,
+                missing_binding_graph,
+                missing_binding_frame);
+        },
+        "transform graph requires exactly one render binding per prepared scene entry");
+
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+
+    const std::array<OfflineSceneTransformGraphFrameState, 1> missing_local{{
+        OfflineSceneTransformGraphFrameState{
+            camera,
+            {Mat4::identity(), Mat4::identity()}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_sequence(
+                reusable,
+                graph,
+                missing_local);
+        },
+        "transform graph frame local-transform count must match complete graph node count");
+
+    // Node 0 and node 1 are render-bound roots; node 2 is completely hidden
+    // from rendering. Its invalid state must still reject the complete graph.
+    const OfflineSceneTransformGraph hidden_group_graph(
+        {
+            std::nullopt,
+            std::nullopt,
+            std::nullopt,
+        },
+        {0U, 1U});
+    const std::array<OfflineSceneTransformGraphFrameState, 2>
+        hidden_invalid_later{{
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity(),
+                }},
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::perspective(
+                        radians(55.0F),
+                        1.0F,
+                        0.1F,
+                        20.0F),
+                }},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_sequence(
+                reusable,
+                hidden_group_graph,
+                hidden_invalid_later);
+        },
+        "invalid later transform-only node rejects the complete graph transaction");
+    check(
+        shade_calls == 0U,
+        "hidden transform-only graph failure occurs before any fragment execution");
+
+    Mat4 huge_pivot = Mat4::identity();
+    huge_pivot(0U, 0U) = std::numeric_limits<float>::max();
+    Mat4 child_scale = Mat4::identity();
+    child_scale(0U, 0U) = 2.0F;
+    const std::array<OfflineSceneTransformGraphFrameState, 2>
+        overflow_later{{
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity(),
+                }},
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    huge_pivot,
+                    child_scale,
+                    Mat4::identity(),
+                }},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_sequence(
+                reusable,
+                graph,
+                overflow_later);
+        },
+        "finite transform-only ancestor whose child composition overflows rejects the complete graph transaction");
+    check(
+        shade_calls == 0U,
+        "later transform-graph composition failure leaves earlier frames unexecutable");
+
+    std::vector<OfflineSceneTransformGraphFrameState> too_many_frames(
+        detail::kMaxOfflineSequenceCameras + 1U,
+        OfflineSceneTransformGraphFrameState{
+            camera,
+            {
+                Mat4::identity(),
+                Mat4::identity(),
+                Mat4::identity(),
+            }});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_sequence(
+                reusable,
+                graph,
+                too_many_frames);
+        },
+        "transform graph sequence enforces the established bounded frame count");
+}
+
 void test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference() {
     OfflineRenderSettings settings;
     settings.width = 61U;
@@ -1742,6 +2115,8 @@ int main() {
     test_bounded_timeline_validation_contract();
     test_programmatic_hierarchy_matches_explicit_world_frames();
     test_programmatic_hierarchy_validation_contract();
+    test_programmatic_transform_graph_matches_hierarchy_and_group_reference();
+    test_programmatic_transform_graph_validation_contract();
     test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
     test_programmatic_hierarchical_timeline_validation_contract();
     test_prepared_frame_sequence_rejects_invalid_transform_records();
