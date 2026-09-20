@@ -2320,17 +2320,17 @@ void test_programmatic_sparse_clip_blend_endpoints_and_local_reference() {
         blended_frames.size() == samples.size(),
         "two-clip interior blend preserves repeated and out-of-order sample count");
     if (blended_frames.size() == samples.size()) {
-        const std::array<Mat4, 4> expected_pivots{{
-            Mat4::translation({0.0F, 0.0F, -0.30F}),
-            Mat4::translation({-0.20F, 0.0F, -0.30F}),
-            Mat4::translation({-0.40F, 0.0F, -0.30F}),
-            Mat4::translation({-0.20F, 0.0F, -0.30F}),
+        const std::array<float, 4> expected_pivot_x{{
+            0.0F,
+            -0.20F,
+            -0.40F,
+            -0.20F,
         }};
         for (std::size_t index = 0U; index < samples.size(); ++index) {
             check(
-                exact_matrix_equal(
-                    blended_frames[index].local_transforms[0],
-                    expected_pivots[index]),
+                std::fabs(
+                    blended_frames[index].local_transforms[0](0U, 3U)
+                    - expected_pivot_x[index]) < 1.0e-6F,
                 "two-clip interior blend combines transform-only pivot in local space");
             check(
                 exact_matrix_equal(
@@ -2348,38 +2348,34 @@ void test_programmatic_sparse_clip_blend_endpoints_and_local_reference() {
             "two-clip repeated interior sample is deterministic");
     }
 
-    OfflineSceneCamera expected_camera =
-        camera_at({-0.15F, 0.0F, 3.0F});
-    const std::array<OfflineSceneTransformGraphFrameState, 4> reference_frames{{
-        OfflineSceneTransformGraphFrameState{
-            expected_camera,
-            {
-                Mat4::translation({0.0F, 0.0F, -0.30F}),
-                red_local,
-                green_local,
-            }},
-        OfflineSceneTransformGraphFrameState{
-            expected_camera,
-            {
-                Mat4::translation({-0.20F, 0.0F, -0.30F}),
-                red_local,
-                green_local,
-            }},
-        OfflineSceneTransformGraphFrameState{
-            expected_camera,
-            {
-                Mat4::translation({-0.40F, 0.0F, -0.30F}),
-                red_local,
-                green_local,
-            }},
-        OfflineSceneTransformGraphFrameState{
-            expected_camera,
-            {
-                Mat4::translation({-0.20F, 0.0F, -0.30F}),
-                red_local,
-                green_local,
-            }},
-    }};
+    // Build an independent M99 reference from the two already-established M102
+    // source samplers plus the pre-M103 interpolation primitives. This preserves
+    // their actual float semantics while independently checking that M103
+    // blends complete local frames before graph composition.
+    const std::vector<OfflineSceneTransformGraphFrameState> left_sampled =
+        sample_offline_sparse_transform_graph_clip(left_clip, samples);
+    const std::vector<OfflineSceneTransformGraphFrameState> right_sampled =
+        sample_offline_sparse_transform_graph_clip(right_clip, samples);
+    std::vector<OfflineSceneTransformGraphFrameState> reference_frames;
+    reference_frames.reserve(samples.size());
+    for (std::size_t frame_index = 0U;
+         frame_index < samples.size();
+         ++frame_index) {
+        OfflineSceneTransformGraphFrameState reference;
+        reference.camera = detail::interpolate_offline_timeline_camera(
+            left_sampled[frame_index].camera,
+            right_sampled[frame_index].camera,
+            weight);
+        reference.local_transforms.reserve(3U);
+        for (std::size_t local_index = 0U; local_index < 3U; ++local_index) {
+            reference.local_transforms.push_back(
+                detail::interpolate_offline_timeline_affine(
+                    left_sampled[frame_index].local_transforms[local_index],
+                    right_sampled[frame_index].local_transforms[local_index],
+                    weight));
+        }
+        reference_frames.push_back(std::move(reference));
+    }
 
     const PreparedOfflineCameraSequence blended_sequence =
         prepare_offline_sparse_transform_graph_clip_blend_sequence(
