@@ -38,6 +38,8 @@ inline constexpr std::string_view kOfflineTimelineSequenceHeader =
     "tiny-renderer-timeline-v1";
 inline constexpr std::string_view kOfflineHierarchicalTimelineSequenceHeader =
     "tiny-renderer-hierarchy-timeline-v1";
+inline constexpr std::string_view kOfflineTransformGraphTimelineSequenceHeader =
+    "tiny-renderer-transform-graph-timeline-v1";
 
 [[nodiscard]] inline float offline_sequence_aspect(
     const OfflineRenderSettings& settings) {
@@ -424,6 +426,15 @@ struct OfflineSceneHierarchicalTimelineFile {
     std::vector<float> sample_times{};
 };
 
+// Strict file-facing M101 state. Parsing owns topology/binding/keyframe syntax
+// only; M100/M99/M92 remain the sole interpolation, graph-resolution, and
+// execution authorities.
+struct OfflineSceneTransformGraphTimelineFile {
+    OfflineSceneTransformGraph graph;
+    std::vector<OfflineSceneTransformGraphTimelineKeyframe> keyframes{};
+    std::vector<float> sample_times{};
+};
+
 namespace detail {
 
 [[nodiscard]] inline std::vector<Mat4>
@@ -782,6 +793,15 @@ template <typename Keyframe, typename Frame, typename InterpolateFrame>
         + std::to_string(line) + ": " + message);
 }
 
+[[noreturn]] inline void offline_transform_graph_timeline_sequence_error(
+    const std::filesystem::path& path,
+    std::size_t line,
+    const std::string& message) {
+    throw std::invalid_argument(
+        "offline transform graph timeline " + path.string() + ": line "
+        + std::to_string(line) + ": " + message);
+}
+
 using OfflineSequenceErrorFunction = void (*)(
     const std::filesystem::path&,
     std::size_t,
@@ -896,10 +916,11 @@ inline void reject_offline_sequence_extra_tokens(
     return camera;
 }
 
-[[nodiscard]] inline Mat4 parse_offline_sequence_model_matrix(
+[[nodiscard]] inline Mat4 parse_offline_sequence_affine_matrix(
     const std::filesystem::path& path,
     std::size_t line_number,
     std::istringstream& line,
+    const char* record_label,
     const char* transform_label,
     OfflineSequenceErrorFunction error) {
     std::array<std::string, 16> tokens{};
@@ -908,12 +929,15 @@ inline void reject_offline_sequence_extra_tokens(
             error(
                 path,
                 line_number,
-                "model requires 16 row-major affine matrix values");
+                std::string(record_label)
+                    + " requires 16 row-major affine matrix values");
         }
     }
     reject_offline_sequence_extra_tokens(path, line_number, line, error);
 
     Mat4 matrix{};
+    const std::string value_label =
+        std::string(record_label) + " matrix value";
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
             const std::size_t index = row * 4U + column;
@@ -921,7 +945,7 @@ inline void reject_offline_sequence_extra_tokens(
                 path,
                 line_number,
                 tokens[index],
-                "model matrix value",
+                value_label.c_str(),
                 error);
         }
     }
@@ -931,6 +955,21 @@ inline void reject_offline_sequence_extra_tokens(
         error(path, line_number, caught.what());
     }
     return matrix;
+}
+
+[[nodiscard]] inline Mat4 parse_offline_sequence_model_matrix(
+    const std::filesystem::path& path,
+    std::size_t line_number,
+    std::istringstream& line,
+    const char* transform_label,
+    OfflineSequenceErrorFunction error) {
+    return parse_offline_sequence_affine_matrix(
+        path,
+        line_number,
+        line,
+        "model",
+        transform_label,
+        error);
 }
 
 // M93 compatibility wrappers preserve the original frame-sequence diagnostics
@@ -1671,6 +1710,497 @@ load_offline_hierarchical_timeline_sequence_file(
         keyframes);
     return OfflineSceneHierarchicalTimelineFile{
         std::move(*hierarchy),
+        std::move(keyframes),
+        std::move(sample_times),
+    };
+}
+
+
+// Strict bounded sidecar for M100 transform-graph timeline state:
+//
+//   tiny-renderer-transform-graph-timeline-v1
+//   node NODE root
+//   node NODE PARENT_NODE
+//   bind ENTRY NODE
+//   ... complete graph topology and one binding per prepared scene entry ...
+//   keyframe TIME EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR
+//   local NODE M00 M01 M02 M03 M10 M11 M12 M13 M20 M21 M22 M23 M30 M31 M32 M33
+//   ... exactly one local record per graph node ...
+//   end
+//   ... at least two strictly increasing keyframes ...
+//   sample TIME
+//   ... one or more caller-ordered sample requests ...
+//
+// Node and bind records may be arbitrarily ordered but must be complete before
+// the first keyframe. Node ids are explicit contiguous indices [0,N), allowing
+// deterministic missing-node diagnostics while retaining forward parent/bind
+// references. Local records are likewise explicit and order-independent.
+// Parsing performs no interpolation and no graph composition.
+[[nodiscard]] inline OfflineSceneTransformGraphTimelineFile
+load_offline_transform_graph_timeline_sequence_file(
+    const std::filesystem::path& path,
+    std::size_t expected_model_count) {
+    if (expected_model_count > detail::kMaxOfflineSceneEntries) {
+        throw std::invalid_argument(
+            "offline transform graph timeline expected model count exceeds bounded scene entry limit");
+    }
+
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error(
+            "failed to open offline transform graph timeline: " + path.string());
+    }
+
+    std::vector<std::optional<std::size_t>> node_parents(
+        detail::kMaxOfflineTransformGraphNodes);
+    std::vector<unsigned char> node_seen(
+        detail::kMaxOfflineTransformGraphNodes, 0U);
+    std::size_t node_count = 0U;
+    std::size_t max_node_plus_one = 0U;
+
+    std::vector<std::size_t> render_bindings(expected_model_count, 0U);
+    std::vector<unsigned char> bind_seen(expected_model_count, 0U);
+    std::size_t bind_count = 0U;
+
+    std::optional<OfflineSceneTransformGraph> graph;
+    std::size_t graph_node_count = 0U;
+    std::vector<OfflineSceneTransformGraphTimelineKeyframe> keyframes;
+    std::vector<float> sample_times;
+    std::optional<OfflineSceneTransformGraphTimelineKeyframe> current;
+    std::vector<unsigned char> current_local_seen;
+    std::size_t current_local_count = 0U;
+    bool header_seen = false;
+    bool samples_started = false;
+    std::string line_text;
+    std::size_t line_number = 0U;
+
+    const auto finalize_graph = [&](std::size_t diagnostic_line) {
+        if (graph) {
+            return;
+        }
+
+        graph_node_count = max_node_plus_one;
+        if (node_count != graph_node_count) {
+            detail::offline_transform_graph_timeline_sequence_error(
+                path,
+                diagnostic_line,
+                "graph node ids must form one complete contiguous range starting at zero");
+        }
+        if (graph_node_count < expected_model_count) {
+            detail::offline_transform_graph_timeline_sequence_error(
+                path,
+                diagnostic_line,
+                "graph node count cannot be smaller than prepared scene entry count");
+        }
+        for (std::size_t node = 0U; node < graph_node_count; ++node) {
+            if (node_seen[node] == 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path, diagnostic_line, "missing graph node record");
+            }
+            if (node_parents[node]) {
+                if (*node_parents[node] >= graph_node_count
+                    || node_seen[*node_parents[node]] == 0U) {
+                    detail::offline_transform_graph_timeline_sequence_error(
+                        path,
+                        diagnostic_line,
+                        "graph parent references an undeclared node");
+                }
+            }
+        }
+
+        if (bind_count != expected_model_count) {
+            detail::offline_transform_graph_timeline_sequence_error(
+                path,
+                diagnostic_line,
+                "graph requires exactly one bind record per prepared scene entry before keyframes");
+        }
+        std::vector<unsigned char> bound_node(graph_node_count, 0U);
+        for (std::size_t entry = 0U; entry < expected_model_count; ++entry) {
+            if (bind_seen[entry] == 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path, diagnostic_line, "missing graph render-entry binding");
+            }
+            const std::size_t node = render_bindings[entry];
+            if (node >= graph_node_count || node_seen[node] == 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    diagnostic_line,
+                    "graph render binding references an undeclared node");
+            }
+            if (bound_node[node] != 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    diagnostic_line,
+                    "multiple prepared scene entries cannot bind the same graph node");
+            }
+            bound_node[node] = 1U;
+        }
+
+        std::vector<std::optional<std::size_t>> parents(
+            node_parents.begin(),
+            node_parents.begin() + graph_node_count);
+        try {
+            graph.emplace(std::move(parents), render_bindings);
+        } catch (const std::exception& caught) {
+            detail::offline_transform_graph_timeline_sequence_error(
+                path, diagnostic_line, caught.what());
+        }
+    };
+
+    while (std::getline(input, line_text)) {
+        ++line_number;
+        if (detail::offline_sequence_ignorable_line(line_text)) {
+            continue;
+        }
+
+        std::istringstream line(line_text);
+        std::string directive;
+        line >> directive;
+
+        if (!header_seen) {
+            if (directive != detail::kOfflineTransformGraphTimelineSequenceHeader) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "first non-comment line must be tiny-renderer-transform-graph-timeline-v1");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_transform_graph_timeline_sequence_error);
+            header_seen = true;
+            continue;
+        }
+
+        if (directive == "node") {
+            if (graph || current || !keyframes.empty() || samples_started) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "node records must precede all keyframes and samples");
+            }
+
+            std::string node_token;
+            std::string parent_token;
+            if (!(line >> node_token >> parent_token)) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "node requires NODE followed by root or PARENT_NODE");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_transform_graph_timeline_sequence_error);
+            const std::size_t node = detail::parse_offline_sequence_index(
+                path,
+                line_number,
+                node_token,
+                "graph node index",
+                detail::offline_transform_graph_timeline_sequence_error);
+            if (node >= detail::kMaxOfflineTransformGraphNodes) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "graph node index exceeds bounded graph node limit");
+            }
+            if (node_seen[node] != 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path, line_number, "duplicate graph node record");
+            }
+
+            if (parent_token == "root") {
+                node_parents[node] = std::nullopt;
+            } else {
+                const std::size_t parent = detail::parse_offline_sequence_index(
+                    path,
+                    line_number,
+                    parent_token,
+                    "graph parent index",
+                    detail::offline_transform_graph_timeline_sequence_error);
+                if (parent >= detail::kMaxOfflineTransformGraphNodes) {
+                    detail::offline_transform_graph_timeline_sequence_error(
+                        path,
+                        line_number,
+                        "graph parent index exceeds bounded graph node limit");
+                }
+                if (parent == node) {
+                    detail::offline_transform_graph_timeline_sequence_error(
+                        path,
+                        line_number,
+                        "offline transform graph node cannot parent itself");
+                }
+                node_parents[node] = parent;
+            }
+            node_seen[node] = 1U;
+            ++node_count;
+            max_node_plus_one = std::max(max_node_plus_one, node + 1U);
+            continue;
+        }
+
+        if (directive == "bind") {
+            if (graph || current || !keyframes.empty() || samples_started) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "bind records must precede all keyframes and samples");
+            }
+
+            std::string entry_token;
+            std::string node_token;
+            if (!(line >> entry_token >> node_token)) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "bind requires ENTRY followed by NODE");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_transform_graph_timeline_sequence_error);
+            const std::size_t entry = detail::parse_offline_sequence_index(
+                path,
+                line_number,
+                entry_token,
+                "render entry index",
+                detail::offline_transform_graph_timeline_sequence_error);
+            const std::size_t node = detail::parse_offline_sequence_index(
+                path,
+                line_number,
+                node_token,
+                "graph binding node index",
+                detail::offline_transform_graph_timeline_sequence_error);
+            if (entry >= expected_model_count) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "render entry index exceeds prepared scene entry count");
+            }
+            if (node >= detail::kMaxOfflineTransformGraphNodes) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "graph binding node index exceeds bounded graph node limit");
+            }
+            if (bind_seen[entry] != 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "duplicate bind record for prepared scene entry");
+            }
+            render_bindings[entry] = node;
+            bind_seen[entry] = 1U;
+            ++bind_count;
+            continue;
+        }
+
+        if (directive == "keyframe") {
+            if (samples_started) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframes must precede all sample directives");
+            }
+            if (current) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "new keyframe encountered before previous keyframe end");
+            }
+            finalize_graph(line_number);
+            if (keyframes.size() >= detail::kMaxOfflineTimelineKeyframes) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe count exceeds bounded timeline limit");
+            }
+
+            std::string time_token;
+            if (!(line >> time_token)) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe requires TIME followed by camera state");
+            }
+            const float time = detail::parse_offline_sequence_float(
+                path,
+                line_number,
+                time_token,
+                "keyframe time",
+                detail::offline_transform_graph_timeline_sequence_error);
+            if (!keyframes.empty() && !(time > keyframes.back().time)) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe times must be strictly increasing");
+            }
+
+            current.emplace();
+            current->time = time;
+            current->frame.camera = detail::parse_offline_sequence_camera(
+                path,
+                line_number,
+                line,
+                "keyframe",
+                detail::offline_transform_graph_timeline_sequence_error);
+            current->frame.local_transforms.assign(
+                graph_node_count,
+                Mat4::identity());
+            current_local_seen.assign(graph_node_count, 0U);
+            current_local_count = 0U;
+            continue;
+        }
+
+        if (directive == "local") {
+            if (!current) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "local record requires an active keyframe");
+            }
+            std::string node_token;
+            if (!(line >> node_token)) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "local requires NODE followed by 16 row-major affine matrix values");
+            }
+            const std::size_t node = detail::parse_offline_sequence_index(
+                path,
+                line_number,
+                node_token,
+                "local graph node index",
+                detail::offline_transform_graph_timeline_sequence_error);
+            if (node >= graph_node_count) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "local graph node index exceeds declared graph node count");
+            }
+            if (current_local_seen[node] != 0U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "duplicate local record for graph node");
+            }
+            current->frame.local_transforms[node] =
+                detail::parse_offline_sequence_affine_matrix(
+                    path,
+                    line_number,
+                    line,
+                    "local",
+                    "offline transform graph timeline keyframe local transform",
+                    detail::offline_transform_graph_timeline_sequence_error);
+            current_local_seen[node] = 1U;
+            ++current_local_count;
+            continue;
+        }
+
+        if (directive == "end") {
+            if (!current) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path, line_number, "end requires an active keyframe");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_transform_graph_timeline_sequence_error);
+            if (current_local_count != graph_node_count) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe requires exactly one local record per graph node");
+            }
+            keyframes.push_back(std::move(*current));
+            current.reset();
+            current_local_seen.clear();
+            current_local_count = 0U;
+            continue;
+        }
+
+        if (directive == "sample") {
+            if (current) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample cannot appear inside an active keyframe");
+            }
+            if (keyframes.size() < 2U) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "samples require at least two completed keyframes");
+            }
+            samples_started = true;
+            if (sample_times.size() >= detail::kMaxOfflineTimelineSamples) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample count exceeds bounded timeline limit");
+            }
+            std::string time_token;
+            if (!(line >> time_token)) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path, line_number, "sample requires TIME");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_transform_graph_timeline_sequence_error);
+            const float sample_time = detail::parse_offline_sequence_float(
+                path,
+                line_number,
+                time_token,
+                "sample time",
+                detail::offline_transform_graph_timeline_sequence_error);
+            if (sample_time < keyframes.front().time
+                || sample_time > keyframes.back().time) {
+                detail::offline_transform_graph_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample time is outside the keyframe domain");
+            }
+            sample_times.push_back(sample_time);
+            continue;
+        }
+
+        detail::offline_transform_graph_timeline_sequence_error(
+            path, line_number, "unknown directive '" + directive + "'");
+    }
+
+    if (!header_seen) {
+        throw std::invalid_argument(
+            "offline transform graph timeline " + path.string()
+            + ": missing tiny-renderer-transform-graph-timeline-v1 header");
+    }
+    if (current) {
+        detail::offline_transform_graph_timeline_sequence_error(
+            path,
+            line_number,
+            "unterminated keyframe record requires end");
+    }
+    finalize_graph(line_number);
+    if (keyframes.size() < 2U) {
+        throw std::invalid_argument(
+            "offline transform graph timeline " + path.string()
+            + ": at least two keyframe records are required");
+    }
+    if (sample_times.empty()) {
+        throw std::invalid_argument(
+            "offline transform graph timeline " + path.string()
+            + ": at least one sample record is required");
+    }
+
+    (void)detail::validate_offline_transform_graph_timeline_keyframes(
+        *graph,
+        keyframes);
+    return OfflineSceneTransformGraphTimelineFile{
+        std::move(*graph),
         std::move(keyframes),
         std::move(sample_times),
     };
