@@ -2994,8 +2994,8 @@ prepare_offline_sparse_transform_graph_clip_sequence(
 }
 
 // Programmatic M103 path: validates prepared-scene/graph/clip ownership,
- // samples both sparse clips completely, blends only complete graph-local
- // state, then delegates one complete batch to M99 and finally M92.
+// samples both sparse clips completely, blends only complete graph-local
+// state, then delegates one complete batch to M99 and finally M92.
 [[nodiscard]] inline PreparedOfflineCameraSequence
 prepare_offline_sparse_transform_graph_clip_blend_sequence(
     const PreparedOfflineMixedScene& scene,
