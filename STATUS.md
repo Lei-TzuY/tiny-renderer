@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 108 bounded programmatic skeletal pose resolver
+## Architecture frontier: Milestone 109 bounded programmatic skeletal local-pose timeline
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -338,19 +338,35 @@ M108 adds explicit immutable skeletal ownership above M107 without creating a se
 - Canonical painter sorting and prepared spatial planning reject deferred skeletal poses because immutable canonical bounds cannot represent position-changing skeletal execution.
 - M108 is programmatic single-pose skeletal resolution only. It adds no skeletal timeline, file/glTF skin import, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, parallel path, or performance claim.
 
-## Promotion after Milestone 108
+## Milestone 109 — bounded programmatic skeletal local-pose timeline
 
-The renderer now owns skeleton topology, inverse binds, one complete local pose, and the full M107 deformation path. The next architectural gap is temporal skeletal state. Milestone 109 should add a **bounded programmatic skeletal local-pose timeline** that samples joint-local transforms first, then delegates each sampled pose through the exact M108 resolver.
+M109 adds temporal joint-local state above M108 while deliberately reusing one shared affine timeline core instead of creating a skeletal-only interpolation path.
 
-A Milestone 109 slice should require:
+- `affine_timeline.hpp` now owns the low-level finite affine validator, top-3x4 affine interpolation primitive, and exact-keyframe/bracketing sampler used by both the established offline animation stack and skeletal animation.
+- Existing M94/M100-facing `interpolate_offline_timeline_affine` and `sample_offline_keyframe_value` APIs remain intact but delegate to the shared generic primitive, preserving the established endpoint-copy and interior affine semantics without reverse-depending skinning on the offline renderer.
+- `SkeletalPoseTimeline` owns one immutable M108 `SkeletalRig` plus 2..256 finite strictly increasing dense keyframes. Every keyframe owns exactly one finite affine local matrix per joint and is resolved once through M108 at construction so malformed endpoint poses cannot survive into sampling.
+- Sampling accepts 0..256 caller-ordered finite times inside the closed keyframe domain. Exact keyframe requests copy the stored local matrices without interpolation arithmetic; repeated and out-of-order requests preserve caller order and are deterministic.
+- Interior samples interpolate every joint's **local** top-3x4 affine state first, preserve the affine bottom row exactly, then construct a complete `SkeletalPoseState`.
+- Every requested sampled pose is fully resolved through M108 before the sampled batch is returned. Hierarchy composition and `world_joint * inverse_bind` therefore remain downstream of local interpolation, and a later invalid sample prevents any partial batch from escaping.
+- Root-only timeline samples under normal-aware fixed lighting are exact-equivalent to independently interpolated-local M108 poses, including exact first/final keyframe state.
+- An arbitrary-order two-joint chain declares its child before its root, animates both parent scale and child translation, and proves the midpoint child world translation is exactly the local-interpolate-then-compose value rather than endpoint-world interpolation. The sampled result is exact-equivalent to an independently constructed M108 reference for fixed-light framebuffer output and directional shadow depth.
+- The same midpoint regression makes the semantic difference observable: local interpolation produces child world X translation 2 while endpoint-world interpolation would produce 3.
+- Validation regressions cover null rig, fewer than two or more than 256 keyframes, non-finite/non-increasing times, wrong local cardinality, projective locals, non-finite/out-of-domain samples, and more than 256 sample requests.
+- A dedicated overflow construction keeps both endpoint poses executable while a later midpoint creates an overflowing hierarchy composition only after local interpolation. Sampling `{endpoint, midpoint}` rejects the complete batch before the caller can render the earlier valid request, and the sentinel framebuffer remains bit-exact.
+- M109 is dense programmatic skeletal animation only. It adds no sparse skeletal tracks, clip blending, file/glTF animation parsing, easing/looping/extrapolation, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, parallel path, or performance claim.
 
-- one immutable M108 `SkeletalRig` plus 2..256 finite strictly increasing keyframes, each owning exactly one finite affine local transform per joint, and 0..256 caller-ordered finite sample times inside the closed keyframe domain;
-- exact keyframe sample requests copy the stored local pose without interpolation arithmetic;
-- interior samples reuse the established bounded affine top-3x4 interpolation semantics already used by M94/M100 rather than creating a skeletal-only interpolation rule;
-- interpolation occurs **per joint in local space before hierarchy composition and before `world * inverse_bind`**. Interpolating world joints or final skin matrices is explicitly outside the contract;
-- each sampled local pose resolves through M108 and then M107; camera/shadow/model execution remain unchanged;
-- root-only and arbitrary-order-chain timelines must be exact-equivalent to independently sampled-local-then-M108 references, including normal-aware fixed lighting and shadow silhouettes;
-- a child-under-animated-parent midpoint must observably differ from endpoint-world interpolation and match a local-interpolate-then-compose manual reference;
-- repeated and out-of-order sample requests must be deterministic; exact endpoints must preserve stored affine values bit-for-bit;
-- invalid keyframe counts/times/local cardinality, non-finite/projective locals, out-of-domain/non-finite sample times, capacity overflow, and a later interpolated pose whose hierarchy or final skin composition overflows must reject the complete requested batch before any earlier framebuffer mutation;
-- M109 is dense programmatic skeletal animation only. It adds no sparse tracks, clip blending, file/glTF animation parsing, easing/looping/extrapolation, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, or performance claim.
+## Promotion after Milestone 109
+
+The renderer now has a validated programmatic path from skeleton topology and inverse binds through dense joint-local animation, normal-aware LBS, camera rendering, and shadow silhouettes. Repeating M102–M105's sparse/blend variants for skeletons would add less architectural value than making the capability interoperable with a real asset ecosystem. The next frontier is **Milestone 110 bounded glTF 2.0 skinned-asset interoperability**.
+
+A Milestone 110 vertical slice should remain deliberately strict and reviewable:
+
+- support a bounded textual `.gltf` 2.0 subset with one external binary buffer; GLB containers, data URIs, network URIs, extensions, sparse accessors, morph targets, Draco/meshopt compression, multiple skins, and animation channels remain out of scope for this first import slice;
+- parse one triangle primitive with indexed `POSITION`, optional `NORMAL`, required `JOINTS_0` and `WEIGHTS_0`, plus one skin containing a bounded joint list and `inverseBindMatrices`; accepted component/accessor shapes must be explicit and fail closed on unsupported combinations;
+- buffer, bufferView, accessor offset/stride/range arithmetic must be overflow-safe and bounds-checked before any typed read; malformed JSON/object ownership, unsafe external paths, truncated buffers, invalid alignment, out-of-range indices/joints, non-finite floats, and unsupported normalized/component modes must reject deterministically;
+- glTF node parent relationships for the skin joints must be converted into the existing arbitrary-order M108 `SkeletalRig` topology without inventing a second hierarchy resolver;
+- imported inverse-bind matrices must be finite affine and flow through the exact M108 constructor; imported vertex joint/weight data must become existing `VertexSkinBinding` records and obey the established 1..4 influence, finite/non-negative weight, and joint-ownership contracts;
+- the imported mesh must become the existing `ModelAsset`/varying representation so fixed lighting, normal-aware skinning, M35 vertex programs, prepared execution, and all shadow paths remain unchanged;
+- a deterministic in-repo fixture must render byte/sample-identically to an equivalent programmatic `ModelAsset + SkeletalRig + SkeletalPoseState` reference, including one non-trivial pose and directional shadow silhouette;
+- parser/decoder regressions must cover valid external-buffer ownership plus malformed JSON/schema, unsafe path traversal, buffer/accessor overflow/truncation, invalid primitive mode, duplicate/missing required attributes, joint range errors, bad weights, invalid inverse binds, and cyclic/invalid joint topology;
+- M110 should expose no animation import yet: glTF animation samplers/channels will only be promoted after the static skinned asset + rig ownership path is proven end-to-end. It also makes no general glTF conformance claim.
