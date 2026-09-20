@@ -669,6 +669,479 @@ void test_binary_range_joint_weight_and_inverse_bind_fail_closed() {
     }
 }
 
+
+SkeletalRigPtr manual_animated_rig() {
+    return std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            1U,
+            std::nullopt,
+        },
+        std::vector<Mat4>{
+            Mat4::translation({-0.4F, 0.0F, 0.0F}),
+            Mat4::translation({-0.1F, 0.0F, 0.0F}),
+        },
+        std::vector<VertexSkinBinding>{
+            binding({SkinInfluence{1U, 1.0F}}),
+            binding({SkinInfluence{0U, 1.0F}}),
+            binding({
+                SkinInfluence{0U, 0.5F},
+                SkinInfluence{1U, 0.5F},
+            }),
+        });
+}
+
+SkeletalTrsClip manual_animated_clip(
+    const SkeletalRigPtr& rig) {
+    return SkeletalTrsClip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{
+                {0.25F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+            SkeletalTrs{
+                {0.1F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+        },
+        {
+            Mat4::translation({0.05F, 0.0F, 0.0F}),
+            Mat4::identity(),
+        },
+        {
+            {
+                0U,
+                {
+                    {0.25F, {0.25F, 0.0F, 0.0F}},
+                    {0.75F, {0.45F, 0.0F, 0.0F}},
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.0F, Quaternion{}},
+                    {1.0F, {0.0F, 0.0F, 1.0F, 0.0F}},
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.5F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.5F, 1.0F, 1.0F}},
+                },
+            },
+        });
+}
+
+void test_animated_fixture_projects_to_programmatic_m111() {
+    const std::filesystem::path path =
+        fixture_path("animated/skinned_triangle.gltf");
+    const GltfSkinnedAnimatedAsset imported =
+        load_gltf_skinned_animated_asset_file(path);
+    check(
+        imported.animation != nullptr,
+        "animated glTF produces one immutable M111 semantic clip");
+    check(
+        imported.asset.rig != nullptr,
+        "animated glTF preserves M110 immutable skeletal ownership");
+    check(
+        imported.asset.model.mesh.vertices.size() == 3U
+            && imported.asset.model.mesh.triangles.size() == 1U,
+        "animated glTF preserves canonical M110 geometry projection");
+
+    check_throws<GltfLoadError>(
+        [&] {
+            (void)load_gltf_skinned_asset_file(path);
+        },
+        "static M110 loader remains strict and rejects animation objects");
+    check_throws<GltfLoadError>(
+        [&] {
+            (void)load_gltf_skinned_animated_asset_file(
+                fixture_path("skinned_triangle.gltf"));
+        },
+        "animated loader requires exactly one animation object");
+
+    if (!imported.animation || !imported.asset.rig) {
+        return;
+    }
+
+    check(
+        imported.animation->start_time() == 0.0F
+            && imported.animation->end_time() == 1.0F,
+        "animated glTF derives clip domain from accepted channel key domains");
+    const auto prefixes = imported.animation->local_prefixes();
+    check(
+        prefixes.size() == 2U
+            && prefixes[0](0U, 3U) == 0.05F
+            && exact_matrix_equal(
+                prefixes[1],
+                Mat4::identity()),
+        "non-joint intermediary transform becomes immutable child-joint local prefix");
+    const auto defaults = imported.animation->default_pose();
+    check(
+        defaults.size() == 2U
+            && defaults[0].translation.x == 0.25F
+            && defaults[1].translation.x == 0.1F,
+        "joint semantic defaults exclude the non-joint affine prefix");
+
+    check(
+        imported.asset.rest_local_transforms.size() == 2U
+            && imported.asset.rest_local_transforms[0](0U, 3U)
+                == 0.3F
+            && imported.asset.rest_local_transforms[1](0U, 3U)
+                == 0.1F,
+        "static M110 rest locals remain prefix times joint semantic TRS");
+
+    const SkeletalRigPtr reference_rig =
+        manual_animated_rig();
+    const SkeletalTrsClip reference =
+        manual_animated_clip(reference_rig);
+    const std::array<float, 6> times{
+        1.0F,
+        0.5F,
+        0.0F,
+        0.25F,
+        0.75F,
+        0.5F,
+    };
+    const auto imported_poses =
+        imported.animation->sample(times);
+    const auto reference_poses =
+        reference.sample(times);
+    check(
+        imported_poses.size() == reference_poses.size(),
+        "file-driven animation preserves requested sample cardinality");
+    for (std::size_t sample = 0U;
+         sample < imported_poses.size()
+             && sample < reference_poses.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_poses[sample]->local_transforms();
+        const auto reference_locals =
+            reference_poses[sample]->local_transforms();
+        check(
+            imported_locals.size() == reference_locals.size(),
+            "file-driven and programmatic M111 poses preserve joint cardinality");
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "file-driven glTF channel projection is exact-equivalent to programmatic M111 semantic local state");
+        }
+    }
+
+    const ModelAsset manual = manual_model();
+    ModelRenderOptions imported_options;
+    imported_options.directional_light = test_light();
+    imported_options.skeletal_pose_state =
+        imported_poses[1];
+
+    ModelRenderOptions manual_options;
+    manual_options.directional_light = test_light();
+    manual_options.skeletal_pose_state =
+        reference_poses[1];
+
+    Framebuffer imported_fb(57U, 57U, SampleCount::Four);
+    Framebuffer manual_fb(57U, 57U, SampleCount::Four);
+    imported_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 6U);
+    manual_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 6U);
+    draw_model_asset(
+        imported_fb,
+        imported.asset.model,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        imported_options);
+    draw_model_asset(
+        manual_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        imported_fb,
+        manual_fb,
+        "file-driven animated glTF midpoint matches independent programmatic M111 fixed-light execution");
+
+    const PreparedModelSubmission imported_prepared =
+        prepare_model_asset(
+            imported.asset.model,
+            imported_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(
+            manual,
+            manual_options);
+    const std::array<PreparedModelListEntry, 1> imported_entry{{
+        {&imported_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto imported_shadow =
+        render_directional_shadow_map(
+            imported_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto manual_shadow =
+        render_directional_shadow_map(
+            manual_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < imported_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < imported_shadow->width();
+             ++x) {
+            check(
+                imported_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "file-driven animated glTF shadow matches programmatic M111 reference");
+        }
+    }
+}
+
+void test_animation_schema_and_data_fail_closed() {
+    const std::string valid =
+        read_text(
+            fixture_path(
+                "animated/skinned_triangle.gltf"));
+    const std::vector<std::uint8_t> valid_bytes =
+        read_bytes(
+            fixture_path(
+                "animated/skinned_triangle.bin"));
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "\"interpolation\": \"LINEAR\"",
+            "\"interpolation\": \"STEP\"");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_step", json, valid_bytes));
+            },
+            "STEP animation interpolation is rejected rather than degraded");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "\"interpolation\": \"LINEAR\"",
+            "\"interpolation\": \"CUBICSPLINE\"");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_cubic", json, valid_bytes));
+            },
+            "CUBICSPLINE animation interpolation is rejected rather than degraded");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"sampler\": 1, \"target\": {\"node\": 2, \"path\": \"translation\"}}",
+            "{\"sampler\": 99, \"target\": {\"node\": 2, \"path\": \"translation\"}}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_sampler_ref", json, valid_bytes));
+            },
+            "animation channel sampler reference is range checked");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"sampler\": 1, \"target\": {\"node\": 2, \"path\": \"translation\"}}",
+            "{\"sampler\": 1, \"target\": {\"node\": 3, \"path\": \"translation\"}}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_non_joint", json, valid_bytes));
+            },
+            "animation channel targeting non-joint intermediary is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "\"path\": \"translation\"",
+            "\"path\": \"weights\"");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_path", json, valid_bytes));
+            },
+            "unsupported animation target path is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"sampler\": 2, \"target\": {\"node\": 1, \"path\": \"scale\"}}",
+            "{\"sampler\": 2, \"target\": {\"node\": 2, \"path\": \"translation\"}}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_duplicate", json, valid_bytes));
+            },
+            "duplicate animation joint/property ownership is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 9, \"componentType\": 5126, \"count\": 2, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 9, \"componentType\": 5126, \"count\": 1, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_count", json, valid_bytes));
+            },
+            "animation sampler input/output count mismatch is rejected");
+    }
+
+    {
+        std::vector<std::uint8_t> bytes = valid_bytes;
+        set_f32(bytes, 312U, 0.25F);
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_times", valid, bytes));
+            },
+            "non-increasing animation input time is rejected");
+    }
+
+    {
+        std::vector<std::uint8_t> bytes = valid_bytes;
+        set_f32(bytes, 300U, 2.0F);
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_quaternion", valid, bytes));
+            },
+            "non-unit animation rotation output is rejected by M111 semantic ownership");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"translation\": [0.25, 0.0, 0.0]}",
+            "{\"matrix\": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.25, 0, 0, 1]}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case("animation_matrix_joint", json, valid_bytes));
+            },
+            "animation channel targeting matrix-backed joint is rejected");
+    }
+}
+
+void test_imported_animation_later_overflow_is_batch_fail_closed() {
+    std::string json =
+        read_text(
+            fixture_path(
+                "animated/skinned_triangle.gltf"));
+    std::vector<std::uint8_t> bytes =
+        read_bytes(
+            fixture_path(
+                "animated/skinned_triangle.bin"));
+
+    replace_once(
+        json,
+        "{\"sampler\": 1, \"target\": {\"node\": 2, \"path\": \"translation\"}}",
+        "{\"sampler\": 1, \"target\": {\"node\": 2, \"path\": \"scale\"}}");
+    // Child scale output: identity -> huge X.
+    set_f32(bytes, 316U + 0U, 1.0F);
+    set_f32(bytes, 316U + 4U, 1.0F);
+    set_f32(bytes, 316U + 8U, 1.0F);
+    set_f32(bytes, 328U + 0U, 1.0e20F);
+    set_f32(bytes, 328U + 4U, 1.0F);
+    set_f32(bytes, 328U + 8U, 1.0F);
+    // Parent scale output: identity -> huge X.
+    set_f32(bytes, 360U + 0U, 1.0e20F);
+
+    const GltfSkinnedAnimatedAsset imported =
+        load_gltf_skinned_animated_asset_file(
+            write_case(
+                "animation_later_overflow",
+                json,
+                bytes));
+
+    Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+    framebuffer.clear(
+        {0.13F, 0.23F, 0.33F},
+        0.71F,
+        21U);
+    const auto before = framebuffer.rgb8();
+    const std::array<float, 2> sample_times{
+        0.0F,
+        1.0F,
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto poses =
+                imported.animation->sample(sample_times);
+            for (const SkeletalPoseStatePtr& pose : poses) {
+                ModelRenderOptions options;
+                options.skeletal_pose_state = pose;
+                draw_model_asset(
+                    framebuffer,
+                    imported.asset.model,
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later file-driven semantic hierarchy overflow rejects complete requested batch");
+    check(
+        framebuffer.rgb8() == before,
+        "later file-driven animation failure occurs before earlier sample owns framebuffer color");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(15U, 15U, sample)
+                == 0.71F,
+            "later file-driven animation failure occurs before framebuffer depth ownership");
+        check(
+            framebuffer.sample_stencil_at(15U, 15U, sample)
+                == 21U,
+            "later file-driven animation failure occurs before framebuffer stencil ownership");
+    }
+}
+
 void test_node_hierarchy_fail_closed() {
     const std::string valid =
         read_text(fixture_path("skinned_triangle.gltf"));
@@ -726,6 +1199,9 @@ int main() {
     test_external_buffer_is_not_retained_after_import();
     test_json_schema_and_path_fail_closed();
     test_binary_range_joint_weight_and_inverse_bind_fail_closed();
+    test_animated_fixture_projects_to_programmatic_m111();
+    test_animation_schema_and_data_fail_closed();
+    test_imported_animation_later_overflow_is_batch_fail_closed();
     test_node_hierarchy_fail_closed();
 
     if (failures != 0) {
