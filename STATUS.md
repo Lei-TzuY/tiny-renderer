@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 97 bounded programmatic hierarchical timeline evaluation
+## Architecture frontier: Milestone 98 strict file-driven hierarchical timeline transaction
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -159,17 +159,29 @@ M97 composes the independently verified M94 timeline and M96 hierarchy layers wi
 - Later non-finite interpolated locals and finite interpolated locals whose parent composition overflows reject the complete transaction before any earlier requested sample executes fragments. The established bounded sample limit is enforced before sample allocation.
 - Camera-dependent ordering, conservative visibility, environment-reflection rebinding, target preflight, indexed execution, and raster ownership remain unchanged on M92. M97 adds no hierarchy/timeline file syntax, easing, looping, extrapolation, wall-clock/frame-rate semantics, topology animation, skeletal animation, constraints/IK, parallel execution, or performance claim.
 
-## Promotion after Milestone 97
+## Milestone 98 — strict file-driven hierarchical timeline transaction
 
-The next architectural promotion should make the combined hierarchy/timeline capability externally usable without duplicating interpolation or execution logic. Milestone 98 should establish a **strict file-driven hierarchical timeline transaction** that parses bounded topology/local-keyframe state and delegates semantics to M97.
+M98 makes the M97 hierarchy/timeline transaction externally usable through one strict bounded sidecar and the existing mixed-scene CLI path without duplicating interpolation, hierarchy resolution, or raster execution.
 
-A Milestone 98 slice should require:
+- `tiny-renderer-hierarchy-timeline-v1` begins with exactly one explicit `parent ENTRY root|PARENT_ENTRY` record per prepared scene entry. Parent records may appear in arbitrary order because entry ownership is explicit; duplicate/missing entry records, out-of-range references, self-parenting, cycles, and scene-count mismatches reject deterministically.
+- Topology must be complete before dynamic state begins. The parser constructs the existing immutable `OfflineSceneHierarchy`; it performs no world-transform evaluation.
+- Each `keyframe TIME <camera>` owns exactly one finite affine `local` matrix per hierarchy entry and terminates with `end`. Two through 256 strictly increasing keyframes and one through 256 caller-ordered `sample TIME` records retain the M94/M97 bounds.
+- The file layer reuses the established finite-number, camera, and affine-matrix parsing core. It performs no interpolation and no local-to-world composition; the parsed `OfflineSceneHierarchicalTimelineFile` delegates directly to M97 `prepare_offline_hierarchy_timeline_sequence`.
+- `--hierarchy-timeline-sequence FILE` is a fourth mutually exclusive sequence mode beside camera-only, exact-frame, and flat-timeline sidecars. It is accepted only by the existing mixed-transparency prepared-scene transaction and reuses the established indexed output loop.
+- File-driven hierarchical keyframes with arbitrary parent record order are exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to an independently constructed M97 programmatic topology/keyframe/sample transaction.
+- Strict regression coverage rejects duplicate/missing/out-of-range/self/cyclic topology, local-count mismatch, and projective local state. A later finite-local composition overflow rejects the complete CLI preparation before any earlier indexed output exists, preserving the no-partial-output transaction boundary.
+- M98 adds no topology interpolation, mutable topology, skeletal joints/skinning, easing/looping/extrapolation, asynchronous streaming, parallel execution, alternate raster path, or performance/animation-quality claim.
 
-- one strict versioned sidecar format containing exactly one fixed hierarchy topology aligned with the prepared scene, followed by 2..256 finite strictly increasing hierarchical keyframes and ordered sample requests;
-- topology syntax supports roots and explicit parent indices but performs no world-transform evaluation in the parser; out-of-range parents, self-parenting, cycles, duplicate/missing topology records, and topology/scene count mismatch reject deterministically before output;
-- each keyframe contains the established camera state plus exactly one complete finite affine **local** transform per hierarchy entry. Parsing performs no interpolation and no local-to-world composition;
-- parsed state delegates to M97 `prepare_offline_hierarchy_timeline_sequence`, so exact-keyframe behavior, local-space interpolation, M96 composition, M92 ordering/visibility/preflight, and indexed execution remain single-owner semantics;
-- the CLI exposes the new sidecar only through the existing prepared mixed-scene transaction and makes it mutually exclusive with camera-only, exact-frame, flat timeline, and other sequence modes;
-- the complete file transaction is parsed, sampled, hierarchy-resolved, and target-preflighted before the first indexed output is written; a malformed or invalid later keyframe/sample/composition therefore leaves zero partial output;
-- deterministic file-driven regressions cover arbitrary parent ordering, endpoint/interior/repeated/out-of-order samples, programmatic M97 equivalence across resolved/hash and every 4x sample attachment, strict syntax/path diagnostics, and later fail-closed interpolation/composition errors;
-- M98 adds no mutable topology, topology interpolation, skeletal joints/skinning, easing/looping/extrapolation, asynchronous streaming, parallel execution, new raster path, or performance/animation-quality claim.
+## Promotion after Milestone 98
+
+The hierarchy/file phase is now coherent enough that the next promotion should remove a structural limitation rather than add more sidecar syntax. Milestone 99 should establish a **bounded programmatic transform graph with non-renderable group nodes**, decoupling transform topology from the current one-node-per-prepared-entry ownership model while still delegating final world transforms to M92.
+
+A Milestone 99 slice should require:
+
+- one immutable bounded transform graph whose nodes may be renderable bindings or transform-only group/pivot nodes; every prepared scene entry maps to exactly one graph node, while additional graph nodes may exist solely to carry hierarchy;
+- arbitrary parent ordering with deterministic rejection of out-of-range parents, self-parenting, cycles, duplicate/missing render-entry bindings, and bounded node/entry ownership violations;
+- one complete finite affine local transform per graph node for each programmatic frame; world transforms resolve as `parent_world * local` for all nodes, after which mapped render-entry world transforms are extracted in prepared-scene entry order;
+- complete graph structure and complete frame-local state validate/resolve before any M92 prepared-frame transaction can execute, including fail-closed composed-world overflow in transform-only ancestors;
+- a 1:1 graph with no extra nodes is exact-equivalent to M96 hierarchy behavior, while a transform-only pivot/group regression must observably move multiple mapped render entries and match independently composed M92 world transforms;
+- camera-dependent ordering, visibility, reflection rebinding, target preflight, indexed execution, and raster ownership remain M92 responsibilities; M99 must not introduce another scene execution path;
+- M99 is programmatic first. It adds no graph file syntax, mutable/reparenting topology, skeletal deformation, constraints/IK, animation blending, parallel execution, or performance claim.
