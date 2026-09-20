@@ -510,7 +510,7 @@ private:
         (void)pose->resolve();
         return pose;
     }
-private:
+
     SkeletalRigPtr rig_{};
     float start_time_{};
     float end_time_{};
