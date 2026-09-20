@@ -38,19 +38,30 @@ struct SkeletalQuaternionKeyframe {
     Quaternion value{};
 };
 
+enum class SkeletalInterpolationMode {
+    Linear,
+    Step,
+};
+
 struct SkeletalTranslationTrack {
     std::size_t joint{};
     std::vector<SkeletalVec3Keyframe> keyframes{};
+    SkeletalInterpolationMode interpolation{
+        SkeletalInterpolationMode::Linear};
 };
 
 struct SkeletalRotationTrack {
     std::size_t joint{};
     std::vector<SkeletalQuaternionKeyframe> keyframes{};
+    SkeletalInterpolationMode interpolation{
+        SkeletalInterpolationMode::Linear};
 };
 
 struct SkeletalScaleTrack {
     std::size_t joint{};
     std::vector<SkeletalVec3Keyframe> keyframes{};
+    SkeletalInterpolationMode interpolation{
+        SkeletalInterpolationMode::Linear};
 };
 
 namespace detail {
@@ -111,10 +122,24 @@ inline void validate_skeletal_trs(
     return result;
 }
 
+inline void validate_trs_interpolation(
+    SkeletalInterpolationMode mode,
+    std::string_view label) {
+    switch (mode) {
+        case SkeletalInterpolationMode::Linear:
+        case SkeletalInterpolationMode::Step:
+            return;
+    }
+    throw std::invalid_argument(
+        std::string(label)
+        + " interpolation mode is unsupported");
+}
+
 template <typename Keyframe, typename Value, typename ValueAccessor, typename Interpolate>
 [[nodiscard]] inline Value sample_held_track(
     std::span<const Keyframe> keyframes,
     float sample_time,
+    SkeletalInterpolationMode mode,
     std::string_view label,
     ValueAccessor value_of,
     Interpolate interpolate) {
@@ -128,12 +153,31 @@ template <typename Keyframe, typename Value, typename ValueAccessor, typename In
     if (sample_time >= keyframes.back().time) {
         return value_of(keyframes.back());
     }
-    return sample_bounded_keyframe_value<Keyframe, Value>(
-        keyframes,
-        sample_time,
-        label,
-        value_of,
-        interpolate);
+
+    validate_trs_interpolation(mode, label);
+    if (mode == SkeletalInterpolationMode::Linear) {
+        return sample_bounded_keyframe_value<Keyframe, Value>(
+            keyframes,
+            sample_time,
+            label,
+            value_of,
+            interpolate);
+    }
+
+    std::size_t upper = 1U;
+    while (upper < keyframes.size()
+           && keyframes[upper].time < sample_time) {
+        ++upper;
+    }
+    if (upper >= keyframes.size()) {
+        throw std::logic_error(
+            std::string(label)
+            + " failed to bracket an in-domain STEP sample");
+    }
+    if (sample_time == keyframes[upper].time) {
+        return value_of(keyframes[upper]);
+    }
+    return value_of(keyframes[upper - 1U]);
 }
 
 template <typename Track, typename ValidateValue>
@@ -147,6 +191,9 @@ inline void validate_trs_tracks(
     std::size_t& aggregate_keys) {
     std::vector<bool> seen(joint_count, false);
     for (const Track& track : tracks) {
+        validate_trs_interpolation(
+            track.interpolation,
+            label);
         if (track.joint >= joint_count) {
             throw std::out_of_range(
                 std::string(label) + " joint index exceeds rig joint count");
@@ -423,6 +470,7 @@ private:
                     Vec3>(
                     track.keyframes,
                     sample_time,
+                    track.interpolation,
                     "skeletal translation track",
                     [](const SkeletalVec3Keyframe& keyframe) {
                         return keyframe.value;
@@ -445,6 +493,7 @@ private:
                     Quaternion>(
                     track.keyframes,
                     sample_time,
+                    track.interpolation,
                     "skeletal rotation track",
                     [](const SkeletalQuaternionKeyframe& keyframe) {
                         return keyframe.value;
@@ -463,6 +512,7 @@ private:
                     Vec3>(
                     track.keyframes,
                     sample_time,
+                    track.interpolation,
                     "skeletal scale track",
                     [](const SkeletalVec3Keyframe& keyframe) {
                         return keyframe.value;

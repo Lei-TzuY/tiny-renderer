@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 114 bounded glTF animation collection
+## Architecture frontier: Milestone 115 semantic STEP skeletal animation
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -453,19 +453,43 @@ M114 closes the real-file ownership gap above M112/M113 by importing an ordered 
 - Negative regressions cover more than 16 animations, one valid animation followed by a bad later sampler accessor, invalid later non-joint channel ownership, and use of the exactly-one compatibility wrapper on a multi-animation asset.
 - M114 adds no automatic selection policy, animation controller/state machine, blend masks/layers, additive animation, N-way graph, STEP/CUBICSPLINE execution, morph-weight channels, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, or performance claim.
 
-## Promotion after Milestone 114
+## Milestone 115 — semantic STEP interpolation and strict glTF STEP interoperability
 
-Multiple real-file clips can now reach M113, but the semantic runtime and importer still deliberately reject glTF `STEP`. The next useful spec/runtime gap is therefore interpolation mode ownership, not another collection or controller shell. Milestone 115 should add **bounded semantic STEP interpolation and strict glTF STEP interoperability** without weakening the existing LINEAR path.
+M115 adds interpolation-mode ownership to the M111 semantic TRS runtime and projects glTF STEP samplers onto that same evaluator rather than creating a file-only animation path.
 
-A Milestone 115 slice should require:
+- `SkeletalInterpolationMode` is explicit track state with `Linear` and `Step`. The field is appended to translation, rotation, and scale track aggregates and defaults to `Linear`, preserving existing `{ joint, keyframes }` callers and all M111/M112/M113 LINEAR behavior.
+- Track construction validates the interpolation enum before sampling. Unknown values fail closed rather than reaching an ambiguous runtime branch.
+- Existing sparse-track endpoint hold semantics are unchanged: requests before the first property key use the first value and requests after the last key use the last value, independent of interpolation mode.
+- Exact key requests always copy the stored semantic value without interpolation arithmetic.
+- LINEAR retains the established component-wise translation/scale lerp and shortest-path quaternion slerp exactly.
+- STEP changes only the open interval between adjacent keys: the previous key's semantic value is returned until the next exact key instant, at which point the next key becomes authoritative. Rotation STEP never invokes slerp.
+- Complete requested batches retain M111 transactional semantics: every semantic pose is composed as immutable prefix × T × R × S and fully resolved through M108 before any pose vector is returned.
+- Programmatic regressions cover STEP translation, scale, and rotation; immediately-before/exact-key boundaries; repeated/out-of-order requests; narrower property domains; unsupported enum rejection; child-before-parent topology; normal-aware 4x fixed-light framebuffer equivalence; and directional-shadow equivalence against an independently constructed M108 pose.
+- A dedicated programmatic regression requests a safe held STEP sample followed by an exact key whose parent/child scales overflow during M108 composition. The complete request rejects before the earlier pose can own sentinel RGB/depth/stencil.
+- glTF animation sampler parsing now accepts omitted/explicit `LINEAR` and explicit `STEP`, carries that mode directly into each semantic property track, and continues to reject unknown modes and `CUBICSPLINE` instead of approximating them.
+- Duplicate joint/property channel ownership remains invalid even when the colliding samplers declare different interpolation modes.
+- The mixed STEP fixture reuses the existing checked 372-byte external buffer. `MixedPose` combines LINEAR child translation with STEP parent rotation and scale, while `ChildStep` owns a STEP child-translation clip. Both retain M114 ordered collection metadata and independent domains.
+- File-driven STEP samples are exact-equivalent joint-for-joint to separately constructed programmatic M115 clips across endpoint/interior/immediately-before-key/exact-key/repeated requests.
+- Those imported clips feed M113 directly with independent source times and interior blend weights; blended locals, 4x normal-aware fixed-light RGB/depth/stencil, and directional-shadow depth are exact-equivalent to programmatic M115 references.
+- File-driven later-overflow coverage mutates child and parent scale channels to STEP: a safe held sample precedes an exact huge-scale key, and the full sample batch rejects during M108 hierarchy composition before earlier framebuffer ownership.
+- M115 also closes a pre-existing M112 glTF input-contract gap found during the phase audit: animation sampler input accessors now require scalar `min`/`max`, the first/last decoded key must match those bounds exactly, times must be non-negative, and keys remain strictly increasing. All checked-in animated fixtures now carry valid bounds; regressions reject missing/mismatched bounds and negative time.
+- M115 remains semantic LINEAR+STEP skeletal animation only. CUBICSPLINE tangents, morph weights, controller/state-machine policy, masks/layers, additive/N-way composition, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
 
-- introduce an explicit interpolation mode on M111 translation, rotation, and scale tracks, with the existing constructors/callers defaulting to LINEAR for source compatibility;
-- LINEAR must retain current component lerp / shortest-path quaternion slerp behavior exactly; STEP must return the previous key's semantic value for interior times and preserve exact-key values without interpolation arithmetic;
-- endpoint-hold semantics outside each sparse track's key domain remain unchanged and independent from interpolation mode;
-- track validation must reject unsupported/invalid interpolation modes before sampling, and complete requested batches must remain transactional through M108;
-- glTF sampler parsing should accept omitted/explicit LINEAR and explicit STEP, project each sampler's mode onto its resulting semantic track, and continue rejecting CUBICSPLINE rather than approximating it;
-- duplicate joint/property ownership remains invalid even when two channels use different interpolation modes;
-- regressions should cover translation, scale, and quaternion STEP behavior, exact key boundaries, repeated/out-of-order requests, a value immediately before/at a key, arbitrary-order parent topology, normal-aware fixed lighting, and shadow silhouettes against independent semantic references;
-- a mixed LINEAR+STEP glTF fixture should import exact-equivalently to a programmatic M111 clip, including one animation from an M114 collection feeding M113 blending;
-- malformed sampler mode, CUBICSPLINE, later STEP sample hierarchy overflow, and collection-level later animation failures must continue to reject before partial output escapes;
-- M115 remains LINEAR+STEP semantic interpolation only. CUBICSPLINE tangents, morph weights, automatic animation controllers/state machines, masks/layers, additive/N-way composition, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
+## Promotion after Milestone 115
+
+LINEAR and STEP now cover two of glTF's three core sampler modes. The next highest-value spec/runtime gap is true **bounded semantic CUBICSPLINE interpolation and strict glTF CUBICSPLINE interoperability**, not another controller shell. Milestone 116 should implement cubic Hermite semantics as first-class track data and preserve M108/M113 transactional ownership.
+
+A Milestone 116 slice should require:
+
+- extend semantic translation, rotation, and scale tracks with explicit cubic key data containing one in-tangent, property value, and out-tangent per timestamp; do not overload ordinary LINEAR/STEP keyframes with ambiguous tangent storage;
+- retain existing LINEAR/STEP source compatibility and sampling behavior exactly;
+- require at least two keys for a CUBICSPLINE track, finite strictly increasing times, finite vector/quaternion values and tangents, bounded key ownership, and one interpolation representation per joint/property;
+- for an interior segment, evaluate the glTF cubic Hermite equation using the normalized segment parameter and multiply outgoing/incoming tangent terms by the segment duration; exact key timestamps must still return the stored value directly without spline arithmetic;
+- translation and scale operate component-wise. Rotation treats spline values/tangents as four-component data and **normalizes the interpolated quaternion result before composing T×R×S**; an all-zero or non-finite interpolated quaternion must fail closed;
+- complete sampled semantic batches must still compose local prefixes and resolve every pose through M108 before any result escapes; local/world/skin matrices are never interpolated directly;
+- glTF CUBICSPLINE sampler output accessors must contain exactly three output elements per input timestamp in `in-tangent, value, out-tangent` order, while LINEAR/STEP continue to require one output element per input;
+- strict file import must validate sampler/accessor cardinality, finite tangents, semantic target type, quaternion value ownership, duplicate target ownership, and all existing checked-buffer/accessor bounds before constructing a clip;
+- programmatic regressions should use analytic vector Hermite cases plus a rotation case whose normalized cubic result is observably different from both LINEAR slerp and STEP; include arbitrary-order parent topology, fixed-light normal skinning, and shadow silhouettes against independent references;
+- a file-driven mixed collection should combine CUBICSPLINE with existing LINEAR/STEP clips and feed M113 without any interpolation-mode-specific blend path;
+- malformed 3× output cardinality, non-finite tangents, zero interpolated quaternion, and a later cubic sample whose hierarchy composition overflows must reject complete batches before partial rendering;
+- M116 remains semantic TRS CUBICSPLINE interoperability only. Morph-weight animation, controllers/state machines, masks/layers, additive/N-way graphs, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
