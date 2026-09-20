@@ -1504,16 +1504,18 @@ void test_skeletal_timeline_matches_manual_m108_execution() {
 }
 
 void test_skeletal_timeline_interpolates_local_before_world() {
-    const ModelAsset source = model_from_mesh(base_mesh());
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    // Joint 0 is the child while joint 1 is its root, deliberately declaring
+    // the parent after the child to lock arbitrary-order hierarchy semantics.
     const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
         binding({SkinInfluence{0U, 1.0F}}),
-        binding({SkinInfluence{1U, 1.0F}}),
-        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
     };
     const auto rig = std::make_shared<const SkeletalRig>(
         std::vector<std::optional<std::size_t>>{
+            1U,
             std::nullopt,
-            0U,
         },
         std::vector<Mat4>{
             Mat4::identity(),
@@ -1521,25 +1523,25 @@ void test_skeletal_timeline_interpolates_local_before_world() {
         },
         bindings);
 
-    const Mat4 parent_left =
-        Mat4::scale({1.0F, 1.0F, 1.0F});
     const Mat4 child_left =
         Mat4::translation({0.0F, 0.0F, 0.0F});
-    const Mat4 parent_right =
-        Mat4::scale({3.0F, 1.0F, 1.0F});
+    const Mat4 parent_left =
+        Mat4::scale({1.0F, 1.0F, 1.0F});
     const Mat4 child_right =
         Mat4::translation({2.0F, 0.0F, 0.0F});
+    const Mat4 parent_right =
+        Mat4::scale({3.0F, 1.0F, 1.0F});
 
     const SkeletalPoseTimeline timeline(
         rig,
         std::vector<SkeletalPoseTimelineKeyframe>{
             {
                 0.0F,
-                {parent_left, child_left},
+                {child_left, parent_left},
             },
             {
                 1.0F,
-                {parent_right, child_right},
+                {child_right, parent_right},
             },
         });
     const std::array<float, 1> midpoint_time{0.5F};
@@ -1550,36 +1552,41 @@ void test_skeletal_timeline_interpolates_local_before_world() {
 
     check(
         skin_matrices.size() == 2U,
-        "skeletal timeline midpoint resolves complete joint palette");
+        "skeletal timeline midpoint resolves complete arbitrary-order joint palette");
     if (skin_matrices.size() == 2U) {
         check(
-            skin_matrices[1](0U, 3U) == 2.0F,
-            "skeletal timeline interpolates parent and child locals before hierarchy composition");
+            skin_matrices[0](0U, 3U) == 2.0F,
+            "skeletal timeline interpolates child and later-declared parent locals before hierarchy composition");
         check(
-            skin_matrices[1](0U, 3U) != 3.0F,
+            skin_matrices[0](0U, 3U) != 3.0F,
             "skeletal timeline does not interpolate endpoint child world transforms");
     }
 
-    const Mat4 manual_parent =
-        manual_affine_lerp(
-            parent_left,
-            parent_right,
-            0.5F);
     const Mat4 manual_child =
         manual_affine_lerp(
             child_left,
             child_right,
             0.5F);
+    const Mat4 manual_parent =
+        manual_affine_lerp(
+            parent_left,
+            parent_right,
+            0.5F);
+
     ModelRenderOptions timeline_options;
+    timeline_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
     timeline_options.skeletal_pose_state =
         sampled.front();
-    ModelRenderOptions manual_options;
+    ModelRenderOptions manual_options =
+        timeline_options;
     manual_options.skeletal_pose_state =
         std::make_shared<const SkeletalPoseState>(
             rig,
             std::vector<Mat4>{
-                manual_parent,
                 manual_child,
+                manual_parent,
             });
 
     Framebuffer timeline_fb(49U, 49U, SampleCount::Four);
@@ -1590,16 +1597,57 @@ void test_skeletal_timeline_interpolates_local_before_world() {
         timeline_fb,
         source,
         Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
         timeline_options);
     draw_model_asset(
         manual_fb,
         source,
         Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
         manual_options);
     check_same_framebuffer(
         timeline_fb,
         manual_fb,
-        "skeletal timeline local-before-world midpoint matches independent M108 reference");
+        "arbitrary-order skeletal timeline local-before-world midpoint matches independent normal-aware M108 reference");
+
+    const PreparedModelSubmission timeline_prepared =
+        prepare_model_asset(source, timeline_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_options);
+    const std::array<PreparedModelListEntry, 1> timeline_entry{{
+        {&timeline_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto timeline_shadow = render_directional_shadow_map(
+        timeline_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    const auto manual_shadow = render_directional_shadow_map(
+        manual_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    for (std::size_t y = 0U; y < timeline_shadow->height(); ++y) {
+        for (std::size_t x = 0U; x < timeline_shadow->width(); ++x) {
+            check(
+                timeline_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "arbitrary-order skeletal timeline shadow matches independent local-before-world M108 reference");
+        }
+    }
 }
 
 void test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed() {
