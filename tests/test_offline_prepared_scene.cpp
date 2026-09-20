@@ -924,6 +924,303 @@ void test_bounded_timeline_validation_contract() {
         "later invalid interpolated state rejects before any earlier timeline sample fragment execution");
 }
 
+void test_programmatic_hierarchy_matches_explicit_world_frames() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset blue = triangle_asset(
+        {0.10F, 0.25F, 0.85F},
+        {0.0F, 0.0F, 0.0F});
+
+    const std::array<OfflineSceneEntry, 3> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    const OfflineSceneHierarchy roots({
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+    });
+    const std::vector<Mat4> root_world_a{
+        Mat4::translation({-0.45F, 0.0F, -0.1F}),
+        Mat4::translation({0.20F, 0.0F, -0.35F}),
+        Mat4::translation({0.45F, 0.0F, -0.7F}),
+    };
+    const std::vector<Mat4> root_world_b{
+        Mat4::translation({0.45F, 0.0F, -0.1F}),
+        Mat4::translation({-0.20F, 0.0F, -0.7F}),
+        Mat4::translation({-0.45F, 0.0F, -0.35F}),
+    };
+    const std::array<OfflineSceneHierarchicalFrameState, 2> root_frames{{
+        OfflineSceneHierarchicalFrameState{camera, root_world_a},
+        OfflineSceneHierarchicalFrameState{camera, root_world_b},
+    }};
+    const std::array<OfflineSceneFrameState, 2> explicit_root_frames{{
+        OfflineSceneFrameState{camera, root_world_a},
+        OfflineSceneFrameState{camera, root_world_b},
+    }};
+
+    const PreparedOfflineCameraSequence hierarchical_roots =
+        prepare_offline_hierarchy_sequence(
+            reusable,
+            roots,
+            root_frames);
+    const PreparedOfflineCameraSequence explicit_roots =
+        prepare_offline_frame_sequence(
+            reusable,
+            explicit_root_frames);
+    check(
+        hierarchical_roots.frame_count() == explicit_roots.frame_count(),
+        "root-only hierarchy preserves the explicit M92 frame count");
+    for (std::size_t index = 0U;
+         index < hierarchical_roots.frame_count()
+             && index < explicit_roots.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(hierarchical_roots, index),
+                render_prepared_camera_sequence_frame(explicit_roots, index)),
+            "root-only hierarchy is exact resolved/hash and 4x per-sample equivalent to explicit M92 world transforms");
+    }
+
+    // Parent indices deliberately point forward in entry order:
+    // entry 2 is the root, entry 0 is its child, entry 1 is the grandchild.
+    const OfflineSceneHierarchy hierarchy({
+        std::optional<std::size_t>{2U},
+        std::optional<std::size_t>{0U},
+        std::nullopt,
+    });
+    const std::vector<Mat4> local_a{
+        Mat4::translation({0.25F, 0.0F, -0.15F}),
+        Mat4::translation({0.20F, 0.0F, -0.15F}),
+        Mat4::translation({-0.55F, 0.0F, -0.10F}),
+    };
+    const std::vector<Mat4> local_b{
+        Mat4::translation({0.25F, 0.0F, -0.15F}),
+        Mat4::translation({0.20F, 0.0F, -0.15F}),
+        Mat4::translation({0.35F, 0.0F, -0.45F}),
+    };
+    const std::vector<Mat4> world_a{
+        local_a[2] * local_a[0],
+        local_a[2] * local_a[0] * local_a[1],
+        local_a[2],
+    };
+    const std::vector<Mat4> world_b{
+        local_b[2] * local_b[0],
+        local_b[2] * local_b[0] * local_b[1],
+        local_b[2],
+    };
+    const std::array<OfflineSceneHierarchicalFrameState, 2> local_frames{{
+        OfflineSceneHierarchicalFrameState{camera, local_a},
+        OfflineSceneHierarchicalFrameState{camera, local_b},
+    }};
+    const std::array<OfflineSceneFrameState, 2> manual_world_frames{{
+        OfflineSceneFrameState{camera, world_a},
+        OfflineSceneFrameState{camera, world_b},
+    }};
+
+    const PreparedOfflineCameraSequence hierarchical =
+        prepare_offline_hierarchy_sequence(
+            reusable,
+            hierarchy,
+            local_frames);
+    const PreparedOfflineCameraSequence manual =
+        prepare_offline_frame_sequence(
+            reusable,
+            manual_world_frames);
+    for (std::size_t index = 0U;
+         index < hierarchical.frame_count() && index < manual.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(hierarchical, index),
+                render_prepared_camera_sequence_frame(manual, index)),
+            "arbitrary-order hierarchy resolves parent_world * local exactly before M92 preparation");
+    }
+    if (hierarchical.frame_count() == 2U) {
+        check(
+            !exact_frame_equal(
+                render_prepared_camera_sequence_frame(hierarchical, 0U),
+                render_prepared_camera_sequence_frame(hierarchical, 1U)),
+            "moving a later-index root observably moves its earlier-index child chain");
+    }
+}
+
+void test_programmatic_hierarchy_validation_contract() {
+    check_throws<std::out_of_range>(
+        [] {
+            (void)OfflineSceneHierarchy({
+                std::optional<std::size_t>{1U},
+            });
+        },
+        "hierarchy rejects out-of-range parent references");
+    check_throws<std::invalid_argument>(
+        [] {
+            (void)OfflineSceneHierarchy({
+                std::optional<std::size_t>{0U},
+            });
+        },
+        "hierarchy rejects self-parenting");
+    check_throws<std::invalid_argument>(
+        [] {
+            (void)OfflineSceneHierarchy({
+                std::optional<std::size_t>{1U},
+                std::optional<std::size_t>{0U},
+            });
+        },
+        "hierarchy rejects parent cycles independent of entry order");
+
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    const OfflineSceneHierarchy wrong_size({
+        std::nullopt,
+    });
+    const std::array<OfflineSceneHierarchicalFrameState, 1> wrong_size_frame{{
+        OfflineSceneHierarchicalFrameState{
+            camera,
+            {Mat4::identity()}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_sequence(
+                reusable,
+                wrong_size,
+                wrong_size_frame);
+        },
+        "hierarchy entry ownership must match the prepared scene before frame resolution");
+
+    const OfflineSceneHierarchy hierarchy({
+        std::nullopt,
+        std::optional<std::size_t>{0U},
+    });
+    const std::array<OfflineSceneHierarchicalFrameState, 1> missing_local{{
+        OfflineSceneHierarchicalFrameState{
+            camera,
+            {Mat4::identity()}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_sequence(
+                reusable,
+                hierarchy,
+                missing_local);
+        },
+        "hierarchical frame local-transform count must match hierarchy entry count");
+
+    const std::array<OfflineSceneHierarchicalFrameState, 2> later_projective{{
+        OfflineSceneHierarchicalFrameState{
+            camera,
+            {Mat4::identity(), Mat4::identity()}},
+        OfflineSceneHierarchicalFrameState{
+            camera,
+            {
+                Mat4::identity(),
+                Mat4::perspective(
+                    radians(55.0F),
+                    1.0F,
+                    0.1F,
+                    20.0F),
+            }},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_sequence(
+                reusable,
+                hierarchy,
+                later_projective);
+        },
+        "later projective local transform rejects the complete hierarchy transaction");
+    check(
+        shade_calls == 0U,
+        "later invalid hierarchical frame rejects before any earlier fragment execution");
+
+    Mat4 huge_parent = Mat4::identity();
+    Mat4 huge_child = Mat4::identity();
+    huge_parent(0U, 0U) = std::numeric_limits<float>::max();
+    huge_child(0U, 0U) = 2.0F;
+    const std::array<OfflineSceneHierarchicalFrameState, 1> overflow_composition{{
+        OfflineSceneHierarchicalFrameState{
+            camera,
+            {huge_parent, huge_child}},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_sequence(
+                reusable,
+                hierarchy,
+                overflow_composition);
+        },
+        "finite affine locals whose composition overflows are rejected after world-transform composition");
+    check(
+        shade_calls == 0U,
+        "composed-world overflow remains fail-closed before fragment execution");
+
+    std::vector<OfflineSceneHierarchicalFrameState> too_many_frames(
+        detail::kMaxOfflineSequenceCameras + 1U,
+        OfflineSceneHierarchicalFrameState{
+            camera,
+            {Mat4::identity(), Mat4::identity()}});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_sequence(
+                reusable,
+                hierarchy,
+                too_many_frames);
+        },
+        "hierarchy sequence enforces the established bounded frame count before world-frame allocation");
+}
+
 void test_prepared_frame_sequence_rejects_invalid_transform_records() {
     OfflineRenderSettings settings;
     settings.width = 37U;
@@ -1033,6 +1330,8 @@ int main() {
     test_prepared_frame_sequence_matches_manual_per_frame_scenes();
     test_bounded_timeline_sampling_matches_manual_frame_sequence();
     test_bounded_timeline_validation_contract();
+    test_programmatic_hierarchy_matches_explicit_world_frames();
+    test_programmatic_hierarchy_validation_contract();
     test_prepared_frame_sequence_rejects_invalid_transform_records();
     test_reusable_scene_validation_contract();
 
