@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 99 bounded programmatic transform graph
+## Architecture frontier: Milestone 100 bounded programmatic transform-graph timeline
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -186,16 +186,32 @@ M99 removes the one-hierarchy-node-per-render-entry restriction without creating
 - Regression coverage locks render-binding cardinality, local-transform cardinality, bounded node/frame ownership, hidden transform-only projective rejection, and later finite transform-only ancestor composition overflow before any prepared sequence can execute.
 - Camera-dependent ordering, conservative visibility, reflection rebinding, target preflight, indexed execution, and raster ownership remain unchanged on M92. M99 adds no graph file syntax, mutable/reparenting topology, skeletal deformation, constraints/IK, animation blending, parallel execution, or performance claim.
 
-## Promotion after Milestone 99
+## Milestone 100 — bounded programmatic transform-graph timeline
 
-The next highest-value cross-layer gap is time-domain execution over the decoupled graph rather than another static graph/file variant. Milestone 100 should establish a **bounded programmatic transform-graph timeline** that samples graph-local state first, resolves the complete graph second, and still delegates final render-entry worlds to M92.
+M100 adds time-domain evaluation over M99's decoupled transform graph while keeping one interpolation semantic core and the established M92 execution transaction.
 
-A Milestone 100 slice should require:
+- `OfflineSceneTransformGraphTimelineKeyframe` binds one finite scalar time to one validated camera plus exactly one graph-local affine transform per immutable graph node.
+- Graph timelines require 2..256 finite strictly increasing keyframes and accept 0..256 caller-ordered finite sample requests. Every keyframe is fully validated even when the requested sample span is empty.
+- M94 flat timelines, M97 hierarchical timelines, and M100 graph timelines now share one exact-keyframe/bracketing/interpolation-parameter core. The three public adapters own only their respective transform-vector interpolation, preventing a third independent timeline semantic path.
+- Exact keyframe requests copy stored state without interpolation arithmetic. Interior graph samples reuse the established M94 camera interpolation and affine top-3x4 interpolation with exact affine bottom-row preservation.
+- All graph-node locals are interpolated independently **before** topology composition. Every sampled graph frame is then delegated to M99, which resolves and validates every transform-only/render-bound node before extracting prepared-entry worlds and entering M92.
+- A 1:1 graph timeline is exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to the corresponding M97 hierarchical timeline for endpoint, interior, repeated, and out-of-order requests.
+- A transform-only animated pivot regression proves local-interpolate-then-compose semantics: its midpoint differs from endpoint-world interpolation and is exact-equivalent to an independently composed M92 world frame.
+- Validation regressions cover underspecified/non-increasing keyframes, graph-local cardinality mismatch, prepared-scene render-binding mismatch, projective keyframes, out-of-domain/oversized sample spans, and valid empty requests.
+- A pair of individually valid endpoint graph frames whose interpolated transform-only parent/child scales overflow only after midpoint composition rejects the complete timeline before any earlier requested sample can execute fragments.
+- M100 adds no file grammar, easing/looping/extrapolation, topology animation/reparenting, skeletal deformation, constraints/IK, blending layers, parallel execution, alternate raster path, or performance claim.
 
-- 2..256 finite strictly increasing keyframes whose camera plus local-transform records cover every graph node, with 0..256 caller-ordered finite sample requests;
-- exact keyframe requests preserve stored graph-local state without interpolation arithmetic, while interior samples reuse the established M94 camera and affine top-3x4 interpolation semantics;
-- interpolation occurs independently in graph-local space for all nodes before any parent composition. World-transform interpolation shortcuts are forbidden;
-- every sampled graph frame fully resolves and validates all transform-only and render-bound nodes before render-entry extraction or M92 preparation;
-- a 1:1 graph timeline is exact-equivalent to the existing M97 hierarchical timeline, while a transform-only animated pivot regression must differ observably from endpoint-world interpolation and match an independently constructed local-interpolate-then-compose M92 reference;
-- repeated and out-of-order sample requests remain deterministic, complete-batch bounds stay explicit, and a later invalid interpolated local/composed world leaves the entire preparation unexecutable;
-- M100 remains programmatic. It adds no file grammar, easing/looping/extrapolation, topology animation/reparenting, skeletal deformation, constraints/IK, blending layers, parallel execution, or performance claim.
+## Promotion after Milestone 100
+
+The graph/time semantics are now programmatically complete. The next highest-value integration gap is exposing the decoupled graph timeline through one strict external transaction rather than introducing new interpolation or execution semantics. Milestone 101 should establish a **strict file-driven transform-graph timeline transaction** that parses topology, render bindings, graph-local keyframes, and sample requests, then delegates directly to M100.
+
+A Milestone 101 slice should require:
+
+- one versioned bounded sidecar with explicit `node NODE root|PARENT_NODE` topology ownership and explicit `bind ENTRY NODE` render-entry mapping; arbitrary record order is allowed but topology/bindings must be complete before keyframes;
+- deterministic rejection of duplicate/missing/out-of-range nodes or bindings, self-parenting, cycles, duplicate graph-node render bindings, graph-node count above 512, and render-entry count above the existing 256 scene bound;
+- each keyframe owns one explicit `local NODE <affine>` record per graph node so local records may be order-independent while duplicate/missing node state remains diagnosable;
+- parsing validates syntax, finite camera/local affine state, keyframe ordering, complete topology/binding/local ownership, and bounded sample-domain membership, but performs **no interpolation or graph composition**;
+- the parsed transaction delegates only to M100 `prepare_offline_transform_graph_timeline_sequence`; M100/M99/M92 remain the sole owners of interpolation, graph resolution, ordering/visibility/preflight, and raster execution;
+- one new mutually exclusive CLI sequence mode uses the existing prepared mixed-scene/indexed-output transaction. File-driven results must be exact-equivalent to independently constructed programmatic M100 state;
+- a later graph-local/interior composition failure must leave zero indexed outputs, preserving complete transaction fail-closed semantics;
+- M101 adds no mutable topology, topology animation, skeletal deformation, constraints/IK, easing/looping/extrapolation, asynchronous/parallel execution, alternate renderer path, or performance/conformance claim.

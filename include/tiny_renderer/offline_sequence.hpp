@@ -407,6 +407,14 @@ struct OfflineSceneHierarchicalTimelineKeyframe {
     OfflineSceneHierarchicalFrameState frame{};
 };
 
+// One M100 keyframe over the decoupled transform graph. Topology and render
+// bindings remain immutable in OfflineSceneTransformGraph; only camera and one
+// complete local affine record per graph node vary over time.
+struct OfflineSceneTransformGraphTimelineKeyframe {
+    float time{};
+    OfflineSceneTransformGraphFrameState frame{};
+};
+
 // Strict file-facing M98 state. The sidecar owns one fixed validated hierarchy
 // plus hierarchy-local keyframes and caller-ordered sample requests. Parsing
 // does not interpolate local transforms or resolve world transforms.
@@ -606,6 +614,46 @@ validate_offline_hierarchical_timeline_keyframes(
     return local_count;
 }
 
+[[nodiscard]] inline std::size_t
+validate_offline_transform_graph_timeline_keyframes(
+    const OfflineSceneTransformGraph& graph,
+    std::span<const OfflineSceneTransformGraphTimelineKeyframe> keyframes) {
+    if (keyframes.size() < 2U) {
+        throw std::invalid_argument(
+            "offline transform graph timeline requires at least two keyframes");
+    }
+    if (keyframes.size() > kMaxOfflineTimelineKeyframes) {
+        throw std::invalid_argument(
+            "offline transform graph timeline keyframe count exceeds bounded limit");
+    }
+
+    const std::size_t local_count = graph.parents().size();
+    for (std::size_t index = 0U; index < keyframes.size(); ++index) {
+        const OfflineSceneTransformGraphTimelineKeyframe& keyframe =
+            keyframes[index];
+        if (!std::isfinite(keyframe.time)) {
+            throw std::invalid_argument(
+                "offline transform graph timeline keyframe time must be finite");
+        }
+        if (index > 0U
+            && !(keyframe.time > keyframes[index - 1U].time)) {
+            throw std::invalid_argument(
+                "offline transform graph timeline keyframe times must be strictly increasing");
+        }
+        validate_offline_scene_camera(keyframe.frame.camera);
+        if (keyframe.frame.local_transforms.size() != local_count) {
+            throw std::invalid_argument(
+                "offline transform graph timeline keyframe local transform count must match graph node count");
+        }
+        for (const Mat4& local : keyframe.frame.local_transforms) {
+            validate_spatial_affine_matrix(
+                local,
+                "offline transform graph timeline keyframe local transform");
+        }
+    }
+    return local_count;
+}
+
 [[nodiscard]] inline OfflineSceneCamera interpolate_offline_timeline_camera(
     const OfflineSceneCamera& a,
     const OfflineSceneCamera& b,
@@ -645,6 +693,66 @@ validate_offline_hierarchical_timeline_keyframes(
         result,
         "offline timeline interpolated model transform");
     return result;
+}
+
+template <typename Keyframe, typename Frame, typename InterpolateFrame>
+[[nodiscard]] inline std::vector<Frame> sample_offline_timeline_states(
+    std::span<const Keyframe> keyframes,
+    std::span<const float> sample_times,
+    std::string_view timeline_label,
+    InterpolateFrame interpolate_frame) {
+    if (sample_times.size() > kMaxOfflineTimelineSamples) {
+        throw std::invalid_argument(
+            std::string(timeline_label) + " sample count exceeds bounded limit");
+    }
+
+    std::vector<Frame> frames;
+    frames.reserve(sample_times.size());
+    for (const float sample_time : sample_times) {
+        if (!std::isfinite(sample_time)) {
+            throw std::invalid_argument(
+                std::string(timeline_label) + " sample time must be finite");
+        }
+        if (sample_time < keyframes.front().time
+            || sample_time > keyframes.back().time) {
+            throw std::out_of_range(
+                std::string(timeline_label)
+                + " sample time is outside the keyframe domain");
+        }
+
+        if (sample_time == keyframes.front().time) {
+            frames.push_back(keyframes.front().frame);
+            continue;
+        }
+
+        std::size_t upper = 1U;
+        while (upper < keyframes.size()
+               && keyframes[upper].time < sample_time) {
+            ++upper;
+        }
+        if (upper < keyframes.size()
+            && sample_time == keyframes[upper].time) {
+            frames.push_back(keyframes[upper].frame);
+            continue;
+        }
+        if (upper >= keyframes.size()) {
+            throw std::logic_error(
+                std::string(timeline_label)
+                + " failed to bracket an in-domain sample");
+        }
+
+        const Keyframe& left = keyframes[upper - 1U];
+        const Keyframe& right = keyframes[upper];
+        const float denominator = right.time - left.time;
+        const float t = (sample_time - left.time) / denominator;
+        if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
+            throw std::logic_error(
+                std::string(timeline_label)
+                + " produced an invalid interpolation parameter");
+        }
+        frames.push_back(interpolate_frame(left.frame, right.frame, t));
+    }
+    return frames;
 }
 
 [[noreturn]] inline void offline_frame_sequence_error(
@@ -871,87 +979,44 @@ inline void reject_offline_frame_sequence_extra_tokens(
 }  // namespace detail
 
 // Samples a bounded programmatic timeline in exact caller request order.
-// Keyframe endpoints are copied without arithmetic so exact keyframe samples
-// preserve stored camera/matrix state bit-for-bit. Interior camera components
-// and the affine top 3x4 are linearly interpolated; every resulting state is
-// revalidated before it can enter prepared-scene evaluation.
+// Exact-keyframe passthrough and sample bracketing are owned by one shared
+// timeline core; this adapter owns only flat frame interpolation.
 [[nodiscard]] inline std::vector<OfflineSceneFrameState>
 sample_offline_frame_timeline(
     std::span<const OfflineSceneTimelineKeyframe> keyframes,
     std::span<const float> sample_times) {
     const std::size_t model_count =
         detail::validate_offline_timeline_keyframes(keyframes);
-    if (sample_times.size() > detail::kMaxOfflineTimelineSamples) {
-        throw std::invalid_argument(
-            "offline timeline sample count exceeds bounded limit");
-    }
-
-    std::vector<OfflineSceneFrameState> frames;
-    frames.reserve(sample_times.size());
-    for (const float sample_time : sample_times) {
-        if (!std::isfinite(sample_time)) {
-            throw std::invalid_argument(
-                "offline timeline sample time must be finite");
-        }
-        if (sample_time < keyframes.front().time
-            || sample_time > keyframes.back().time) {
-            throw std::out_of_range(
-                "offline timeline sample time is outside the keyframe domain");
-        }
-
-        if (sample_time == keyframes.front().time) {
-            frames.push_back(keyframes.front().frame);
-            continue;
-        }
-
-        std::size_t upper = 1U;
-        while (upper < keyframes.size()
-               && keyframes[upper].time < sample_time) {
-            ++upper;
-        }
-        if (upper < keyframes.size()
-            && sample_time == keyframes[upper].time) {
-            frames.push_back(keyframes[upper].frame);
-            continue;
-        }
-        if (upper >= keyframes.size()) {
-            throw std::logic_error(
-                "offline timeline failed to bracket an in-domain sample");
-        }
-
-        const OfflineSceneTimelineKeyframe& left = keyframes[upper - 1U];
-        const OfflineSceneTimelineKeyframe& right = keyframes[upper];
-        const float denominator = right.time - left.time;
-        const float t = (sample_time - left.time) / denominator;
-        if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
-            throw std::logic_error(
-                "offline timeline produced an invalid interpolation parameter");
-        }
-
-        OfflineSceneFrameState frame;
-        frame.camera = detail::interpolate_offline_timeline_camera(
-            left.frame.camera,
-            right.frame.camera,
-            t);
-        frame.model_transforms.reserve(model_count);
-        for (std::size_t model_index = 0U;
-             model_index < model_count;
-             ++model_index) {
-            frame.model_transforms.push_back(
-                detail::interpolate_offline_timeline_affine(
-                    left.frame.model_transforms[model_index],
-                    right.frame.model_transforms[model_index],
-                    t));
-        }
-        frames.push_back(std::move(frame));
-    }
-    return frames;
+    return detail::sample_offline_timeline_states<
+        OfflineSceneTimelineKeyframe,
+        OfflineSceneFrameState>(
+        keyframes,
+        sample_times,
+        "offline timeline",
+        [model_count](
+            const OfflineSceneFrameState& left,
+            const OfflineSceneFrameState& right,
+            float t) {
+            OfflineSceneFrameState frame;
+            frame.camera = detail::interpolate_offline_timeline_camera(
+                left.camera, right.camera, t);
+            frame.model_transforms.reserve(model_count);
+            for (std::size_t model_index = 0U;
+                 model_index < model_count;
+                 ++model_index) {
+                frame.model_transforms.push_back(
+                    detail::interpolate_offline_timeline_affine(
+                        left.model_transforms[model_index],
+                        right.model_transforms[model_index],
+                        t));
+            }
+            return frame;
+        });
 }
 
-// Samples hierarchy-local state in exact caller request order. Exact keyframe
-// requests copy camera/local state without interpolation arithmetic; interior
-// samples reuse M94 camera and affine interpolation before any local-to-world
-// composition occurs.
+// Samples hierarchy-local state through the same exact-keyframe/bracketing core.
+// This adapter owns only interpolation of the hierarchy-local transform vector;
+// composition remains M96's responsibility after all requested samples exist.
 [[nodiscard]] inline std::vector<OfflineSceneHierarchicalFrameState>
 sample_offline_hierarchical_timeline(
     const OfflineSceneHierarchy& hierarchy,
@@ -961,73 +1026,70 @@ sample_offline_hierarchical_timeline(
         detail::validate_offline_hierarchical_timeline_keyframes(
             hierarchy,
             keyframes);
-    if (sample_times.size() > detail::kMaxOfflineTimelineSamples) {
-        throw std::invalid_argument(
-            "offline hierarchical timeline sample count exceeds bounded limit");
-    }
+    return detail::sample_offline_timeline_states<
+        OfflineSceneHierarchicalTimelineKeyframe,
+        OfflineSceneHierarchicalFrameState>(
+        keyframes,
+        sample_times,
+        "offline hierarchical timeline",
+        [local_count](
+            const OfflineSceneHierarchicalFrameState& left,
+            const OfflineSceneHierarchicalFrameState& right,
+            float t) {
+            OfflineSceneHierarchicalFrameState frame;
+            frame.camera = detail::interpolate_offline_timeline_camera(
+                left.camera, right.camera, t);
+            frame.local_transforms.reserve(local_count);
+            for (std::size_t local_index = 0U;
+                 local_index < local_count;
+                 ++local_index) {
+                frame.local_transforms.push_back(
+                    detail::interpolate_offline_timeline_affine(
+                        left.local_transforms[local_index],
+                        right.local_transforms[local_index],
+                        t));
+            }
+            return frame;
+        });
+}
 
-    std::vector<OfflineSceneHierarchicalFrameState> frames;
-    frames.reserve(sample_times.size());
-    for (const float sample_time : sample_times) {
-        if (!std::isfinite(sample_time)) {
-            throw std::invalid_argument(
-                "offline hierarchical timeline sample time must be finite");
-        }
-        if (sample_time < keyframes.front().time
-            || sample_time > keyframes.back().time) {
-            throw std::out_of_range(
-                "offline hierarchical timeline sample time is outside the keyframe domain");
-        }
-
-        if (sample_time == keyframes.front().time) {
-            frames.push_back(keyframes.front().frame);
-            continue;
-        }
-
-        std::size_t upper = 1U;
-        while (upper < keyframes.size()
-               && keyframes[upper].time < sample_time) {
-            ++upper;
-        }
-        if (upper < keyframes.size()
-            && sample_time == keyframes[upper].time) {
-            frames.push_back(keyframes[upper].frame);
-            continue;
-        }
-        if (upper >= keyframes.size()) {
-            throw std::logic_error(
-                "offline hierarchical timeline failed to bracket an in-domain sample");
-        }
-
-        const OfflineSceneHierarchicalTimelineKeyframe& left =
-            keyframes[upper - 1U];
-        const OfflineSceneHierarchicalTimelineKeyframe& right =
-            keyframes[upper];
-        const float denominator = right.time - left.time;
-        const float t = (sample_time - left.time) / denominator;
-        if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
-            throw std::logic_error(
-                "offline hierarchical timeline produced an invalid interpolation parameter");
-        }
-
-        OfflineSceneHierarchicalFrameState frame;
-        frame.camera = detail::interpolate_offline_timeline_camera(
-            left.frame.camera,
-            right.frame.camera,
-            t);
-        frame.local_transforms.reserve(local_count);
-        for (std::size_t local_index = 0U;
-             local_index < local_count;
-             ++local_index) {
-            frame.local_transforms.push_back(
-                detail::interpolate_offline_timeline_affine(
-                    left.frame.local_transforms[local_index],
-                    right.frame.local_transforms[local_index],
-                    t));
-        }
-        frames.push_back(std::move(frame));
-    }
-    return frames;
+// M100 samples graph-local state before any topology composition. It reuses
+// the same exact-keyframe and time-bracketing semantics as M94/M97 while the
+// adapter interpolates one local affine record per graph node.
+[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
+sample_offline_transform_graph_timeline(
+    const OfflineSceneTransformGraph& graph,
+    std::span<const OfflineSceneTransformGraphTimelineKeyframe> keyframes,
+    std::span<const float> sample_times) {
+    const std::size_t local_count =
+        detail::validate_offline_transform_graph_timeline_keyframes(
+            graph,
+            keyframes);
+    return detail::sample_offline_timeline_states<
+        OfflineSceneTransformGraphTimelineKeyframe,
+        OfflineSceneTransformGraphFrameState>(
+        keyframes,
+        sample_times,
+        "offline transform graph timeline",
+        [local_count](
+            const OfflineSceneTransformGraphFrameState& left,
+            const OfflineSceneTransformGraphFrameState& right,
+            float t) {
+            OfflineSceneTransformGraphFrameState frame;
+            frame.camera = detail::interpolate_offline_timeline_camera(
+                left.camera, right.camera, t);
+            frame.local_transforms.reserve(local_count);
+            for (std::size_t local_index = 0U;
+                 local_index < local_count;
+                 ++local_index) {
+                frame.local_transforms.push_back(
+                    detail::interpolate_offline_timeline_affine(
+                        left.local_transforms[local_index],
+                        right.local_transforms[local_index],
+                        t));
+            }
+            return frame;
+        });
 }
 
 // Strict bounded sidecar for programmatic M94 timeline state:
@@ -1997,6 +2059,32 @@ prepare_offline_transform_graph_sequence(
     }
 
     return prepare_offline_frame_sequence(scene, world_frames);
+}
+
+// Programmatic M100 path: samples the complete graph-local timeline first,
+// resolves every sampled graph node second through M99, and only then delegates
+// mapped render-entry worlds into M92. Empty sample spans still validate graph
+// ownership and every keyframe before returning an empty prepared sequence.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_transform_graph_timeline_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneTransformGraph& graph,
+    std::span<const OfflineSceneTransformGraphTimelineKeyframe> keyframes,
+    std::span<const float> sample_times) {
+    if (graph.render_entry_nodes().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline transform graph timeline render binding count must match prepared scene entry count");
+    }
+
+    const std::vector<OfflineSceneTransformGraphFrameState> sampled_frames =
+        sample_offline_transform_graph_timeline(
+            graph,
+            keyframes,
+            sample_times);
+    return prepare_offline_transform_graph_sequence(
+        scene,
+        graph,
+        sampled_frames);
 }
 
 // Programmatic M97 path: samples camera and local affine state with M94's
