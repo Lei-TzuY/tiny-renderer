@@ -117,6 +117,14 @@ Mat4 fixture_affine_transform(float x, float z) {
     return matrix;
 }
 
+Mat4 fixture_hierarchy_local_transform(float scale_x, float x, float z) {
+    Mat4 matrix = Mat4::identity();
+    matrix(0U, 0U) = scale_x;
+    matrix(0U, 3U) = x;
+    matrix(2U, 3U) = z;
+    return matrix;
+}
+
 OfflineSceneCamera fixture_frame_camera() {
     OfflineSceneCamera camera;
     camera.eye = {0.0F, 0.0F, 3.0F};
@@ -203,6 +211,19 @@ int run_timeline_sequence_cli(
         + " " + quote_path(scene)
         + " " + quote_path(output)
         + " 64 48 4 --timeline-sequence " + quote_path(timeline);
+    return std::system(command.c_str());
+}
+
+int run_hierarchical_timeline_sequence_cli(
+    const std::filesystem::path& cli,
+    const std::filesystem::path& scene,
+    const std::filesystem::path& output,
+    const std::filesystem::path& timeline) {
+    const std::string command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(output)
+        + " 64 48 4 --hierarchy-timeline-sequence " + quote_path(timeline);
     return std::system(command.c_str());
 }
 
@@ -623,6 +644,363 @@ void test_strict_bounded_timeline_sequence_loader() {
                 detail::kMaxOfflineSceneEntries + 1U);
         },
         "timeline sidecar rejects expected model ownership above the scene bound before allocation");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+
+void test_strict_bounded_hierarchical_timeline_loader() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const OfflineSceneHierarchicalTimelineFile timeline =
+        load_offline_hierarchical_timeline_sequence_file(
+            fixtures / "hierarchy_timeline_ab.trhtimeline",
+            3U);
+
+    const auto parents = timeline.hierarchy.parents();
+    check(parents.size() == 3U,
+          "hierarchical timeline owns exactly one topology record per prepared entry");
+    if (parents.size() == 3U) {
+        check(parents[0] && *parents[0] == 2U,
+              "hierarchical timeline preserves a forward parent reference");
+        check(parents[1] && *parents[1] == 0U,
+              "hierarchical timeline preserves a child chain independent of record order");
+        check(!parents[2],
+              "hierarchical timeline preserves explicit root ownership");
+    }
+    check(timeline.keyframes.size() == 2U,
+          "hierarchical timeline loads exactly two bounded keyframes");
+    check(timeline.sample_times.size() == 4U,
+          "hierarchical timeline preserves four caller-ordered samples");
+    if (timeline.keyframes.size() == 2U) {
+        check(timeline.keyframes[0].frame.local_transforms.size() == 3U
+                  && timeline.keyframes[1].frame.local_transforms.size() == 3U,
+              "each hierarchical keyframe owns one local transform per scene entry");
+        check(timeline.keyframes[0].time == 0.0F
+                  && timeline.keyframes[1].time == 2.0F,
+              "hierarchical keyframe times preserve exact file values");
+    }
+    if (timeline.sample_times.size() == 4U) {
+        check(timeline.sample_times[0] == 0.0F
+                  && timeline.sample_times[1] == 1.0F
+                  && timeline.sample_times[2] == 0.0F
+                  && timeline.sample_times[3] == 2.0F,
+              "hierarchical sample order and repetition are preserved exactly");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                fixtures / "hierarchy_timeline_ab.trhtimeline",
+                detail::kMaxOfflineSceneEntries + 1U);
+        },
+        "hierarchical sidecar rejects expected scene ownership above the bounded entry limit");
+
+    const std::filesystem::path root =
+        std::filesystem::current_path()
+        / "tiny_renderer_hierarchical_timeline_parser_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::string camera =
+        "0 0 3 0 0 0 0 1 0 0.8726646 0.1 100";
+    const std::string identity =
+        "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1";
+
+    {
+        std::ofstream duplicate(root / "duplicate_parent.trhtimeline");
+        duplicate
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 root\n"
+            << "parent 0 root\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "duplicate_parent.trhtimeline", 3U);
+        },
+        "hierarchical sidecar rejects duplicate topology ownership");
+
+    {
+        std::ofstream missing(root / "missing_parent.trhtimeline");
+        missing
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 root\n"
+            << "parent 1 root\n"
+            << "keyframe 0 " << camera << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "missing_parent.trhtimeline", 3U);
+        },
+        "hierarchical sidecar rejects missing topology before dynamic state");
+
+    {
+        std::ofstream out_of_range(root / "out_of_range_parent.trhtimeline");
+        out_of_range
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 3\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "out_of_range_parent.trhtimeline", 3U);
+        },
+        "hierarchical sidecar rejects out-of-range parent references");
+
+    {
+        std::ofstream signed_index(root / "signed_parent_index.trhtimeline");
+        signed_index
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent -1 root\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "signed_parent_index.trhtimeline", 3U);
+        },
+        "hierarchical sidecar index grammar rejects signed integer tokens");
+
+    {
+        std::ofstream self_parent(root / "self_parent.trhtimeline");
+        self_parent
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 0\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "self_parent.trhtimeline", 3U);
+        },
+        "hierarchical sidecar rejects self-parenting");
+
+    {
+        std::ofstream cycle(root / "cycle.trhtimeline");
+        cycle
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 1\n"
+            << "parent 1 0\n"
+            << "parent 2 root\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "cycle.trhtimeline", 3U);
+        },
+        "hierarchical sidecar rejects cycles when topology becomes complete");
+
+    {
+        std::ofstream short_local(root / "short_local.trhtimeline");
+        short_local
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 root\n"
+            << "parent 1 root\n"
+            << "parent 2 root\n"
+            << "keyframe 0 " << camera << "\n"
+            << "local " << identity << "\n"
+            << "local " << identity << "\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "short_local.trhtimeline", 3U);
+        },
+        "hierarchical keyframe rejects missing local transforms");
+
+    {
+        std::ofstream projective(root / "projective_local.trhtimeline");
+        projective
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent 0 root\n"
+            << "keyframe 0 " << camera << "\n"
+            << "local 1 0 0 0 0 1 0 0 0 0 1 0 0.1 0 0 1\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "projective_local.trhtimeline", 1U);
+        },
+        "hierarchical sidecar rejects finite projective local matrices");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+void test_file_driven_hierarchical_timeline_matches_programmatic_m97() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const OfflineSceneHierarchicalTimelineFile file_timeline =
+        load_offline_hierarchical_timeline_sequence_file(
+            fixtures / "hierarchy_timeline_ab.trhtimeline",
+            3U);
+
+    OfflineRenderSettings settings;
+    settings.width = 64U;
+    settings.height = 48U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.02F, 0.025F, 0.035F};
+
+    const ModelAsset coverage =
+        triangle_asset({0.85F, 0.15F, 0.10F}, 0.55F);
+    const ModelAsset green =
+        triangle_asset({0.10F, 0.75F, 0.20F}, 0.45F);
+    const ModelAsset blue =
+        triangle_asset({0.10F, 0.25F, 0.85F}, 0.55F);
+    const std::array<OfflineSceneEntry, 3> entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene prepared_scene =
+        prepare_offline_mixed_scene(entries, settings);
+
+    const OfflineSceneHierarchy hierarchy({
+        std::optional<std::size_t>{2U},
+        std::optional<std::size_t>{0U},
+        std::nullopt,
+    });
+    const OfflineSceneCamera camera = fixture_frame_camera();
+    const std::vector<Mat4> local_a{
+        fixture_hierarchy_local_transform(1.0F, 0.35F, -0.10F),
+        fixture_hierarchy_local_transform(1.0F, 0.35F, -0.20F),
+        fixture_hierarchy_local_transform(1.0F, -0.45F, 0.0F),
+    };
+    const std::vector<Mat4> local_b{
+        fixture_hierarchy_local_transform(1.0F, 0.20F, -0.10F),
+        fixture_hierarchy_local_transform(1.0F, -0.30F, -0.20F),
+        fixture_hierarchy_local_transform(1.5F, 0.25F, 0.0F),
+    };
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        programmatic_keyframes{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{camera, local_a}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{camera, local_b}},
+        }};
+    const std::array<float, 4> samples{{0.0F, 1.0F, 0.0F, 2.0F}};
+
+    const PreparedOfflineCameraSequence file_sequence =
+        prepare_offline_hierarchy_timeline_sequence(
+            prepared_scene,
+            file_timeline.hierarchy,
+            file_timeline.keyframes,
+            file_timeline.sample_times);
+    const PreparedOfflineCameraSequence programmatic_sequence =
+        prepare_offline_hierarchy_timeline_sequence(
+            prepared_scene,
+            hierarchy,
+            programmatic_keyframes,
+            samples);
+
+    check(file_sequence.frame_count() == 4U
+              && file_sequence.frame_count() == programmatic_sequence.frame_count(),
+          "file hierarchical timeline and independent M97 state prepare the same sample count");
+    if (file_sequence.frame_count() != programmatic_sequence.frame_count()) {
+        return;
+    }
+
+    std::vector<Framebuffer> rendered;
+    rendered.reserve(file_sequence.frame_count());
+    for (std::size_t index = 0U; index < file_sequence.frame_count(); ++index) {
+        const Framebuffer file_frame =
+            render_prepared_camera_sequence_frame(file_sequence, index);
+        const Framebuffer programmatic_frame =
+            render_prepared_camera_sequence_frame(programmatic_sequence, index);
+        check(
+            exact_frame_equal(file_frame, programmatic_frame),
+            "file hierarchical sample is exact resolved/hash and 4x RGB/depth/stencil equivalent to independent M97 state");
+        rendered.push_back(file_frame);
+    }
+    if (rendered.size() == 4U) {
+        check(exact_frame_equal(rendered[0], rendered[2]),
+              "repeated hierarchical file sample is exactly deterministic");
+    }
+}
+
+void test_file_driven_hierarchical_timeline_cli_transaction(const char* argv0) {
+    const std::filesystem::path cli = render_cli_path(argv0);
+    check(std::filesystem::exists(cli),
+          "hierarchical timeline integration locates tiny_renderer_render sibling executable");
+    if (!std::filesystem::exists(cli)) {
+        return;
+    }
+
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::filesystem::path scene =
+        fixtures / "flat_scene_sequence_mixed.trscene";
+    const std::filesystem::path timeline =
+        fixtures / "hierarchy_timeline_ab.trhtimeline";
+    const std::filesystem::path invalid =
+        fixtures / "hierarchy_timeline_invalid_later.trhtimeline";
+    const std::filesystem::path flat_timeline =
+        fixtures / "timeline_sequence_ab.trtimeline";
+
+    const std::filesystem::path root =
+        std::filesystem::current_path()
+        / "tiny_renderer_hierarchical_timeline_cli_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::filesystem::path base = root / "hierarchy_timeline.ppm";
+    check(
+        run_hierarchical_timeline_sequence_cli(
+            cli, scene, base, timeline) == 0,
+        "strict file-driven hierarchical timeline renders through the shared M97 transaction");
+    const std::array<std::filesystem::path, 4> outputs{{
+        indexed_output(base, 0U),
+        indexed_output(base, 1U),
+        indexed_output(base, 2U),
+        indexed_output(base, 3U),
+    }};
+    for (const auto& output : outputs) {
+        check(std::filesystem::exists(output),
+              "hierarchical timeline CLI creates every sampled indexed output");
+    }
+    check(!std::filesystem::exists(base),
+          "hierarchical timeline CLI never writes an ambiguous unsuffixed output");
+    if (std::filesystem::exists(outputs[0])
+        && std::filesystem::exists(outputs[2])) {
+        check(read_binary_file(outputs[0]) == read_binary_file(outputs[2]),
+              "repeated hierarchical CLI sample is byte-identical");
+    }
+
+    const std::filesystem::path invalid_base = root / "invalid.ppm";
+    check(
+        run_hierarchical_timeline_sequence_cli(
+            cli, scene, invalid_base, invalid) != 0,
+        "later composed-world overflow rejects the complete hierarchical CLI transaction");
+    check(!std::filesystem::exists(invalid_base)
+              && !std::filesystem::exists(indexed_output(invalid_base, 0U))
+              && !std::filesystem::exists(indexed_output(invalid_base, 1U)),
+          "later hierarchical composition failure leaves zero earlier indexed outputs");
+
+    const std::filesystem::path conflict_base = root / "conflict.ppm";
+    const std::string conflict_command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(conflict_base)
+        + " 64 48 4 --hierarchy-timeline-sequence " + quote_path(timeline)
+        + " --timeline-sequence " + quote_path(flat_timeline);
+    check(std::system(conflict_command.c_str()) != 0,
+          "hierarchical and flat timeline modes are rejected as ambiguous together");
+    check(!std::filesystem::exists(conflict_base)
+              && !std::filesystem::exists(indexed_output(conflict_base, 0U)),
+          "hierarchical timeline option conflict rejects before output");
 
     std::filesystem::remove_all(root, ignored);
 }
@@ -1066,12 +1444,15 @@ int main(int argc, char** argv) {
     test_strict_bounded_camera_sequence_loader();
     test_strict_bounded_frame_sequence_loader();
     test_strict_bounded_timeline_sequence_loader();
+    test_strict_bounded_hierarchical_timeline_loader();
     test_file_driven_frame_records_match_programmatic_equivalent();
     test_file_driven_timeline_matches_programmatic_m94();
+    test_file_driven_hierarchical_timeline_matches_programmatic_m97();
     if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
         test_file_driven_cli_sequence_transaction(argv[0]);
         test_file_driven_affine_frame_sequence_transaction(argv[0]);
         test_file_driven_timeline_cli_transaction(argv[0]);
+        test_file_driven_hierarchical_timeline_cli_transaction(argv[0]);
     } else {
         check(false, "camera sequence integration test executable path is available");
     }

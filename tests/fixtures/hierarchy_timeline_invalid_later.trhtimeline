@@ -1,0 +1,16 @@
+tiny-renderer-hierarchy-timeline-v1
+parent 0 2
+parent 1 0
+parent 2 root
+keyframe 0 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+local 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+end
+keyframe 2 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+local 2 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 3e38 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+end
+sample 0
+sample 2
