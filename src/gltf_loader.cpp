@@ -39,6 +39,16 @@ constexpr std::size_t kMaxJsonDepth = 64U;
     throw GltfLoadError("glTF: " + message);
 }
 
+void validate_gltf_affine_matrix(
+    const Mat4& matrix,
+    std::string_view label) {
+    try {
+        detail::validate_bounded_affine_matrix(matrix, label);
+    } catch (const std::invalid_argument& error) {
+        fail(error.what());
+    }
+}
+
 [[nodiscard]] bool checked_add(
     std::size_t left,
     std::size_t right,
@@ -612,7 +622,7 @@ void reject_member(
     result(2U, 0U) = 2.0F * (x * z - y * w);
     result(2U, 1U) = 2.0F * (y * z + x * w);
     result(2U, 2U) = 1.0F - 2.0F * (x * x + y * y);
-    detail::validate_bounded_affine_matrix(
+    validate_gltf_affine_matrix(
         result,
         "glTF node rotation matrix");
     return result;
@@ -638,7 +648,7 @@ void reject_member(
                 matrix(row, column) = values[column * 4U + row];
             }
         }
-        detail::validate_bounded_affine_matrix(
+        validate_gltf_affine_matrix(
             matrix,
             "glTF node matrix");
         return matrix;
@@ -670,7 +680,7 @@ void reject_member(
         Mat4::translation(translation)
         * quaternion_matrix(rotation)
         * Mat4::scale(scale);
-    detail::validate_bounded_affine_matrix(
+    validate_gltf_affine_matrix(
         local,
         "glTF node local transform");
     return local;
@@ -977,7 +987,7 @@ void require_accessor_shape(
                 read_f32(data + scalar * 4U, label);
         }
     }
-    detail::validate_bounded_affine_matrix(result, label);
+    validate_gltf_affine_matrix(result, label);
     return result;
 }
 
@@ -1659,7 +1669,7 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
             rig_parents[joint] =
                 *joint_index_by_node[*ancestor];
         }
-        detail::validate_bounded_affine_matrix(
+        validate_gltf_affine_matrix(
             local,
             "glTF compressed joint local transform");
         rest_locals[joint] = local;
@@ -1743,12 +1753,19 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
     };
     model.draws.push_back(std::move(draw));
 
-    auto rig = std::make_shared<const SkeletalRig>(
-        std::move(rig_parents),
-        std::move(inverse_bind_matrices),
-        std::move(vertex_bindings));
-    // The imported rest pose must already be executable under M108.
-    (void)rig->resolve_pose(rest_locals);
+    SkeletalRigPtr rig;
+    try {
+        rig = std::make_shared<const SkeletalRig>(
+            std::move(rig_parents),
+            std::move(inverse_bind_matrices),
+            std::move(vertex_bindings));
+        // The imported rest pose must already be executable under M108.
+        (void)rig->resolve_pose(rest_locals);
+    } catch (const std::invalid_argument& error) {
+        fail(error.what());
+    } catch (const std::out_of_range& error) {
+        fail(error.what());
+    }
 
     GltfSkinnedAsset result;
     result.model = std::move(model);
