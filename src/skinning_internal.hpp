@@ -5,6 +5,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 #include "tiny_renderer/skinning.hpp"
 #include "vertex_program_internal.hpp"
