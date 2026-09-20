@@ -1617,29 +1617,35 @@ void test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed() {
         },
         bindings);
 
-    constexpr float magnitude = 1.0e20F;
+    // M^2 remains finite, while 1.25*M^2 exceeds float max. Endpoint
+    // parent*child products below have coefficients no larger than 1.0, but
+    // local-space midpoint interpolation creates a 1.25 coefficient in one
+    // composed world entry. This isolates overflow to the interior sample.
+    constexpr float magnitude = 1.7e19F;
+
     Mat4 parent_left = Mat4::identity();
-    parent_left(0U, 0U) = magnitude;
-    parent_left(0U, 1U) = magnitude;
-    parent_left(1U, 0U) = magnitude;
-    parent_left(1U, 1U) = magnitude;
+    parent_left(0U, 0U) = -magnitude;
+    parent_left(0U, 1U) = 0.0F;
+    parent_left(1U, 0U) = -magnitude;
+    parent_left(1U, 1U) = -magnitude;
     Mat4 child_left = Mat4::identity();
-    child_left(0U, 0U) = magnitude;
-    child_left(0U, 1U) = -magnitude;
-    child_left(1U, 0U) = -magnitude;
-    child_left(1U, 1U) = magnitude;
+    child_left(0U, 0U) = -magnitude;
+    child_left(0U, 1U) = 0.0F;
+    child_left(1U, 0U) = 0.0F;
+    child_left(1U, 1U) = 0.0F;
 
     Mat4 parent_right = Mat4::identity();
-    parent_right(0U, 0U) = magnitude;
-    parent_right(0U, 1U) = -magnitude;
+    parent_right(0U, 0U) = -magnitude;
+    parent_right(0U, 1U) = 0.0F;
     parent_right(1U, 0U) = -magnitude;
-    parent_right(1U, 1U) = magnitude;
+    parent_right(1U, 1U) = 0.0F;
     Mat4 child_right = Mat4::identity();
-    child_right(0U, 0U) = magnitude;
+    child_right(0U, 0U) = -magnitude;
     child_right(0U, 1U) = magnitude;
-    child_right(1U, 0U) = magnitude;
+    child_right(1U, 0U) = -magnitude;
     child_right(1U, 1U) = magnitude;
 
+    // Construction resolves both endpoint poses, proving they are valid.
     const SkeletalPoseTimeline timeline(
         rig,
         std::vector<SkeletalPoseTimelineKeyframe>{
