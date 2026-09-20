@@ -889,6 +889,23 @@ void test_static_morph_import_validation_and_lit_contract() {
         std::string json = valid;
         replace_once(
             json,
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\", \"normalized\": true}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_normalized",
+                        json,
+                        valid_bytes));
+            },
+            "normalized morph target accessor mode is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
             "{\"buffer\": 0, \"byteOffset\": 268, \"byteLength\": 36}",
             "{\"buffer\": 0, \"byteOffset\": 268, \"byteLength\": 35}");
         check_throws<GltfLoadError>(
