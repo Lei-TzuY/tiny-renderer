@@ -56,6 +56,125 @@ Mesh base_mesh() {
     return mesh;
 }
 
+
+Vertex uv_normal_vertex(
+    const Vec3& position,
+    float u,
+    float v,
+    const Vec3& normal) {
+    return Vertex::with_varyings(
+        position,
+        VaryingPack{u, v, normal.x, normal.y, normal.z});
+}
+
+Mesh lit_base_mesh() {
+    Mesh mesh;
+    const Vec3 normal{1.0F, 0.0F, 0.0F};
+    mesh.vertices = {
+        uv_normal_vertex(
+            {-0.50F, -0.50F, 0.0F}, 0.0F, 0.0F, normal),
+        uv_normal_vertex(
+            {0.25F, -0.50F, 0.0F}, 1.0F, 0.0F, normal),
+        uv_normal_vertex(
+            {-0.125F, 0.50F, 0.0F}, 0.5F, 1.0F, normal),
+    };
+    mesh.triangles = {{0U, 1U, 2U}};
+    return mesh;
+}
+
+DirectionalLight lit_directional_light(const Vec3& direction) {
+    DirectionalLight light;
+    light.enabled = true;
+    light.normal = {2U, 3U, 4U};
+    light.direction_to_light = direction;
+    light.ambient = 0.1F;
+    light.diffuse = 0.9F;
+    return light;
+}
+
+Mat4 exact_quarter_turn_z() {
+    Mat4 result = Mat4::identity();
+    result(0U, 0U) = 0.0F;
+    result(0U, 1U) = -1.0F;
+    result(1U, 0U) = 1.0F;
+    result(1U, 1U) = 0.0F;
+    return result;
+}
+
+Mesh independently_materialize_skinned_lit_mesh(
+    const Mesh& source,
+    const SkinningState& skinning,
+    const NormalBinding& normal_binding) {
+    Mesh result = source;
+    const auto bindings = skinning.vertex_bindings();
+    const auto matrices = skinning.skin_matrices();
+    std::vector<Mat3> normal_matrices;
+    normal_matrices.reserve(matrices.size());
+    for (const Mat4& matrix : matrices) {
+        normal_matrices.push_back(normal_matrix(matrix));
+    }
+
+    for (std::size_t vertex_index = 0U;
+         vertex_index < source.vertices.size();
+         ++vertex_index) {
+        const Vec3 source_position =
+            source.vertices[vertex_index].position;
+        const VaryingPack& pack =
+            source.vertices[vertex_index].varyings;
+        const Vec3 source_normal{
+            pack.values[normal_binding.x],
+            pack.values[normal_binding.y],
+            pack.values[normal_binding.z],
+        };
+
+        double px = 0.0;
+        double py = 0.0;
+        double pz = 0.0;
+        double nx = 0.0;
+        double ny = 0.0;
+        double nz = 0.0;
+        double total = 0.0;
+        for (const SkinInfluence influence :
+             bindings[vertex_index].influences()) {
+            const Vec4 position = matrices[influence.joint] * Vec4{
+                source_position.x,
+                source_position.y,
+                source_position.z,
+                1.0F,
+            };
+            const Vec3 normal =
+                normal_matrices[influence.joint] * source_normal;
+            const double weight =
+                static_cast<double>(influence.weight);
+            px += weight * static_cast<double>(position.x);
+            py += weight * static_cast<double>(position.y);
+            pz += weight * static_cast<double>(position.z);
+            nx += weight * static_cast<double>(normal.x);
+            ny += weight * static_cast<double>(normal.y);
+            nz += weight * static_cast<double>(normal.z);
+            total += weight;
+        }
+
+        result.vertices[vertex_index].position = {
+            static_cast<float>(px / total),
+            static_cast<float>(py / total),
+            static_cast<float>(pz / total),
+        };
+        const double length_squared = nx * nx + ny * ny + nz * nz;
+        const double inverse_length =
+            1.0 / std::sqrt(length_squared);
+        VaryingPack& output =
+            result.vertices[vertex_index].varyings;
+        output.values[normal_binding.x] =
+            static_cast<float>(nx * inverse_length);
+        output.values[normal_binding.y] =
+            static_cast<float>(ny * inverse_length);
+        output.values[normal_binding.z] =
+            static_cast<float>(nz * inverse_length);
+    }
+    return result;
+}
+
 ModelAsset model_from_mesh(
     Mesh mesh,
     const Vec3& albedo = {0.8F, 0.2F, 0.1F}) {
@@ -245,6 +364,289 @@ void test_skinning_precedes_vertex_program() {
         "skinning executes before the existing M35 object-space vertex program");
 }
 
+
+void test_identity_skin_with_fixed_lighting_is_exact() {
+    const ModelAsset asset = model_from_mesh(lit_base_mesh());
+    ModelRenderOptions baseline_options;
+    baseline_options.directional_light =
+        lit_directional_light({1.0F, 0.0F, 0.0F});
+    ModelRenderOptions skinned_options = baseline_options;
+    skinned_options.skinning_state =
+        identity_skin(asset.mesh.vertices.size());
+
+    Framebuffer baseline(47U, 47U, SampleCount::Four);
+    Framebuffer skinned(47U, 47U, SampleCount::Four);
+    baseline.clear({0.02F, 0.03F, 0.04F}, 1.0F, 3U);
+    skinned.clear({0.02F, 0.03F, 0.04F}, 1.0F, 3U);
+    draw_model_asset(
+        baseline,
+        asset,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        baseline_options);
+    draw_model_asset(
+        skinned,
+        asset,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        skinned_options);
+    check_same_framebuffer(
+        baseline,
+        skinned,
+        "identity skin with active fixed lighting is exact-equivalent to canonical lighting");
+
+    const PreparedModelSubmission prepared =
+        prepare_model_asset(asset, skinned_options);
+    Framebuffer prepared_fb(47U, 47U, SampleCount::Four);
+    prepared_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 3U);
+    draw_prepared_model(
+        prepared_fb,
+        prepared,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity());
+    check_same_framebuffer(
+        baseline,
+        prepared_fb,
+        "prepared identity normal-aware skin preserves fixed-light output exactly");
+}
+
+void test_multi_joint_normal_skinning_matches_manual_and_normal_map() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    Mat4 joint0 = Mat4::scale({2.0F, 1.0F, 0.5F});
+    const Mat4 joint1 =
+        exact_quarter_turn_z()
+        * Mat4::scale({0.5F, 2.0F, 1.0F});
+
+    std::vector<VertexSkinBinding> bindings;
+    bindings.push_back(binding({SkinInfluence{0U, 1.0F}}));
+    bindings.push_back(binding({SkinInfluence{1U, 1.0F}}));
+    bindings.push_back(binding({
+        SkinInfluence{0U, 0.5F},
+        SkinInfluence{1U, 0.5F},
+    }));
+    const auto skin = std::make_shared<const SkinningState>(
+        std::move(bindings),
+        std::vector<Mat4>{joint0, joint1});
+
+    const NormalBinding normal_binding{2U, 3U, 4U};
+    ModelAsset manual = model_from_mesh(
+        independently_materialize_skinned_lit_mesh(
+            source.mesh,
+            *skin,
+            normal_binding));
+
+    ModelRenderOptions skinned_options;
+    skinned_options.skinning_state = skin;
+    skinned_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
+    ModelRenderOptions manual_options = skinned_options;
+    manual_options.skinning_state.reset();
+
+    Framebuffer skinned_fb(53U, 53U, SampleCount::Four);
+    Framebuffer manual_fb(53U, 53U, SampleCount::Four);
+    skinned_fb.clear();
+    manual_fb.clear();
+    draw_model_asset(
+        skinned_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        skinned_options);
+    draw_model_asset(
+        manual_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        skinned_fb,
+        manual_fb,
+        "non-uniform multi-joint skinned positions and normals match independent manual materialization");
+
+    const PreparedModelSubmission prepared =
+        prepare_model_asset(source, skinned_options);
+    Framebuffer prepared_fb(53U, 53U, SampleCount::Four);
+    prepared_fb.clear();
+    draw_prepared_model(
+        prepared_fb,
+        prepared,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity());
+    check_same_framebuffer(
+        prepared_fb,
+        manual_fb,
+        "prepared multi-joint normal-aware skin matches manual lit geometry");
+
+    const auto normal_map = std::make_shared<const Texture2D>(
+        1U,
+        1U,
+        std::vector<Vec3>{{1.0F, 0.5F, 0.5F}});
+    ModelAsset mapped_source = source;
+    ModelAsset mapped_manual = manual;
+    mapped_source.draws[0].normal_texture = normal_map;
+    mapped_manual.draws[0].normal_texture = normal_map;
+
+    Framebuffer mapped_skin(53U, 53U, SampleCount::Four);
+    Framebuffer mapped_manual_fb(53U, 53U, SampleCount::Four);
+    mapped_skin.clear();
+    mapped_manual_fb.clear();
+    draw_model_asset(
+        mapped_skin,
+        mapped_source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        skinned_options);
+    draw_model_asset(
+        mapped_manual_fb,
+        mapped_manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        mapped_skin,
+        mapped_manual_fb,
+        "normal mapping derives tangent frames from skinned geometry and consumes skinned geometric normals");
+}
+
+void test_normal_skinning_fail_closed_contract() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    const ModelRenderOptions base_options = [] {
+        ModelRenderOptions options;
+        options.directional_light =
+            lit_directional_light({1.0F, 0.0F, 0.0F});
+        return options;
+    }();
+
+    {
+        ModelRenderOptions bad_binding = base_options;
+        bad_binding.directional_light.normal = {2U, 3U, 9U};
+        bad_binding.skinning_state =
+            identity_skin(source.mesh.vertices.size());
+        const PreparedModelSubmission prepared =
+            prepare_model_asset(source, bad_binding);
+        Framebuffer framebuffer(31U, 31U);
+        framebuffer.clear({0.1F, 0.2F, 0.3F}, 0.8F, 11U);
+        const auto before = framebuffer.rgb8();
+        check_throws<std::out_of_range>(
+            [&] {
+                draw_prepared_model(
+                    framebuffer,
+                    prepared,
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity());
+            },
+            "normal-aware skinning rejects an out-of-range active normal binding");
+        check(
+            framebuffer.rgb8() == before,
+            "invalid skinned normal binding rejects before framebuffer color ownership");
+    }
+
+    {
+        Mat4 singular = Mat4::scale({1.0F, 1.0F, 0.0F});
+        std::vector<VertexSkinBinding> bindings;
+        for (std::size_t i = 0U;
+             i < source.mesh.vertices.size();
+             ++i) {
+            bindings.push_back(
+                binding({SkinInfluence{0U, 1.0F}}));
+        }
+        ModelRenderOptions singular_options = base_options;
+        singular_options.skinning_state =
+            std::make_shared<const SkinningState>(
+                std::move(bindings),
+                std::vector<Mat4>{singular});
+
+        ModelRenderOptions valid_options = base_options;
+        valid_options.skinning_state =
+            identity_skin(source.mesh.vertices.size());
+        const PreparedModelSubmission valid =
+            prepare_model_asset(source, valid_options);
+        const PreparedModelSubmission invalid =
+            prepare_model_asset(source, singular_options);
+        const std::array<PreparedModelListEntry, 2> entries{{
+            {&valid, Mat4::identity()},
+            {&invalid, Mat4::identity()},
+        }};
+
+        Framebuffer framebuffer(41U, 41U, SampleCount::Four);
+        framebuffer.clear({0.12F, 0.23F, 0.34F}, 0.81F, 17U);
+        const auto before = framebuffer.rgb8();
+        check_throws<std::invalid_argument>(
+            [&] {
+                draw_prepared_model_list(
+                    framebuffer,
+                    entries,
+                    Mat4::identity(),
+                    Mat4::identity());
+            },
+            "later singular joint normal matrix rejects complete prepared list");
+        check(
+            framebuffer.rgb8() == before,
+            "later singular normal matrix rejects before earlier color ownership");
+        for (std::size_t sample = 0U;
+             sample < framebuffer.samples_per_pixel();
+             ++sample) {
+            check(
+                framebuffer.sample_depth_at(20U, 20U, sample)
+                    == 0.81F,
+                "later singular normal matrix rejects before earlier depth ownership");
+            check(
+                framebuffer.sample_stencil_at(20U, 20U, sample)
+                    == 17U,
+                "later singular normal matrix rejects before earlier stencil ownership");
+        }
+    }
+
+    {
+        Mat4 reflected = Mat4::identity();
+        reflected(0U, 0U) = -1.0F;
+        std::vector<VertexSkinBinding> bindings;
+        for (std::size_t i = 0U;
+             i < source.mesh.vertices.size();
+             ++i) {
+            bindings.push_back(binding({
+                SkinInfluence{0U, 0.5F},
+                SkinInfluence{1U, 0.5F},
+            }));
+        }
+        ModelRenderOptions cancelling = base_options;
+        cancelling.skinning_state =
+            std::make_shared<const SkinningState>(
+                std::move(bindings),
+                std::vector<Mat4>{
+                    Mat4::identity(),
+                    reflected,
+                });
+        Framebuffer framebuffer(31U, 31U);
+        framebuffer.clear({0.2F, 0.3F, 0.4F}, 0.9F, 5U);
+        const auto before = framebuffer.rgb8();
+        check_throws<std::invalid_argument>(
+            [&] {
+                draw_model_asset(
+                    framebuffer,
+                    source,
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    cancelling);
+            },
+            "weighted joint normals that cancel to zero are rejected");
+        check(
+            framebuffer.rgb8() == before,
+            "zero weighted skinned normal rejects before color ownership");
+    }
+}
+
 void test_validation_and_lighting_contract() {
     check_throws<std::invalid_argument>(
         [] {
@@ -342,16 +744,6 @@ void test_validation_and_lighting_contract() {
             (void)prepare_model_asset(asset, wrong_count);
         },
         "prepared model rejects skin binding cardinality mismatch");
-
-    ModelRenderOptions lit;
-    lit.skinning_state = identity_skin(asset.mesh.vertices.size());
-    lit.directional_light.enabled = true;
-    lit.directional_light.normal = {0U, 0U, 0U};
-    check_throws<std::invalid_argument>(
-        [&] {
-            (void)prepare_model_asset(asset, lit);
-        },
-        "single-pose skinning rejects fixed lighting until normal deformation exists");
 
     ModelRenderOptions spatial_options;
     spatial_options.skinning_state =
@@ -529,6 +921,9 @@ int main() {
     test_identity_skin_exact_compatibility_and_prepared_lifetime();
     test_multi_joint_pose_matches_manual_geometry();
     test_skinning_precedes_vertex_program();
+    test_identity_skin_with_fixed_lighting_is_exact();
+    test_multi_joint_normal_skinning_matches_manual_and_normal_map();
+    test_normal_skinning_fail_closed_contract();
     test_validation_and_lighting_contract();
     test_prepared_list_fail_closed_on_later_unsafe_skin();
     test_camera_and_shadow_share_skinned_silhouette();
