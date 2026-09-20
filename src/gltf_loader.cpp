@@ -33,6 +33,7 @@ constexpr std::size_t kMaxGltfBinaryBytes = 64U * 1024U * 1024U;
 constexpr std::size_t kMaxGltfBufferViews = 128U;
 constexpr std::size_t kMaxGltfAccessors = 128U;
 constexpr std::size_t kMaxGltfNodes = 1024U;
+constexpr std::size_t kMaxGltfAnimations = 16U;
 constexpr std::size_t kMaxGltfVertices = 262144U;
 constexpr std::size_t kMaxGltfIndices = 786432U;
 constexpr std::size_t kMaxJsonDepth = 64U;
@@ -1347,7 +1348,7 @@ struct GltfAnimationSamplerInfo {
 
 [[nodiscard]] std::shared_ptr<const SkeletalTrsClip>
 parse_gltf_linear_animation(
-    const std::map<std::string, JsonValue>& root,
+    const JsonValue& animation_value,
     const std::vector<AccessorInfo>& accessors,
     const std::vector<BufferViewInfo>& views,
     const std::vector<std::uint8_t>& bytes,
@@ -1356,14 +1357,8 @@ parse_gltf_linear_animation(
     SkeletalRigPtr rig,
     const std::vector<SkeletalTrs>& default_pose,
     const std::vector<Mat4>& local_prefixes) {
-    const auto& animations = as_array(
-        require_member(root, "animations", "root"),
-        "animations");
-    if (animations.size() != 1U) {
-        fail("bounded animated importer requires exactly one animation");
-    }
     const auto& animation =
-        as_object(animations.front(), "animation");
+        as_object(animation_value, "animation");
     reject_member(animation, "extensions", "animation");
 
     const auto& sampler_values = as_array(
@@ -1627,7 +1622,7 @@ parse_gltf_linear_animation(
 
 struct GltfImportBundle {
     GltfSkinnedAsset asset{};
-    std::shared_ptr<const SkeletalTrsClip> animation{};
+    std::vector<GltfImportedAnimation> animations{};
 };
 
 [[nodiscard]] GltfImportBundle load_gltf_skinned_asset_impl(
@@ -2118,22 +2113,46 @@ struct GltfImportBundle {
             std::array<std::size_t, 3>{0U, 1U, 2U};
     }
 
-    std::shared_ptr<const SkeletalTrsClip> animation;
+    std::vector<GltfImportedAnimation> animations;
     if (require_animation) {
-        animation = parse_gltf_linear_animation(
-            root,
-            accessors,
-            views,
-            bytes,
-            nodes,
-            joint_index_by_node,
-            rig,
-            semantic_defaults,
-            local_prefixes);
+        const auto& animation_values = as_array(
+            require_member(root, "animations", "root"),
+            "animations");
+        if (animation_values.empty()
+            || animation_values.size() > kMaxGltfAnimations) {
+            fail("animation collection count is outside bounded limits");
+        }
+        animations.reserve(animation_values.size());
+        for (const JsonValue& animation_value : animation_values) {
+            const auto& animation_object =
+                as_object(animation_value, "animation");
+            std::optional<std::string> name;
+            if (const JsonValue* animation_name =
+                    optional_member(animation_object, "name")) {
+                name = as_string(
+                    *animation_name,
+                    "animation name");
+            }
+            std::shared_ptr<const SkeletalTrsClip> clip =
+                parse_gltf_linear_animation(
+                    animation_value,
+                    accessors,
+                    views,
+                    bytes,
+                    nodes,
+                    joint_index_by_node,
+                    rig,
+                    semantic_defaults,
+                    local_prefixes);
+            animations.push_back({
+                std::move(name),
+                std::move(clip),
+            });
+        }
     }
     return {
         std::move(result),
-        std::move(animation),
+        std::move(animations),
     };
 }
 
@@ -2146,8 +2165,8 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
         false).asset;
 }
 
-GltfSkinnedAnimatedAsset
-load_gltf_skinned_animated_asset_file(
+GltfSkinnedAnimationCollection
+load_gltf_skinned_animation_collection_file(
     const std::filesystem::path& path) {
     GltfImportBundle imported =
         load_gltf_skinned_asset_impl(
@@ -2155,7 +2174,21 @@ load_gltf_skinned_animated_asset_file(
             true);
     return {
         std::move(imported.asset),
-        std::move(imported.animation),
+        std::move(imported.animations),
+    };
+}
+
+GltfSkinnedAnimatedAsset
+load_gltf_skinned_animated_asset_file(
+    const std::filesystem::path& path) {
+    GltfSkinnedAnimationCollection imported =
+        load_gltf_skinned_animation_collection_file(path);
+    if (imported.animations.size() != 1U) {
+        fail("exactly-one animated importer requires exactly one animation");
+    }
+    return {
+        std::move(imported.asset),
+        std::move(imported.animations.front().clip),
     };
 }
 

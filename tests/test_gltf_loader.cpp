@@ -140,6 +140,26 @@ void replace_once(
     text.replace(position, before.size(), after);
 }
 
+
+void replace_animations_array(
+    std::string& text,
+    const std::string& body) {
+    const std::string begin_marker = "  \"animations\": [";
+    const std::string end_marker = "  ],\n  \"scenes\"";
+    const std::size_t begin = text.find(begin_marker);
+    const std::size_t end = text.find(end_marker, begin);
+    if (begin == std::string::npos || end == std::string::npos) {
+        throw std::runtime_error(
+            "test animation-array replacement anchor not found");
+    }
+    text.replace(
+        begin,
+        end + 5U - begin,
+        "  \"animations\": [\n"
+            + body
+            + "\n  ],\n");
+}
+
 void set_f32(
     std::vector<std::uint8_t>& bytes,
     std::size_t offset,
@@ -741,6 +761,42 @@ SkeletalTrsClip manual_animated_clip(
         });
 }
 
+
+SkeletalTrsClip manual_child_shift_clip(
+    const SkeletalRigPtr& rig) {
+    return SkeletalTrsClip(
+        rig,
+        0.25F,
+        0.75F,
+        {
+            SkeletalTrs{
+                {0.25F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+            SkeletalTrs{
+                {0.1F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+        },
+        {
+            Mat4::translation({0.05F, 0.0F, 0.0F}),
+            Mat4::identity(),
+        },
+        {
+            {
+                0U,
+                {
+                    {0.25F, {0.25F, 0.0F, 0.0F}},
+                    {0.75F, {0.45F, 0.0F, 0.0F}},
+                },
+            },
+        },
+        {},
+        {});
+}
+
 void test_animated_fixture_projects_to_programmatic_m111() {
     const std::filesystem::path path =
         fixture_path("animated/skinned_triangle.gltf");
@@ -921,6 +977,330 @@ void test_animated_fixture_projects_to_programmatic_m111() {
                     == manual_shadow->depth_at(x, y),
                 "file-driven animated glTF shadow matches programmatic M111 reference");
         }
+    }
+}
+
+
+void test_animation_collection_preserves_order_and_single_wrapper_compatibility() {
+    const std::filesystem::path single_path =
+        fixture_path("animated/skinned_triangle.gltf");
+    const GltfSkinnedAnimationCollection single_collection =
+        load_gltf_skinned_animation_collection_file(single_path);
+    const GltfSkinnedAnimatedAsset legacy =
+        load_gltf_skinned_animated_asset_file(single_path);
+
+    check(
+        single_collection.animations.size() == 1U
+            && single_collection.animations[0].clip != nullptr,
+        "one-animation glTF collection imports exactly one M111 clip");
+    check(
+        !single_collection.animations.empty()
+            && !single_collection.animations[0].name,
+        "animation name remains optional metadata");
+    if (!single_collection.animations.empty()
+        && single_collection.animations[0].clip
+        && legacy.animation) {
+        const std::array<float, 4> times{
+            0.0F,
+            0.25F,
+            0.5F,
+            1.0F,
+        };
+        const auto collection_poses =
+            single_collection.animations[0].clip->sample(times);
+        const auto legacy_poses =
+            legacy.animation->sample(times);
+        check(
+            collection_poses.size() == legacy_poses.size(),
+            "one-animation collection preserves legacy sample cardinality");
+        for (std::size_t sample = 0U;
+             sample < collection_poses.size()
+                 && sample < legacy_poses.size();
+             ++sample) {
+            const auto collection_locals =
+                collection_poses[sample]->local_transforms();
+            const auto legacy_locals =
+                legacy_poses[sample]->local_transforms();
+            check(
+                collection_locals.size() == legacy_locals.size(),
+                "one-animation collection preserves legacy joint ownership");
+            for (std::size_t joint = 0U;
+                 joint < collection_locals.size()
+                     && joint < legacy_locals.size();
+                 ++joint) {
+                check(
+                    exact_matrix_equal(
+                        collection_locals[joint],
+                        legacy_locals[joint]),
+                    "one-animation collection is exact-equivalent to the M112 compatibility wrapper");
+            }
+        }
+    }
+
+    const std::filesystem::path multi_path =
+        fixture_path("animated/two_animations.gltf");
+    const GltfSkinnedAnimationCollection collection =
+        load_gltf_skinned_animation_collection_file(multi_path);
+    check(
+        collection.animations.size() == 2U,
+        "multi-animation glTF preserves complete bounded collection cardinality");
+    check(
+        collection.animations.size() == 2U
+            && collection.animations[0].name
+            && *collection.animations[0].name == "FullPose"
+            && collection.animations[1].name
+            && *collection.animations[1].name == "ChildShift",
+        "multi-animation glTF preserves animation array order and optional names");
+    if (collection.animations.size() == 2U
+        && collection.animations[0].clip
+        && collection.animations[1].clip) {
+        check(
+            collection.animations[0].clip->start_time() == 0.0F
+                && collection.animations[0].clip->end_time() == 1.0F
+                && collection.animations[1].clip->start_time() == 0.25F
+                && collection.animations[1].clip->end_time() == 0.75F,
+            "multi-animation collection preserves independent source clip domains");
+    }
+
+    check_throws<GltfLoadError>(
+        [&] {
+            (void)load_gltf_skinned_animated_asset_file(multi_path);
+        },
+        "legacy exactly-one animated wrapper rejects a multi-animation asset");
+    check_throws<GltfLoadError>(
+        [&] {
+            (void)load_gltf_skinned_asset_file(multi_path);
+        },
+        "static M110 loader remains strict and rejects a multi-animation asset");
+
+    {
+        std::string json = read_text(multi_path);
+        replace_once(
+            json,
+            "\"name\": \"ChildShift\"",
+            "\"name\": \"FullPose\"");
+        const auto bytes = read_bytes(
+            fixture_path("animated/skinned_triangle.bin"));
+        const GltfSkinnedAnimationCollection duplicate_names =
+            load_gltf_skinned_animation_collection_file(
+                write_case(
+                    "animation_duplicate_names",
+                    json,
+                    bytes));
+        check(
+            duplicate_names.animations.size() == 2U
+                && duplicate_names.animations[0].name
+                && duplicate_names.animations[1].name
+                && *duplicate_names.animations[0].name
+                    == *duplicate_names.animations[1].name,
+            "animation names are retained metadata rather than an implicit uniqueness key");
+    }
+}
+
+void test_file_driven_animation_collection_feeds_m113_blending() {
+    const GltfSkinnedAnimationCollection imported =
+        load_gltf_skinned_animation_collection_file(
+            fixture_path("animated/two_animations.gltf"));
+    if (imported.animations.size() != 2U
+        || !imported.animations[0].clip
+        || !imported.animations[1].clip) {
+        check(false,
+              "two-animation fixture must produce two blendable clips");
+        return;
+    }
+
+    const SkeletalRigPtr reference_rig =
+        manual_animated_rig();
+    const SkeletalTrsClip reference_full =
+        manual_animated_clip(reference_rig);
+    const SkeletalTrsClip reference_shift =
+        manual_child_shift_clip(reference_rig);
+
+    const std::array<SkeletalTrsBlendRequest, 5> requests{{
+        {0.0F, 0.25F, 0.0F},
+        {1.0F, 0.75F, 1.0F},
+        {0.5F, 0.5F, 0.5F},
+        {0.75F, 0.25F, 0.25F},
+        {0.5F, 0.5F, 0.5F},
+    }};
+    const auto imported_poses =
+        blend_skeletal_trs_clips(
+            *imported.animations[0].clip,
+            *imported.animations[1].clip,
+            requests);
+    const auto reference_poses =
+        blend_skeletal_trs_clips(
+            reference_full,
+            reference_shift,
+            requests);
+
+    check(
+        imported_poses.size() == reference_poses.size(),
+        "file-driven M113 blend preserves request cardinality");
+    for (std::size_t sample = 0U;
+         sample < imported_poses.size()
+             && sample < reference_poses.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_poses[sample]->local_transforms();
+        const auto reference_locals =
+            reference_poses[sample]->local_transforms();
+        check(
+            imported_locals.size() == reference_locals.size(),
+            "file-driven and programmatic M113 blend preserve joint cardinality");
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "file-driven animation collection feeds M113 with exact programmatic semantic local state");
+        }
+    }
+
+    if (imported_poses.size() < 3U
+        || reference_poses.size() < 3U) {
+        return;
+    }
+    const ModelAsset manual = manual_model();
+    ModelRenderOptions imported_options;
+    imported_options.directional_light = test_light();
+    imported_options.skeletal_pose_state = imported_poses[2];
+    ModelRenderOptions reference_options;
+    reference_options.directional_light = test_light();
+    reference_options.skeletal_pose_state = reference_poses[2];
+
+    Framebuffer imported_fb(57U, 57U, SampleCount::Four);
+    Framebuffer reference_fb(57U, 57U, SampleCount::Four);
+    imported_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 8U);
+    reference_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 8U);
+    draw_model_asset(
+        imported_fb,
+        imported.asset.model,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        imported_options);
+    draw_model_asset(
+        reference_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        reference_options);
+    check_same_framebuffer(
+        imported_fb,
+        reference_fb,
+        "file-driven two-clip M113 interior blend matches independent fixed-light reference");
+
+    const PreparedModelSubmission imported_prepared =
+        prepare_model_asset(imported.asset.model, imported_options);
+    const PreparedModelSubmission reference_prepared =
+        prepare_model_asset(manual, reference_options);
+    const std::array<PreparedModelListEntry, 1> imported_entry{{
+        {&imported_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> reference_entry{{
+        {&reference_prepared, Mat4::identity()},
+    }};
+    const auto imported_shadow =
+        render_directional_shadow_map(
+            imported_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto reference_shadow =
+        render_directional_shadow_map(
+            reference_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < imported_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < imported_shadow->width();
+             ++x) {
+            check(
+                imported_shadow->depth_at(x, y)
+                    == reference_shadow->depth_at(x, y),
+                "file-driven M113 blend shadow matches independent programmatic reference");
+        }
+    }
+}
+
+void test_animation_collection_fail_closed_contract() {
+    const std::string multi =
+        read_text(
+            fixture_path("animated/two_animations.gltf"));
+    const std::vector<std::uint8_t> bytes =
+        read_bytes(
+            fixture_path("animated/skinned_triangle.bin"));
+
+    {
+        std::string json = multi;
+        std::string body;
+        for (std::size_t index = 0U; index < 17U; ++index) {
+            if (!body.empty()) {
+                body += ",\n";
+            }
+            body +=
+                "    {\"samplers\": [], \"channels\": []}";
+        }
+        replace_animations_array(json, body);
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_case(
+                        "animation_collection_capacity",
+                        json,
+                        bytes));
+            },
+            "animation collection enforces bounded clip capacity before per-animation parsing");
+    }
+
+    {
+        std::string json = multi;
+        replace_once(
+            json,
+            "\"name\": \"ChildShift\",\n      \"samplers\": [\n        {\"input\": 8, \"output\": 9}",
+            "\"name\": \"ChildShift\",\n      \"samplers\": [\n        {\"input\": 99, \"output\": 9}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_case(
+                        "animation_collection_later_sampler",
+                        json,
+                        bytes));
+            },
+            "malformed later animation rejects the complete collection rather than returning the valid first clip");
+    }
+
+    {
+        std::string json = multi;
+        replace_once(
+            json,
+            "{\"sampler\": 0, \"target\": {\"node\": 2, \"path\": \"translation\"}}\n      ]\n    }\n  ],",
+            "{\"sampler\": 0, \"target\": {\"node\": 3, \"path\": \"translation\"}}\n      ]\n    }\n  ],");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_case(
+                        "animation_collection_later_channel",
+                        json,
+                        bytes));
+            },
+            "invalid later animation channel ownership rejects the entire collection");
     }
 }
 
@@ -1200,6 +1580,9 @@ int main() {
     test_json_schema_and_path_fail_closed();
     test_binary_range_joint_weight_and_inverse_bind_fail_closed();
     test_animated_fixture_projects_to_programmatic_m111();
+    test_animation_collection_preserves_order_and_single_wrapper_compatibility();
+    test_file_driven_animation_collection_feeds_m113_blending();
+    test_animation_collection_fail_closed_contract();
     test_animation_schema_and_data_fail_closed();
     test_imported_animation_later_overflow_is_batch_fail_closed();
     test_node_hierarchy_fail_closed();
