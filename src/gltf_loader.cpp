@@ -689,6 +689,8 @@ struct AccessorInfo {
     std::size_t count{};
     std::string type{};
     bool normalized{};
+    std::optional<std::vector<float>> min_values{};
+    std::optional<std::vector<float>> max_values{};
 };
 
 struct NodeInfo {
@@ -1145,12 +1147,42 @@ void require_accessor_shape(
         const std::string type = as_string(
             require_member(object, "type", "accessor"),
             "accessor type");
-        (void)component_count(type);
+        const std::size_t value_components =
+            component_count(type);
         const bool normalized =
             optional_member(object, "normalized")
             ? as_bool(*optional_member(object, "normalized"),
                       "accessor normalized")
             : false;
+        std::optional<std::vector<float>> min_values;
+        if (const JsonValue* minimum =
+                optional_member(object, "min")) {
+            min_values = number_array(
+                *minimum,
+                value_components,
+                "accessor min");
+        }
+        std::optional<std::vector<float>> max_values;
+        if (const JsonValue* maximum =
+                optional_member(object, "max")) {
+            max_values = number_array(
+                *maximum,
+                value_components,
+                "accessor max");
+        }
+        if (min_values.has_value() != max_values.has_value()) {
+            fail("accessor min and max must either both be present or both be absent");
+        }
+        if (min_values) {
+            for (std::size_t component = 0U;
+                 component < value_components;
+                 ++component) {
+                if ((*min_values)[component]
+                    > (*max_values)[component]) {
+                    fail("accessor min must not exceed max");
+                }
+            }
+        }
         result.push_back({
             buffer_view,
             byte_offset,
@@ -1158,6 +1190,8 @@ void require_accessor_shape(
             count,
             type,
             normalized,
+            std::move(min_values),
+            std::move(max_values),
         });
     }
     return result;
@@ -1416,6 +1450,10 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
     if (vertex_count < 3U || vertex_count > kMaxGltfVertices) {
         fail("POSITION count is outside bounded importer limits");
     }
+    if (!positions.accessor->min_values
+        || !positions.accessor->max_values) {
+        fail("POSITION accessor requires min and max");
+    }
 
     std::optional<AccessorWindow> normals;
     if (normal_accessor) {
@@ -1636,6 +1674,16 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
          ++vertex) {
         const auto position =
             read_vec3(positions, bytes, vertex, "POSITION");
+        for (std::size_t component = 0U;
+             component < 3U;
+             ++component) {
+            if (position[component]
+                    < (*positions.accessor->min_values)[component]
+                || position[component]
+                    > (*positions.accessor->max_values)[component]) {
+                fail("POSITION data lies outside declared accessor min/max");
+            }
+        }
         VaryingPack varyings;
         if (normals) {
             const auto normal =
