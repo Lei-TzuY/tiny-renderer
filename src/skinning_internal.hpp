@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "tiny_renderer/rasterizer.hpp"
+#include "morph_internal.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "vertex_program_internal.hpp"
 
@@ -228,11 +229,12 @@ struct PreparedObjectSpaceMesh {
 };
 
 [[nodiscard]] inline PreparedObjectSpaceMesh prepare_object_space_mesh(
+    const MorphStatePtr& morph,
     const SkinningStatePtr& skinning,
     const SkeletalPoseStatePtr& skeletal_pose,
     const VertexProgramPtr& vertex_program,
     const Mesh& mesh,
-    const NormalBinding* skinning_normal_binding = nullptr) {
+    const NormalBinding* deformation_normal_binding = nullptr) {
     validate_vertex_program_static(
         vertex_program,
         vertex_program_varying_count(mesh));
@@ -240,19 +242,30 @@ struct PreparedObjectSpaceMesh {
         throw std::invalid_argument(
             "object-space preparation cannot bind direct skinning and a skeletal pose simultaneously");
     }
+    if (morph) {
+        validate_morph_mesh_ownership(*morph, mesh);
+    }
 
+    const bool morph_active =
+        morph && morph->has_active_weights();
     const SkinningStatePtr resolved_skinning =
         skeletal_pose ? skeletal_pose->resolve() : skinning;
-    if (!resolved_skinning && !vertex_program) {
+    if (!morph_active && !resolved_skinning && !vertex_program) {
         return PreparedObjectSpaceMesh{&mesh, std::nullopt};
     }
 
-    Mesh transformed = resolved_skinning
-        ? apply_linear_blend_skinning(
-            *resolved_skinning,
+    Mesh transformed = morph_active
+        ? apply_morph_targets(
+            *morph,
             mesh,
-            skinning_normal_binding)
+            deformation_normal_binding)
         : mesh;
+    if (resolved_skinning) {
+        transformed = apply_linear_blend_skinning(
+            *resolved_skinning,
+            transformed,
+            deformation_normal_binding);
+    }
     if (vertex_program) {
         transformed = apply_vertex_program(vertex_program, transformed);
     }
