@@ -94,8 +94,8 @@ void draw_prepared_model_instances(
 // Runs the complete target-dependent list preparation and dynamic validation
 // without submitting fragments. This is useful for higher-level transactions
 // that must validate several execution phases before the first framebuffer
-// mutation. It uses the same skinning/vertex-program preparation and per-draw preflight
-// path as draw_prepared_model_list.
+// mutation. It uses the same morph/skinning/vertex-program preparation and
+// per-draw preflight path as draw_prepared_model_list.
 void preflight_prepared_model_list(
     const Framebuffer& framebuffer,
     std::span<const PreparedModelListEntry> entries);
@@ -110,9 +110,9 @@ void draw_prepared_model_list(
 // draw_prepared_model_list_back_to_front without executing the list. Each
 // non-empty entry is keyed by mean view-space Z of canonical mesh vertices;
 // more-negative Z is first and equal-depth entries preserve caller order.
-// Position-changing vertex programs, direct skinning, and deferred skeletal
-// poses are rejected because they may move geometry after the canonical key
-// has been computed.
+// Position-changing vertex programs, active morph deformation, direct
+// skinning, and deferred skeletal poses are rejected because they may move
+// geometry after the canonical key has been computed.
 [[nodiscard]] inline std::vector<PreparedModelListEntry>
 order_prepared_model_list_back_to_front(
     std::span<const PreparedModelListEntry> entries,
