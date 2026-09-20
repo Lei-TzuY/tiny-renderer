@@ -1625,6 +1625,54 @@ void test_animation_schema_and_data_fail_closed() {
         std::string json = valid;
         replace_once(
             json,
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 2, \"type\": \"SCALAR\", \"min\": [0.0], \"max\": [1.0]}",
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 2, \"type\": \"SCALAR\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case(
+                        "animation_input_missing_bounds",
+                        json,
+                        valid_bytes));
+            },
+            "animation input accessor without required min/max is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "\"max\": [1.0]",
+            "\"max\": [2.0]");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case(
+                        "animation_input_bad_bounds",
+                        json,
+                        valid_bytes));
+            },
+            "animation input min/max must match actual first and last key times");
+    }
+
+    {
+        std::vector<std::uint8_t> bytes = valid_bytes;
+        set_f32(bytes, 268U, -0.25F);
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_case(
+                        "animation_input_negative_time",
+                        valid,
+                        bytes));
+            },
+            "animation input time must be non-negative");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
             "\"interpolation\": \"LINEAR\"",
             "\"interpolation\": \"CATMULLROM\"");
         check_throws<GltfLoadError>(
