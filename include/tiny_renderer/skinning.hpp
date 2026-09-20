@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "tiny_renderer/affine_timeline.hpp"
 #include "tiny_renderer/math.hpp"
 
 namespace tiny_renderer {
@@ -26,21 +27,7 @@ namespace detail {
 inline void validate_skin_affine_matrix(
     const Mat4& matrix,
     const char* label) {
-    for (std::size_t row = 0U; row < 4U; ++row) {
-        for (std::size_t column = 0U; column < 4U; ++column) {
-            if (!std::isfinite(matrix(row, column))) {
-                throw std::invalid_argument(
-                    std::string(label) + " must contain only finite values");
-            }
-        }
-    }
-    if (std::fabs(matrix(3U, 0U)) > kEpsilon
-        || std::fabs(matrix(3U, 1U)) > kEpsilon
-        || std::fabs(matrix(3U, 2U)) > kEpsilon
-        || std::fabs(matrix(3U, 3U) - 1.0F) > kEpsilon) {
-        throw std::invalid_argument(
-            std::string(label) + " must be affine");
-    }
+    validate_bounded_affine_matrix(matrix, label);
 }
 
 }  // namespace detail
