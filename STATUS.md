@@ -146,17 +146,30 @@ M96 adds one bounded local-to-world transform layer above prepared-scene ownersh
 - Structural parent errors, prepared-scene ownership mismatch, local-count mismatch, a later projective local transform, and finite affine locals whose multiplication overflows all reject before any fragment execution. The existing 256-frame bound is enforced before resolved-world frame allocation.
 - M96 is programmatic only. It adds no hierarchy file syntax, skeletal joints/skin weights, constraints, inverse kinematics, mutable topology, hierarchy-aware asset ownership, parallel execution, or performance claim.
 
-## Promotion after Milestone 96
+## Milestone 97 — bounded programmatic hierarchical timeline evaluation
 
-The next architectural promotion should combine the two independently verified layers rather than add another sidecar grammar. Milestone 97 should establish **bounded programmatic hierarchical timeline evaluation**: M94 scalar-time interpolation over per-entry local transforms, followed by M96 fixed-topology world resolution, then the unchanged M92 transaction.
+M97 composes the independently verified M94 timeline and M96 hierarchy layers without introducing another scene or render path.
 
-A Milestone 97 slice should require:
+- `OfflineSceneHierarchicalTimelineKeyframe` binds one finite scalar time to one validated camera plus exactly one affine local transform per fixed hierarchy entry; topology remains a separate immutable `OfflineSceneHierarchy`.
+- Hierarchical timelines retain M94's 2..256 strictly increasing keyframe bound and 0..256 caller-ordered sample bound. Every keyframe camera/local transform is validated before sampling, including empty sample requests.
+- Exact keyframe requests copy stored camera/local state without interpolation arithmetic. Interior samples reuse M94's documented linear camera interpolation and affine top-3x4 interpolation while preserving the affine bottom row exactly.
+- Interpolation occurs in local-transform space first. Sampled locals are then delegated to M96, which resolves `parent_world * local` for the fixed topology and revalidates every composed world transform before M92 preparation; no world-transform interpolation shortcut exists.
+- `prepare_offline_hierarchy_timeline_sequence` validates hierarchy/prepared-scene ownership, samples the complete requested local-state batch, resolves the complete hierarchy batch, and only then delegates to M92's existing prepared-frame transaction.
+- Root-only hierarchical timelines are exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to the same M94 timeline. Arbitrary forward parent references remain valid, repeated/out-of-order sample requests are deterministic, and a parent-scale/child-translation regression proves local interpolation precedes composition.
+- Later non-finite interpolated locals and finite interpolated locals whose parent composition overflows reject the complete transaction before any earlier requested sample executes fragments. The established bounded sample limit is enforced before sample allocation.
+- Camera-dependent ordering, conservative visibility, environment-reflection rebinding, target preflight, indexed execution, and raster ownership remain unchanged on M92. M97 adds no hierarchy/timeline file syntax, easing, looping, extrapolation, wall-clock/frame-rate semantics, topology animation, skeletal animation, constraints/IK, parallel execution, or performance claim.
 
-- one fixed validated `OfflineSceneHierarchy` for the complete timeline; topology is never interpolated or changed between keyframes;
-- hierarchical keyframes carry one finite scalar time, one validated camera, and exactly one finite affine local transform per hierarchy entry, with the established 2..256 keyframe and 0..256 requested-sample bounds;
-- exact keyframe requests preserve the stored camera/local state without interpolation arithmetic; interior samples reuse M94's documented linear camera and affine top-3x4 interpolation semantics while preserving the affine bottom row exactly;
-- interpolation happens in **local** transform space first, then each sampled frame is resolved through M96 as `parent_world * local`. No world-transform interpolation shortcut is allowed because it is not generally equivalent for parented motion;
-- every keyframe local transform, every interpolated local transform, and every composed world transform is validated before the sampled batch reaches M92. A later invalid interpolated/composed state must reject the complete preparation transaction before any earlier sample executes fragments;
-- root-only hierarchical timelines are exact resolved/hash and 4x per-sample equivalent to the same M94 timeline, while a parent-motion interior sample must observably carry its child and match an independently constructed local-interpolate-then-compose reference;
-- arbitrary parent ordering and repeated/out-of-order sample requests remain deterministic, and camera-dependent ordering/visibility is still reevaluated through M92 after hierarchy resolution;
-- M97 remains programmatic. It must not add hierarchy/timeline file syntax, easing, looping, extrapolation, frame-rate/wall-clock semantics, topology animation, skeletal animation, constraints/IK, parallel execution, or performance claims.
+## Promotion after Milestone 97
+
+The next architectural promotion should make the combined hierarchy/timeline capability externally usable without duplicating interpolation or execution logic. Milestone 98 should establish a **strict file-driven hierarchical timeline transaction** that parses bounded topology/local-keyframe state and delegates semantics to M97.
+
+A Milestone 98 slice should require:
+
+- one strict versioned sidecar format containing exactly one fixed hierarchy topology aligned with the prepared scene, followed by 2..256 finite strictly increasing hierarchical keyframes and ordered sample requests;
+- topology syntax supports roots and explicit parent indices but performs no world-transform evaluation in the parser; out-of-range parents, self-parenting, cycles, duplicate/missing topology records, and topology/scene count mismatch reject deterministically before output;
+- each keyframe contains the established camera state plus exactly one complete finite affine **local** transform per hierarchy entry. Parsing performs no interpolation and no local-to-world composition;
+- parsed state delegates to M97 `prepare_offline_hierarchy_timeline_sequence`, so exact-keyframe behavior, local-space interpolation, M96 composition, M92 ordering/visibility/preflight, and indexed execution remain single-owner semantics;
+- the CLI exposes the new sidecar only through the existing prepared mixed-scene transaction and makes it mutually exclusive with camera-only, exact-frame, flat timeline, and other sequence modes;
+- the complete file transaction is parsed, sampled, hierarchy-resolved, and target-preflighted before the first indexed output is written; a malformed or invalid later keyframe/sample/composition therefore leaves zero partial output;
+- deterministic file-driven regressions cover arbitrary parent ordering, endpoint/interior/repeated/out-of-order samples, programmatic M97 equivalence across resolved/hash and every 4x sample attachment, strict syntax/path diagnostics, and later fail-closed interpolation/composition errors;
+- M98 adds no mutable topology, topology interpolation, skeletal joints/skinning, easing/looping/extrapolation, asynchronous streaming, parallel execution, new raster path, or performance/animation-quality claim.
