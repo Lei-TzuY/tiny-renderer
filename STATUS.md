@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 113 bounded two-clip semantic TRS blending
+## Architecture frontier: Milestone 114 bounded glTF animation collection
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -435,18 +435,37 @@ M113 adds clip composition above M111/M112 without introducing matrix-space anim
 - A dedicated fail-closed regression uses two individually executable clips: one carries a very large parent scale and the other a very large child scale. The endpoint request is safe, while only the later 0.5 semantic blend overflows during M108 parent-child composition. The full blend call rejects before the earlier endpoint can escape for rendering, preserving sentinel RGB/depth/stencil.
 - M113 remains two-source programmatic semantic blending only. File selection among multiple glTF animations, per-joint masks/layers, additive animation, N-way graphs/state machines, retargeting, IK/constraints, STEP/CUBICSPLINE execution, GPU execution, and performance claims remain outside the slice.
 
-## Promotion after Milestone 113
+## Milestone 114 — bounded glTF animation collection with explicit selection
 
-Programmatic two-clip composition is now available, but M112 still imports exactly one glTF animation. The highest-value integration gap is therefore real-file clip ownership rather than another in-memory blend variant. Milestone 114 should add a **bounded glTF animation collection with explicit clip selection** so multiple file-driven M111 clips sharing one imported rig can feed M113 directly.
+M114 closes the real-file ownership gap above M112/M113 by importing an ordered bounded set of semantic clips while projecting mesh, rig, bind state, semantic defaults, and immutable local prefixes exactly once.
 
-A Milestone 114 slice should require:
+- The strict textual glTF path now exposes `GltfSkinnedAnimationCollection`, containing one ordinary M110 `GltfSkinnedAsset` plus an ordered vector of `GltfImportedAnimation { optional name, clip }`.
+- Collection import accepts 1..16 animations. The root asset/buffer/accessor/node/skin projection executes once; every animation then reuses the same M108 rig, node→joint map, M111 default semantic pose, and immutable local-prefix state.
+- M112's LINEAR sampler/channel parser is now a reusable per-animation projection. Every animation independently keeps the complete M112 restrictions: bounded samplers/channels, checked accessor windows, translation/rotation/scale joint targets only, semantic TRS joints only, unique joint/property ownership, finite strictly increasing input times, exact input/output cardinality, and LINEAR/omitted-LINEAR interpolation only.
+- Animation array order is preserved exactly. Optional glTF animation names are retained as metadata; empty/missing/duplicate names do not become lookup keys or uniqueness requirements.
+- Parsing is transactional. The collection remains local until every animation has fully constructed its M111 clip. A malformed later animation therefore rejects the complete import rather than returning an asset with an earlier partial clip set.
+- The static M110 loader remains strict and rejects any `animations` member.
+- The M112 exactly-one compatibility wrapper now delegates to the collection importer and then requires collection cardinality exactly one. It remains exact-equivalent for a one-animation file and rejects multi-animation files rather than silently choosing the first clip.
+- The new two-animation fixture reuses the existing checked 372-byte external buffer. Clip 0, named `FullPose`, retains the M112 translation/rotation/scale animation over domain [0,1]. Clip 1, named `ChildShift`, references only the existing child-translation keys over [0.25,0.75], proving independent domains and property ownership without duplicating binary data.
+- Regressions prove one-animation collection sampling is exact-equivalent to the legacy M112 wrapper, two-animation order/name/domain preservation, and acceptance of duplicate animation names as metadata.
+- Both file-driven clips feed M113 directly with independent source times. Their endpoint/interior/repeated blend requests are exact-equivalent joint-for-joint to two separately constructed programmatic M111 clips.
+- A representative file-driven interior M113 blend is exact-equivalent to the programmatic reference for 4x normal-aware fixed-light RGB/depth/stencil and directional-shadow depth.
+- Negative regressions cover more than 16 animations, one valid animation followed by a bad later sampler accessor, invalid later non-joint channel ownership, and use of the exactly-one compatibility wrapper on a multi-animation asset.
+- M114 adds no automatic selection policy, animation controller/state machine, blend masks/layers, additive animation, N-way graph, STEP/CUBICSPLINE execution, morph-weight channels, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, or performance claim.
 
-- extend the strict textual glTF importer from exactly one animation to a bounded collection, for example 1..16 animations, while retaining the existing single external buffer, checked accessor arithmetic, duplicate-key rejection, path safety, and public `GltfLoadError` boundary;
-- each imported animation must independently satisfy the complete M112 LINEAR-only sampler/channel contract. A malformed later animation must reject the whole asset import rather than returning a partial collection;
-- all imported clips must share the exact M110/M108 rig, inverse-bind ownership, semantic default pose, and immutable local-prefix state derived once from the asset; per-animation parsing may add tracks but may not duplicate or mutate skeletal ownership;
-- preserve glTF animation array order deterministically and expose explicit index-based selection. Optional animation names, when present, should be retained as metadata but must not become an implicit uniqueness or lookup requirement in this first collection slice;
-- an asset with one animation must remain exact-equivalent to the existing M112 single-animation API. The compatibility wrapper may project the first/only clip but must fail closed rather than silently choose one from a multi-animation file;
-- a deterministic in-repo fixture should contain at least two LINEAR skeletal animations with different domains and different joint/property ownership, while keeping the existing child-before-parent joint order and non-identity static prefix;
-- independently imported clips should be feedable directly into M113 independent-time blend requests. A file-driven two-clip interior blend must be exact-equivalent to separately constructed programmatic M111 clips for semantic local matrices, fixed-light framebuffer output, and directional-shadow depth;
-- negative regressions must cover collection capacity, one valid plus one malformed animation, invalid later sampler/channel ownership, and attempts to use the legacy exactly-one-animation wrapper on a multi-animation asset;
-- M114 remains explicit clip collection/selection only. It adds no automatic blending policy, animation state machine, per-joint masks/layers, additive animation, N-way graphs, STEP/CUBICSPLINE execution, morph-weight channels, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, or performance claim.
+## Promotion after Milestone 114
+
+Multiple real-file clips can now reach M113, but the semantic runtime and importer still deliberately reject glTF `STEP`. The next useful spec/runtime gap is therefore interpolation mode ownership, not another collection or controller shell. Milestone 115 should add **bounded semantic STEP interpolation and strict glTF STEP interoperability** without weakening the existing LINEAR path.
+
+A Milestone 115 slice should require:
+
+- introduce an explicit interpolation mode on M111 translation, rotation, and scale tracks, with the existing constructors/callers defaulting to LINEAR for source compatibility;
+- LINEAR must retain current component lerp / shortest-path quaternion slerp behavior exactly; STEP must return the previous key's semantic value for interior times and preserve exact-key values without interpolation arithmetic;
+- endpoint-hold semantics outside each sparse track's key domain remain unchanged and independent from interpolation mode;
+- track validation must reject unsupported/invalid interpolation modes before sampling, and complete requested batches must remain transactional through M108;
+- glTF sampler parsing should accept omitted/explicit LINEAR and explicit STEP, project each sampler's mode onto its resulting semantic track, and continue rejecting CUBICSPLINE rather than approximating it;
+- duplicate joint/property ownership remains invalid even when two channels use different interpolation modes;
+- regressions should cover translation, scale, and quaternion STEP behavior, exact key boundaries, repeated/out-of-order requests, a value immediately before/at a key, arbitrary-order parent topology, normal-aware fixed lighting, and shadow silhouettes against independent semantic references;
+- a mixed LINEAR+STEP glTF fixture should import exact-equivalently to a programmatic M111 clip, including one animation from an M114 collection feeding M113 blending;
+- malformed sampler mode, CUBICSPLINE, later STEP sample hierarchy overflow, and collection-level later animation failures must continue to reject before partial output escapes;
+- M115 remains LINEAR+STEP semantic interpolation only. CUBICSPLINE tangents, morph weights, automatic animation controllers/state machines, masks/layers, additive/N-way composition, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
