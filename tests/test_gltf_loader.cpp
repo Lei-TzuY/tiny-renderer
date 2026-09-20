@@ -533,6 +533,21 @@ void test_json_schema_and_path_fail_closed() {
             },
             "unsupported normalized accessor mode is rejected");
     }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\", \"min\": [-0.5, -0.5, 0.0], \"max\": [0.5, 0.5, 0.0]}",
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_case("missing_position_bounds", json, bytes));
+            },
+            "POSITION accessor without required min/max is rejected");
+    }
+
 }
 
 void test_binary_range_joint_weight_and_inverse_bind_fail_closed() {
@@ -570,8 +585,8 @@ void test_binary_range_joint_weight_and_inverse_bind_fail_closed() {
         std::string json = valid;
         replace_once(
             json,
-            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
-            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 4, \"type\": \"VEC3\"}");
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\", \"min\": [-0.5, -0.5, 0.0], \"max\": [0.5, 0.5, 0.0]}",
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 4, \"type\": \"VEC3\", \"min\": [-0.5, -0.5, 0.0], \"max\": [0.5, 0.5, 0.0]}");
         check_throws<GltfLoadError>(
             [&] {
                 (void)load_gltf_skinned_asset_file(
@@ -584,8 +599,8 @@ void test_binary_range_joint_weight_and_inverse_bind_fail_closed() {
         std::string json = valid;
         replace_once(
             json,
-            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
-            "{\"bufferView\": 0, \"byteOffset\": 2, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}");
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\", \"min\": [-0.5, -0.5, 0.0], \"max\": [0.5, 0.5, 0.0]}",
+            "{\"bufferView\": 0, \"byteOffset\": 2, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\", \"min\": [-0.5, -0.5, 0.0], \"max\": [0.5, 0.5, 0.0]}");
         check_throws<GltfLoadError>(
             [&] {
                 (void)load_gltf_skinned_asset_file(
