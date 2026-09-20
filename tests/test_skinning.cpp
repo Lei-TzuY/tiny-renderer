@@ -2177,6 +2177,310 @@ void test_skeletal_trs_validation_sampling_and_shortest_path() {
         "semantic TRS sampling bounds requested batch size");
 }
 
+
+void test_skeletal_trs_step_interpolation_and_exact_boundaries() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+    };
+    // Child joint 0 is declared before parent joint 1.
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            1U,
+            std::nullopt,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        bindings);
+
+    const Quaternion identity{};
+    const Quaternion half_turn_z{
+        0.0F, 0.0F, 1.0F, 0.0F};
+
+    const SkeletalTrsClip clip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{},
+            SkeletalTrs{},
+        },
+        {
+            {
+                0U,
+                {
+                    {0.25F, {0.0F, 0.0F, 0.0F}},
+                    {0.75F, {0.4F, 0.0F, 0.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.0F, identity},
+                    {1.0F, half_turn_z},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.5F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.5F, 1.0F, 1.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        });
+
+    const std::array<float, 7> sample_times{
+        0.0F,
+        0.5F,
+        0.749F,
+        0.75F,
+        0.9F,
+        1.0F,
+        0.749F,
+    };
+    const auto states = clip.sample_states(sample_times);
+    check(
+        states.size() == sample_times.size(),
+        "STEP semantic sampling preserves caller order and multiplicity");
+    if (states.size() == sample_times.size()) {
+        check(
+            states[0].semantic_pose[0].translation.x == 0.0F
+                && states[1].semantic_pose[0].translation.x == 0.0F
+                && states[2].semantic_pose[0].translation.x == 0.0F,
+            "STEP translation holds the previous key across interior samples");
+        check(
+            states[3].semantic_pose[0].translation.x == 0.4F
+                && states[4].semantic_pose[0].translation.x == 0.4F
+                && states[5].semantic_pose[0].translation.x == 0.4F,
+            "STEP translation switches exactly at the next key and holds its endpoint");
+        check(
+            exact_matrix_equal(
+                quaternion_rotation_matrix(
+                    states[4].semantic_pose[1].rotation),
+                Mat4::identity()),
+            "STEP rotation does not slerp at an interior time");
+        check(
+            exact_matrix_equal(
+                quaternion_rotation_matrix(
+                    states[5].semantic_pose[1].rotation),
+                independent_quaternion_matrix(half_turn_z)),
+            "STEP rotation preserves the exact next-key semantic rotation");
+        check(
+            states[4].semantic_pose[1].scale.x == 1.0F
+                && states[5].semantic_pose[1].scale.x == 1.5F,
+            "STEP scale keeps the previous key until the exact next key");
+        check(
+            states[2].semantic_pose[0].translation.x
+                == states[6].semantic_pose[0].translation.x
+                && exact_matrix_equal(
+                    states[2].resolved_pose->local_transforms()[0],
+                    states[6].resolved_pose->local_transforms()[0])
+                && exact_matrix_equal(
+                    states[2].resolved_pose->local_transforms()[1],
+                    states[6].resolved_pose->local_transforms()[1]),
+            "repeated out-of-order STEP requests remain deterministic");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}, SkeletalTrs{}},
+                {
+                    {
+                        0U,
+                        {
+                            {0.0F, {0.0F, 0.0F, 0.0F}},
+                            {1.0F, {1.0F, 0.0F, 0.0F}},
+                        },
+                        static_cast<SkeletalInterpolationMode>(99),
+                    },
+                },
+                {},
+                {});
+        },
+        "semantic TRS track rejects unsupported interpolation mode during clip construction");
+
+    // At 0.9 all STEP properties have simple independently-known values:
+    // child translation is the second key; parent rotation/scale are still
+    // their previous keys. Compare the complete M108 execution path.
+    const std::array<float, 1> reference_time{0.9F};
+    const auto sampled = clip.sample(reference_time);
+    auto manual_pose =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{
+                Mat4::translation({0.4F, 0.0F, 0.0F}),
+                Mat4::identity(),
+            });
+
+    ModelRenderOptions step_options;
+    step_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
+    step_options.skeletal_pose_state = sampled.front();
+    ModelRenderOptions manual_options = step_options;
+    manual_options.skeletal_pose_state = manual_pose;
+
+    Framebuffer step_fb(53U, 53U, SampleCount::Four);
+    Framebuffer manual_fb(53U, 53U, SampleCount::Four);
+    step_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 6U);
+    manual_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 6U);
+    draw_model_asset(
+        step_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        step_options);
+    draw_model_asset(
+        manual_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        step_fb,
+        manual_fb,
+        "STEP arbitrary-order semantic pose matches independent normal-aware M108 fixed-light reference");
+
+    const PreparedModelSubmission step_prepared =
+        prepare_model_asset(source, step_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_options);
+    const std::array<PreparedModelListEntry, 1> step_entry{{
+        {&step_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto step_shadow = render_directional_shadow_map(
+        step_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            43U,
+            43U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    const auto manual_shadow = render_directional_shadow_map(
+        manual_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            43U,
+            43U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    for (std::size_t y = 0U; y < step_shadow->height(); ++y) {
+        for (std::size_t x = 0U; x < step_shadow->width(); ++x) {
+            check(
+                step_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "STEP arbitrary-order semantic shadow matches independent M108 reference");
+        }
+    }
+}
+
+void test_skeletal_trs_step_later_overflow_is_batch_fail_closed() {
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            std::nullopt,
+            0U,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        std::vector<VertexSkinBinding>{
+            binding({SkinInfluence{0U, 1.0F}}),
+        });
+
+    const SkeletalTrsClip clip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{},
+            SkeletalTrs{},
+        },
+        {},
+        {},
+        {
+            {
+                0U,
+                {
+                    {0.0F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.0e20F, 1.0F, 1.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+            {
+                1U,
+                {
+                    {0.0F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.0e20F, 1.0F, 1.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        });
+
+    Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+    framebuffer.clear(
+        {0.19F, 0.29F, 0.39F},
+        0.69F,
+        23U);
+    const auto before = framebuffer.rgb8();
+    const ModelAsset source = model_from_mesh(base_mesh());
+    const std::array<float, 2> samples{
+        0.5F,
+        1.0F,
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto poses = clip.sample(samples);
+            for (const SkeletalPoseStatePtr& pose : poses) {
+                ModelRenderOptions options;
+                options.skeletal_pose_state = pose;
+                draw_model_asset(
+                    framebuffer,
+                    source,
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later exact STEP key hierarchy overflow rejects the complete requested batch");
+    check(
+        framebuffer.rgb8() == before,
+        "later STEP failure occurs before earlier safe request owns framebuffer color");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(15U, 15U, sample)
+                == 0.69F,
+            "later STEP failure occurs before framebuffer depth ownership");
+        check(
+            framebuffer.sample_stencil_at(15U, 15U, sample)
+                == 23U,
+            "later STEP failure occurs before framebuffer stencil ownership");
+    }
+}
+
 void test_skeletal_trs_local_before_world_matches_manual_render_and_shadow() {
     const ModelAsset source = model_from_mesh(lit_base_mesh());
     const std::vector<VertexSkinBinding> bindings{
@@ -3298,6 +3602,8 @@ int main() {
     test_skeletal_timeline_interpolates_local_before_world();
     test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed();
     test_skeletal_trs_validation_sampling_and_shortest_path();
+    test_skeletal_trs_step_interpolation_and_exact_boundaries();
+    test_skeletal_trs_step_later_overflow_is_batch_fail_closed();
     test_skeletal_trs_local_before_world_matches_manual_render_and_shadow();
     test_skeletal_trs_later_world_overflow_is_batch_fail_closed();
     test_skeletal_trs_blend_validation_contract();
