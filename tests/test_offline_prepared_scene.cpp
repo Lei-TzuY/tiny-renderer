@@ -2614,6 +2614,544 @@ void test_programmatic_sparse_clip_blend_validation_contract() {
         "valid two-clip blend accepts an empty requested sample span after complete ownership validation");
 }
 
+
+void test_programmatic_sparse_clip_blend_schedule_crossfade_and_m103_equivalence() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+
+    const Mat4 red_local =
+        Mat4::translation({-0.28F, 0.0F, 0.0F});
+    const Mat4 green_local =
+        Mat4::translation({0.28F, 0.0F, -0.12F});
+
+    const OfflineSceneCamera same_left_camera =
+        camera_at({-0.30F, 0.0F, 3.0F});
+    const OfflineSceneCamera same_right_camera =
+        camera_at({0.30F, 0.0F, 3.0F});
+    const Mat4 same_left_a =
+        Mat4::translation({-0.60F, 0.0F, -0.30F});
+    const Mat4 same_left_b =
+        Mat4::translation({-0.20F, 0.0F, -0.30F});
+    const Mat4 same_right_a =
+        Mat4::translation({0.20F, 0.0F, -0.30F});
+    const Mat4 same_right_b =
+        Mat4::translation({0.60F, 0.0F, -0.30F});
+
+    const OfflineSceneSparseTransformGraphClip same_left_clip(
+        0.0F,
+        2.0F,
+        same_left_camera,
+        {same_left_a, red_local, green_local},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, same_left_a},
+                    {2.0F, same_left_b},
+                }},
+        });
+    const OfflineSceneSparseTransformGraphClip same_right_clip(
+        0.0F,
+        2.0F,
+        same_right_camera,
+        {same_right_a, red_local, green_local},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, same_right_a},
+                    {2.0F, same_right_b},
+                }},
+        });
+
+    const std::array<float, 4> same_times{{2.0F, 1.0F, 0.0F, 1.0F}};
+    constexpr float same_weight = 0.35F;
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 4>
+        same_schedule{{
+            {2.0F, 2.0F, same_weight},
+            {1.0F, 1.0F, same_weight},
+            {0.0F, 0.0F, same_weight},
+            {1.0F, 1.0F, same_weight},
+        }};
+
+    const PreparedOfflineCameraSequence m103 =
+        prepare_offline_sparse_transform_graph_clip_blend_sequence(
+            reusable,
+            graph,
+            same_left_clip,
+            same_right_clip,
+            same_times,
+            same_weight);
+    const PreparedOfflineCameraSequence scheduled_same =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+            reusable,
+            graph,
+            same_left_clip,
+            same_right_clip,
+            same_schedule);
+
+    check(
+        m103.frame_count() == scheduled_same.frame_count()
+            && m103.frame_count() == same_schedule.size(),
+        "same-time constant-weight blend schedule preserves M103 output ownership");
+    for (std::size_t index = 0U;
+         index < m103.frame_count()
+             && index < scheduled_same.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(m103, index),
+                render_prepared_camera_sequence_frame(
+                    scheduled_same, index)),
+            "same-time constant-weight blend schedule is exact-equivalent to M103");
+    }
+
+    // Different source domains prove M104 is source-time scheduling rather than
+    // another same-time M103 wrapper. Only the transform-only pivot animates;
+    // both render descendants stay static in local space.
+    const OfflineSceneCamera left_camera =
+        camera_at({-0.50F, 0.0F, 3.0F});
+    const OfflineSceneCamera right_camera =
+        camera_at({0.50F, 0.0F, 3.0F});
+    const Mat4 left_pivot_a =
+        Mat4::translation({-0.70F, 0.0F, -0.35F});
+    const Mat4 left_pivot_b =
+        Mat4::translation({-0.10F, 0.0F, -0.35F});
+    const Mat4 right_pivot_a =
+        Mat4::translation({0.10F, 0.0F, -0.35F});
+    const Mat4 right_pivot_b =
+        Mat4::translation({0.90F, 0.0F, -0.35F});
+
+    const OfflineSceneSparseTransformGraphClip left_clip(
+        0.0F,
+        2.0F,
+        left_camera,
+        {left_pivot_a, red_local, green_local},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, left_pivot_a},
+                    {2.0F, left_pivot_b},
+                }},
+        });
+    const OfflineSceneSparseTransformGraphClip right_clip(
+        10.0F,
+        14.0F,
+        right_camera,
+        {right_pivot_a, red_local, green_local},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {10.0F, right_pivot_a},
+                    {14.0F, right_pivot_b},
+                }},
+        });
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 5> schedule{{
+        {0.0F, 10.0F, 0.0F},
+        {0.5F, 11.0F, 0.25F},
+        {2.0F, 14.0F, 1.0F},
+        {0.5F, 11.0F, 0.25F},
+        {1.5F, 10.5F, 0.75F},
+    }};
+
+    const std::vector<OfflineSceneTransformGraphFrameState> scheduled_frames =
+        blend_offline_sparse_transform_graph_clip_schedule(
+            left_clip,
+            right_clip,
+            schedule);
+    check(
+        scheduled_frames.size() == schedule.size(),
+        "independent-time blend schedule preserves caller order and sample count");
+
+    std::vector<float> left_times;
+    std::vector<float> right_times;
+    left_times.reserve(schedule.size());
+    right_times.reserve(schedule.size());
+    for (const auto& entry : schedule) {
+        left_times.push_back(entry.left_time);
+        right_times.push_back(entry.right_time);
+    }
+    const std::vector<OfflineSceneTransformGraphFrameState> left_sampled =
+        sample_offline_sparse_transform_graph_clip(
+            left_clip,
+            left_times);
+    const std::vector<OfflineSceneTransformGraphFrameState> right_sampled =
+        sample_offline_sparse_transform_graph_clip(
+            right_clip,
+            right_times);
+
+    std::vector<OfflineSceneTransformGraphFrameState> reference_frames;
+    reference_frames.reserve(schedule.size());
+    for (std::size_t index = 0U; index < schedule.size(); ++index) {
+        if (schedule[index].weight == 0.0F) {
+            reference_frames.push_back(left_sampled[index]);
+            continue;
+        }
+        if (schedule[index].weight == 1.0F) {
+            reference_frames.push_back(right_sampled[index]);
+            continue;
+        }
+
+        OfflineSceneTransformGraphFrameState reference;
+        reference.camera = detail::interpolate_offline_timeline_camera(
+            left_sampled[index].camera,
+            right_sampled[index].camera,
+            schedule[index].weight);
+        reference.local_transforms.reserve(3U);
+        for (std::size_t local_index = 0U; local_index < 3U; ++local_index) {
+            reference.local_transforms.push_back(
+                detail::interpolate_offline_timeline_affine(
+                    left_sampled[index].local_transforms[local_index],
+                    right_sampled[index].local_transforms[local_index],
+                    schedule[index].weight));
+        }
+        reference_frames.push_back(std::move(reference));
+    }
+
+    if (scheduled_frames.size() == schedule.size()) {
+        check(
+            exact_matrix_equal(
+                scheduled_frames[0].local_transforms[0],
+                left_sampled[0].local_transforms[0]),
+            "schedule weight zero is exact left-source passthrough at its independent source time");
+        check(
+            exact_matrix_equal(
+                scheduled_frames[2].local_transforms[0],
+                right_sampled[2].local_transforms[0]),
+            "schedule weight one is exact right-source passthrough at its independent source time");
+        check(
+            exact_matrix_equal(
+                scheduled_frames[1].local_transforms[0],
+                scheduled_frames[3].local_transforms[0]),
+            "repeated independent-time schedule records are deterministic");
+        check(
+            !exact_matrix_equal(
+                scheduled_frames[1].local_transforms[0],
+                scheduled_frames[4].local_transforms[0]),
+            "out-of-order independently advancing source times and weights produce distinct local states");
+    }
+
+    const PreparedOfflineCameraSequence scheduled_sequence =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            schedule);
+    const PreparedOfflineCameraSequence reference_sequence =
+        prepare_offline_transform_graph_sequence(
+            reusable,
+            graph,
+            reference_frames);
+
+    check(
+        scheduled_sequence.frame_count() == reference_sequence.frame_count(),
+        "independent-time blend schedule and manual M102-local/M99 reference prepare equal frame counts");
+    for (std::size_t index = 0U;
+         index < scheduled_sequence.frame_count()
+             && index < reference_sequence.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    scheduled_sequence, index),
+                render_prepared_camera_sequence_frame(
+                    reference_sequence, index)),
+            "independent-time blend schedule is exact resolved/hash and 4x per-sample equivalent to manual M102-local/M99 reference");
+    }
+    if (scheduled_sequence.frame_count() == schedule.size()) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    scheduled_sequence, 1U),
+                render_prepared_camera_sequence_frame(
+                    scheduled_sequence, 3U)),
+            "repeated independent-time blend schedule output renders deterministically");
+        check(
+            !exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    scheduled_sequence, 0U),
+                render_prepared_camera_sequence_frame(
+                    scheduled_sequence, 2U)),
+            "cross-fade schedule observably transitions between independently timed source motions");
+    }
+}
+
+void test_programmatic_sparse_clip_blend_schedule_validation_contract() {
+    const OfflineSceneCamera camera =
+        camera_at({0.0F, 0.0F, 3.0F});
+    const Mat4 identity = Mat4::identity();
+
+    const OfflineSceneSparseTransformGraphClip left_clip(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {});
+    const OfflineSceneSparseTransformGraphClip right_clip(
+        10.0F,
+        14.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {});
+    const OfflineSceneSparseTransformGraphClip two_node_clip(
+        10.0F,
+        14.0F,
+        camera,
+        {identity, identity},
+        std::nullopt,
+        {});
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clip_schedule(
+                left_clip,
+                two_node_clip,
+                std::span<const OfflineSceneSparseClipBlendScheduleEntry>{});
+        },
+        "blend schedule rejects unequal graph-local ownership even for empty schedules");
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 1>
+        nonfinite_left{{
+            {
+                std::numeric_limits<float>::quiet_NaN(),
+                10.0F,
+                0.5F,
+            },
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clip_schedule(
+                left_clip,
+                right_clip,
+                nonfinite_left);
+        },
+        "blend schedule rejects non-finite left source time");
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 1>
+        nonfinite_right{{
+            {
+                0.0F,
+                std::numeric_limits<float>::infinity(),
+                0.5F,
+            },
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clip_schedule(
+                left_clip,
+                right_clip,
+                nonfinite_right);
+        },
+        "blend schedule rejects non-finite right source time");
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 1>
+        invalid_weight{{{0.0F, 10.0F, 1.1F}}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clip_schedule(
+                left_clip,
+                right_clip,
+                invalid_weight);
+        },
+        "blend schedule rejects out-of-range per-sample weight");
+
+    std::vector<OfflineSceneSparseClipBlendScheduleEntry> too_many(
+        detail::kMaxOfflineTimelineSamples + 1U,
+        OfflineSceneSparseClipBlendScheduleEntry{0.0F, 10.0F, 0.5F});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clip_schedule(
+                left_clip,
+                right_clip,
+                too_many);
+        },
+        "blend schedule enforces the established bounded output sample count");
+
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::nullopt,
+        },
+        {1U, 2U});
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+                reusable,
+                graph,
+                two_node_clip,
+                two_node_clip,
+                std::span<const OfflineSceneSparseClipBlendScheduleEntry>{});
+        },
+        "blend schedule clip ownership must match immutable graph node count");
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 2>
+        invalid_later_right{{
+            {0.0F, 10.0F, 0.5F},
+            {1.0F, 99.0F, 0.5F},
+        }};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+                reusable,
+                graph,
+                left_clip,
+                right_clip,
+                invalid_later_right);
+        },
+        "later invalid right source time rejects the complete blend schedule transaction");
+    check(
+        shade_calls == 0U,
+        "later invalid blend-schedule source time rejects before any earlier fragment execution");
+
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 1>
+        invalid_endpoint_right{{{0.0F, 99.0F, 0.0F}}};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+                reusable,
+                graph,
+                left_clip,
+                right_clip,
+                invalid_endpoint_right);
+        },
+        "schedule weight zero still validates the independent right source time");
+    check(
+        shade_calls == 0U,
+        "invalid endpoint-passthrough source time rejects before fragment execution");
+
+    const float large =
+        std::numeric_limits<float>::max() / 4.0F;
+    Mat4 large_scale = Mat4::identity();
+    large_scale(0U, 0U) = large;
+
+    const OfflineSceneSparseTransformGraphClip left_overflow(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, identity},
+                    {2.0F, large_scale},
+                }},
+        });
+    const OfflineSceneSparseTransformGraphClip right_overflow(
+        10.0F,
+        14.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                1U,
+                {
+                    {10.0F, identity},
+                    {14.0F, large_scale},
+                }},
+        });
+    const std::array<OfflineSceneSparseClipBlendScheduleEntry, 2>
+        safe_then_overflow{{
+            {0.0F, 10.0F, 0.5F},
+            {2.0F, 14.0F, 0.5F},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+                reusable,
+                graph,
+                left_overflow,
+                right_overflow,
+                safe_then_overflow);
+        },
+        "later independently timed local blend whose parent-child composition overflows rejects the complete schedule");
+    check(
+        shade_calls == 0U,
+        "later blend-schedule composition failure occurs before any earlier safe sample fragment execution");
+
+    const PreparedOfflineCameraSequence empty =
+        prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            std::span<const OfflineSceneSparseClipBlendScheduleEntry>{});
+    check(
+        empty.frame_count() == 0U,
+        "valid blend schedule accepts an empty request after complete ownership validation");
+}
+
 void test_programmatic_transform_graph_timeline_matches_m97_and_local_reference() {
     OfflineRenderSettings settings;
     settings.width = 61U;
@@ -3625,6 +4163,8 @@ int main() {
     test_programmatic_sparse_transform_graph_clip_validation_contract();
     test_programmatic_sparse_clip_blend_endpoints_and_local_reference();
     test_programmatic_sparse_clip_blend_validation_contract();
+    test_programmatic_sparse_clip_blend_schedule_crossfade_and_m103_equivalence();
+    test_programmatic_sparse_clip_blend_schedule_validation_contract();
     test_programmatic_transform_graph_timeline_matches_m97_and_local_reference();
     test_programmatic_transform_graph_timeline_validation_contract();
     test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
