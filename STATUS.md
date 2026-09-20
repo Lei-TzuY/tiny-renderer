@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 106 bounded programmatic single-pose linear-blend skinning
+## Architecture frontier: Milestone 107 normal-aware linear-blend skinning
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -301,17 +301,36 @@ M106 moves the renderer beyond rigid transform-graph animation into bounded vert
 - M106 deforms **positions only**. Any enabled fixed-light path is rejected while skinning is active, preventing stale object-space normal/tangent varyings from being presented as correct skinned lighting. This also keeps normal-map shading outside the claimed surface until its normal semantics exist.
 - M106 adds no skeletal file syntax, animated joint palettes, inverse-bind ownership, skinned normals/tangents, dual-quaternion skinning, morph targets, IK/constraints, GPU shaders, parallel execution, or performance claim.
 
-## Promotion after Milestone 106
+## Milestone 107 — normal-aware linear-blend skinning
 
-Single-pose position skinning is now structurally integrated, but fixed lighting remains intentionally unavailable because normal/tangent deformation is not yet represented. The next highest-value cross-layer gap is **normal-aware skinning** rather than animation orchestration. Milestone 107 should extend the same skin state/object-space preparation path with bounded skinned normal semantics and remove the M106 lighting restriction only where correctness is executable.
+M107 removes M106's deliberate fixed-light restriction by extending the same object-space skinning pass to the renderer's existing normal-binding semantics.
 
-A Milestone 107 slice should require:
+- No second skin-normal channel API is introduced. Model preparation derives the unique active `NormalBinding` from the already-validated directional/point/fixed/environment-light contract and the material draws that actually consume it.
+- Shadow-only preparation still supplies no normal binding, so depth capture continues to skin positions only while sharing the exact M106 silhouette path.
+- When an active normal binding exists, every joint skin matrix is converted through the established finite/stable inverse-transpose `normal_matrix` primitive before any vertex is emitted. Singular or unstable joint linear transforms therefore fail closed for lit skinning without weakening position-only shadow semantics.
+- The active normal channels must exist on every canonical vertex and keep one interpolation qualifier, matching the existing raster normal-binding contract.
+- Each source normal must be finite and non-zero. The same 1..4 vertex influences used for position LBS weight the joint-transformed normals in double precision; the complete weighted result must remain finite/non-zero and is deterministically normalized before being written back to the exact existing varying channels.
+- All non-normal varying values, varying count, interpolation qualifiers, triangle topology, and material ownership remain unchanged. Normal skinning occurs before M35 `VertexProgram`, so custom object-space vertex processing sees the already-skinned position/normal state.
+- Direct models, prepared models/instances/lists, and their existing preflight transaction all route through one `prepare_model_object_space_mesh` helper. There is no separate lit-skinned renderer path.
+- Identity skinning with an active fixed light is exact resolved RGB and per-sample depth/stencil equivalent to the canonical fixed-light path, including prepared execution.
+- A non-uniformly scaled/rotated multi-joint pose is exact-equivalent to an independently materialized position+normal mesh for direct and prepared fixed-light rendering.
+- A normal-map differential uses the same multi-joint pose and an independent manual mesh; exact framebuffer equivalence proves tangent frames are derived from already-skinned positions and tangent-space shading consumes the skinned geometric normal.
+- Validation regressions cover out-of-range active normal channels, singular joint normal matrices, and two valid joint normal transforms whose weighted directions cancel to zero.
+- Heterogeneous prepared-list regression places a valid lit skinned entry before a later singular-normal entry and proves the complete list rejects before earlier RGB/depth/stencil ownership.
+- M107 remains programmatic single-pose LBS. It adds no skeleton topology, inverse-bind ownership, animated palettes, skeletal file import, dual-quaternion skinning, morph targets, IK/constraints, GPU execution, parallel path, or performance claim.
 
-- an explicit normal-binding contract for skinned submissions, aligned with the existing fixed-light/normal-map `NormalBinding` rather than inventing a second normal channel system;
-- each active joint contributes a finite inverse-transpose transform of its skin-matrix linear part to the source normal. Weighted normal accumulation follows the vertex's existing skin influences, then requires a finite non-zero result and deterministic normalization;
-- normal deformation happens in the same canonical vertex pass as position skinning and still precedes M35 `VertexProgram`; untouched non-normal varying channels and interpolation qualifiers remain bit-exact;
-- identity skinning with normals must be exact-equivalent to today's fixed-light path, while a rotated/non-uniformly scaled multi-joint pose must match an independently constructed manual skinned-position/skinned-normal reference;
-- tangent-space normal mapping must derive tangent/bitangent from the already-skinned object-space geometry and consume the skinned geometric normal, with direct/prepared/shadow behavior staying on the established paths;
-- active lighting with skinning must reject missing/out-of-range normal channels, singular/unstable joint normal matrices, non-finite weighted normals, or zero-length normalized results before framebuffer mutation;
-- heterogeneous prepared-list preflight must still validate every complete skinned mesh/normal state before the first earlier entry can write;
-- M107 remains programmatic and single-pose. It adds no animated joint timelines, skeleton/inverse-bind file import, dual-quaternion skinning, morph targets, IK/constraints, GPU execution, or performance claim.
+## Promotion after Milestone 107
+
+Position and normal deformation are now integrated, but callers still have to precompose every final skin matrix externally. The next architectural gap is explicit skeletal ownership. Milestone 108 should establish a **bounded programmatic skeletal pose resolver** that owns joint topology and inverse-bind transforms, resolves one local joint pose, and produces the exact skin palette consumed by M107.
+
+A Milestone 108 slice should require:
+
+- one immutable skeleton with 1..256 joints, exactly one optional parent per joint, one finite affine inverse-bind matrix per joint, and the existing canonical-vertex skin bindings aligned to that skeleton's joint count;
+- arbitrary parent declaration order is accepted, while out-of-range/self-parent/cyclic topology, binding/palette ownership mismatch, non-finite/projective inverse binds, and capacity overflow fail closed at construction;
+- one pose supplies exactly one finite affine local transform per joint. World joints resolve as `parent_world * local` with roots using local directly, independent of declaration order;
+- final skin matrices are computed only after complete world-pose resolution as `world_joint * inverse_bind`, then validated through the existing `SkinningState` contract rather than bypassing it;
+- a root-only skeleton and an arbitrary-order chain must produce rendering exactly equivalent to independently precomposed M107 skin matrices, including normal-aware fixed lighting;
+- a bind-compatible pose whose composed world transforms are inverse to the owned inverse-bind transforms should reduce to identity skin matrices and remain exact-equivalent to canonical geometry;
+- later joint composition or `world * inverse_bind` overflow must reject before any prepared-list framebuffer mutation;
+- prepared lifetime must own skeleton/bind state independently from caller temporaries, while camera/shadow continue to consume only the resulting M107 skin state and never a new raster path;
+- M108 is programmatic single-pose skeleton resolution only. It adds no animation timeline, file import/glTF skin parsing, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, or performance claim.
