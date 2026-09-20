@@ -9,6 +9,7 @@ option(TINY_RENDERER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBeh
 
 add_library(tiny_renderer
     src/framebuffer.cpp
+    src/gltf_loader.cpp
     src/framebuffer_output.cpp
     src/image_loader.cpp
     src/material_asset_loader.cpp
@@ -486,6 +487,13 @@ if(BUILD_TESTING)
     add_executable(tiny_renderer_skinning_tests tests/test_skinning.cpp)
     target_link_libraries(tiny_renderer_skinning_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_skinning_tests COMMAND tiny_renderer_skinning_tests)
+
+    add_executable(tiny_renderer_gltf_loader_tests tests/test_gltf_loader.cpp)
+    target_link_libraries(tiny_renderer_gltf_loader_tests PRIVATE tiny_renderer)
+    target_compile_definitions(tiny_renderer_gltf_loader_tests PRIVATE
+        TINY_RENDERER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME tiny_renderer_gltf_loader_tests COMMAND tiny_renderer_gltf_loader_tests)
 
     add_executable(tiny_renderer_normal_mapping_tests tests/test_normal_mapping.cpp)
     target_link_libraries(tiny_renderer_normal_mapping_tests PRIVATE tiny_renderer)
