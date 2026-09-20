@@ -128,6 +128,16 @@ std::filesystem::path write_case(
     return root / "case.gltf";
 }
 
+std::filesystem::path write_morph_case(
+    const std::string& name,
+    const std::string& json,
+    const std::vector<std::uint8_t>& bytes) {
+    const std::filesystem::path root = case_root(name);
+    write_text(root / "case.gltf", json);
+    write_bytes(root / "skinned_morph_triangle.bin", bytes);
+    return root / "case.gltf";
+}
+
 void replace_once(
     std::string& text,
     const std::string& before,
@@ -191,6 +201,29 @@ void set_f32(
         static_cast<std::uint8_t>((bits >> 16U) & 0xFFU);
     bytes[offset + 3U] =
         static_cast<std::uint8_t>((bits >> 24U) & 0xFFU);
+}
+
+void append_f32(
+    std::vector<std::uint8_t>& bytes,
+    float value) {
+    const std::uint32_t bits =
+        std::bit_cast<std::uint32_t>(value);
+    bytes.push_back(
+        static_cast<std::uint8_t>(bits & 0xFFU));
+    bytes.push_back(
+        static_cast<std::uint8_t>((bits >> 8U) & 0xFFU));
+    bytes.push_back(
+        static_cast<std::uint8_t>((bits >> 16U) & 0xFFU));
+    bytes.push_back(
+        static_cast<std::uint8_t>((bits >> 24U) & 0xFFU));
+}
+
+void append_vec3(
+    std::vector<std::uint8_t>& bytes,
+    const Vec3& value) {
+    append_f32(bytes, value.x);
+    append_f32(bytes, value.y);
+    append_f32(bytes, value.z);
 }
 
 bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
@@ -278,6 +311,44 @@ SkeletalRigPtr manual_rig() {
                 SkinInfluence{1U, 0.5F},
             }),
         });
+}
+
+MorphTargetSetPtr manual_morph_targets() {
+    MorphTarget first;
+    first.position_deltas = {
+        {0.0F, 0.0F, 0.0F},
+        {0.25F, 0.0F, 0.0F},
+        {0.0F, 0.25F, 0.0F},
+    };
+    first.normal_deltas = std::vector<Vec3>{
+        {0.25F, 0.0F, 0.0F},
+        {0.25F, 0.0F, 0.0F},
+        {0.25F, 0.0F, 0.0F},
+    };
+
+    MorphTarget second;
+    second.position_deltas = {
+        {-0.25F, 0.0F, 0.0F},
+        {0.0F, -0.25F, 0.0F},
+        {0.0F, 0.0F, 0.0F},
+    };
+    second.normal_deltas = std::vector<Vec3>{
+        {0.0F, 0.25F, 0.0F},
+        {0.0F, 0.25F, 0.0F},
+        {0.0F, 0.25F, 0.0F},
+    };
+
+    return std::make_shared<const MorphTargetSet>(
+        std::vector<MorphTarget>{
+            std::move(first),
+            std::move(second),
+        });
+}
+
+MorphStatePtr manual_default_morph_state() {
+    return std::make_shared<const MorphState>(
+        manual_morph_targets(),
+        std::vector<float>{0.5F, -0.25F});
 }
 
 DirectionalLight test_light() {
