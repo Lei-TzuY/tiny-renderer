@@ -960,7 +960,11 @@ SkeletalTrsClip manual_cubic_pose_clip(
                     },
                     {
                         1.0F,
-                        {-0.35F, 0.0F, 0.0F, 1.0F},
+                        // Accessor 13 intentionally reuses the first
+                        // inverse-bind matrix bytes; the animated fixture's
+                        // child inverse bind is -0.4 after the intermediary
+                        // node was introduced in M112.
+                        {-0.4F, 0.0F, 0.0F, 1.0F},
                         {1.0F, 0.0F, 0.0F, 0.0F},
                         {0.0F, 1.0F, 0.0F, 0.0F},
                     },
