@@ -559,6 +559,15 @@ using OfflineSequenceErrorFunction = void (*)(
     std::string_view token,
     const char* label,
     OfflineSequenceErrorFunction error) {
+    if (token.empty()) {
+        error(path, line, std::string(label) + " must be a non-negative integer");
+    }
+    for (const char character : token) {
+        if (character < '0' || character > '9') {
+            error(path, line, std::string(label) + " must be a non-negative integer");
+        }
+    }
+
     std::size_t consumed = 0U;
     unsigned long long value = 0ULL;
     try {
