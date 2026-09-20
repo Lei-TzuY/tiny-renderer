@@ -36,6 +36,8 @@ struct GltfSkinnedAsset {
 [[nodiscard]] GltfSkinnedAsset load_gltf_skinned_asset_file(
     const std::filesystem::path& path);
 
+// One bounded static M110 projection plus exactly one M112 LINEAR skeletal
+// animation projected onto the shared M111 semantic TRS evaluator.
 struct GltfSkinnedAnimatedAsset {
     GltfSkinnedAsset asset{};
     std::shared_ptr<const SkeletalTrsClip> animation{};
