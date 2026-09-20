@@ -1221,6 +1221,416 @@ void test_programmatic_hierarchy_validation_contract() {
         "hierarchy sequence enforces the established bounded frame count before world-frame allocation");
 }
 
+
+void test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::translation({8.0F, 0.0F, 0.0F}),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    const OfflineSceneHierarchy roots({
+        std::nullopt,
+        std::nullopt,
+    });
+    const std::vector<Mat4> local_a{
+        Mat4::translation({-0.35F, 0.0F, -0.1F}),
+        Mat4::translation({0.25F, 0.0F, -0.45F}),
+    };
+    const std::vector<Mat4> local_b{
+        Mat4::translation({0.35F, 0.0F, -0.55F}),
+        Mat4::translation({-0.25F, 0.0F, -0.2F}),
+    };
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        hierarchical_keyframes{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{camera, local_a}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{camera, local_b}},
+        }};
+    const std::array<OfflineSceneTimelineKeyframe, 2> flat_keyframes{{
+        OfflineSceneTimelineKeyframe{
+            0.0F,
+            OfflineSceneFrameState{camera, local_a}},
+        OfflineSceneTimelineKeyframe{
+            2.0F,
+            OfflineSceneFrameState{camera, local_b}},
+    }};
+    const std::array<float, 4> sample_times{{2.0F, 1.0F, 0.0F, 1.0F}};
+
+    const auto sampled_roots = sample_offline_hierarchical_timeline(
+        roots,
+        hierarchical_keyframes,
+        sample_times);
+    check(
+        sampled_roots.size() == sample_times.size(),
+        "hierarchical timeline preserves requested sample count");
+    if (sampled_roots.size() == sample_times.size()) {
+        check(
+            sampled_roots[0].local_transforms[0](0U, 3U)
+                == local_b[0](0U, 3U),
+            "exact hierarchical keyframe sampling preserves stored local transform state without interpolation arithmetic");
+        check(
+            sampled_roots[1].local_transforms[0](0U, 3U)
+                == sampled_roots[3].local_transforms[0](0U, 3U),
+            "repeated hierarchical timeline requests are deterministic");
+    }
+
+    const PreparedOfflineCameraSequence hierarchical_roots =
+        prepare_offline_hierarchy_timeline_sequence(
+            reusable,
+            roots,
+            hierarchical_keyframes,
+            sample_times);
+    const PreparedOfflineCameraSequence flat =
+        prepare_offline_timeline_sequence(
+            reusable,
+            flat_keyframes,
+            sample_times);
+    check(
+        hierarchical_roots.frame_count() == flat.frame_count(),
+        "root-only hierarchical timeline preserves M94 frame count");
+    for (std::size_t index = 0U;
+         index < hierarchical_roots.frame_count()
+             && index < flat.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    hierarchical_roots,
+                    index),
+                render_prepared_camera_sequence_frame(flat, index)),
+            "root-only hierarchical timeline is exact resolved/hash and 4x per-sample equivalent to M94");
+    }
+
+    // Parent index deliberately points forward: entry 1 is the root and
+    // entry 0 is its child. The changing parent X scale makes local-space
+    // interpolation observably different from interpolating endpoint worlds.
+    const OfflineSceneHierarchy hierarchy({
+        std::optional<std::size_t>{1U},
+        std::nullopt,
+    });
+    Mat4 parent_a =
+        Mat4::translation({-0.15F, 0.0F, -0.3F})
+        * Mat4::scale({1.0F, 1.0F, 1.0F});
+    Mat4 parent_b =
+        Mat4::translation({0.15F, 0.0F, -0.3F})
+        * Mat4::scale({1.6F, 1.0F, 1.0F});
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        parented_keyframes{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {
+                        Mat4::translation({0.0F, 0.0F, 0.0F}),
+                        parent_a,
+                    }}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {
+                        Mat4::translation({0.4F, 0.0F, 0.0F}),
+                        parent_b,
+                    }}},
+        }};
+    const std::array<float, 1> midpoint{{1.0F}};
+    const auto sampled_parented = sample_offline_hierarchical_timeline(
+        hierarchy,
+        parented_keyframes,
+        midpoint);
+    check(
+        sampled_parented.size() == 1U,
+        "parented hierarchical timeline produces the requested interior sample");
+
+    Mat4 expected_parent = Mat4::identity();
+    expected_parent(0U, 0U) = 1.3F;
+    expected_parent(0U, 3U) = 0.0F;
+    expected_parent(2U, 3U) = -0.3F;
+    const Mat4 expected_child_local =
+        Mat4::translation({0.2F, 0.0F, 0.0F});
+    const Mat4 expected_child_world =
+        expected_parent * expected_child_local;
+    const std::array<OfflineSceneFrameState, 1> explicit_midpoint{{
+        OfflineSceneFrameState{
+            camera,
+            {expected_child_world, expected_parent}},
+    }};
+
+    if (sampled_parented.size() == 1U) {
+        const std::vector<Mat4> resolved =
+            detail::resolve_offline_hierarchy_world_transforms(
+                hierarchy,
+                sampled_parented.front().local_transforms);
+        check(
+            resolved.size() == 2U
+                && std::fabs(resolved[0](0U, 3U) - 0.26F) < 1.0e-5F,
+            "hierarchical timeline interpolates local state before parent-world composition");
+        const float endpoint_world_midpoint =
+            0.5F * (
+                (parent_a * parented_keyframes[0].frame.local_transforms[0])(
+                    0U, 3U)
+                + (parent_b * parented_keyframes[1].frame.local_transforms[0])(
+                    0U, 3U));
+        check(
+            std::fabs(resolved[0](0U, 3U) - endpoint_world_midpoint)
+                > 1.0e-3F,
+            "hierarchical timeline does not shortcut through world-transform interpolation");
+    }
+
+    const PreparedOfflineCameraSequence hierarchical_midpoint =
+        prepare_offline_hierarchy_timeline_sequence(
+            reusable,
+            hierarchy,
+            parented_keyframes,
+            midpoint);
+    const PreparedOfflineCameraSequence manual_midpoint =
+        prepare_offline_frame_sequence(
+            reusable,
+            explicit_midpoint);
+    check(
+        hierarchical_midpoint.frame_count() == 1U
+            && manual_midpoint.frame_count() == 1U
+            && exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    hierarchical_midpoint,
+                    0U),
+                render_prepared_camera_sequence_frame(
+                    manual_midpoint,
+                    0U)),
+        "parented local-interpolate-then-compose result is exact-equivalent to an independently constructed M92 world frame");
+}
+
+void test_programmatic_hierarchical_timeline_validation_contract() {
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+    const OfflineSceneHierarchy hierarchy({
+        std::optional<std::size_t>{1U},
+        std::nullopt,
+    });
+
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        missing_local{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity()}}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity()}}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_hierarchical_timeline(
+                hierarchy,
+                missing_local,
+                std::span<const float>{});
+        },
+        "hierarchical timeline validates every keyframe local count even for an empty sample request");
+
+    const OfflineSceneHierarchy wrong_scene_hierarchy({
+        std::nullopt,
+    });
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        wrong_scene_keyframes{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity()}}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity()}}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_timeline_sequence(
+                reusable,
+                wrong_scene_hierarchy,
+                wrong_scene_keyframes,
+                std::span<const float>{});
+        },
+        "hierarchical timeline topology ownership must match the prepared scene before sampling");
+
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        later_projective{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        Mat4::perspective(
+                            radians(55.0F),
+                            1.0F,
+                            0.1F,
+                            20.0F),
+                    }}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_timeline_sequence(
+                reusable,
+                hierarchy,
+                later_projective,
+                std::span<const float>{});
+        },
+        "hierarchical timeline rejects a projective local keyframe before sampling");
+    check(
+        shade_calls == 0U,
+        "invalid hierarchical timeline keyframes reject before fragment execution");
+
+    Mat4 positive_max = Mat4::identity();
+    Mat4 negative_max = Mat4::identity();
+    positive_max(0U, 0U) = std::numeric_limits<float>::max();
+    negative_max(0U, 0U) = -std::numeric_limits<float>::max();
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        interpolation_overflow{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity(), positive_max}}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity(), negative_max}}},
+        }};
+    const std::array<float, 2> exact_then_interior{{0.0F, 1.0F}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_timeline_sequence(
+                reusable,
+                hierarchy,
+                interpolation_overflow,
+                exact_then_interior);
+        },
+        "later non-finite local interpolation rejects the complete hierarchical timeline transaction");
+    check(
+        shade_calls == 0U,
+        "later invalid local interpolation rejects before any earlier sample executes fragments");
+
+    Mat4 huge_parent = Mat4::identity();
+    huge_parent(0U, 0U) = std::numeric_limits<float>::max();
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        composition_overflow{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {
+                        Mat4::scale({1.0F, 1.0F, 1.0F}),
+                        Mat4::scale({1.0F, 1.0F, 1.0F}),
+                    }}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {
+                        Mat4::scale({4.0F, 1.0F, 1.0F}),
+                        huge_parent,
+                    }}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_hierarchy_timeline_sequence(
+                reusable,
+                hierarchy,
+                composition_overflow,
+                exact_then_interior);
+        },
+        "finite interpolated locals whose parent composition overflows reject before M92 preparation");
+    check(
+        shade_calls == 0U,
+        "later composed-world overflow remains fail-closed before fragment execution");
+
+    std::vector<float> too_many_samples(
+        detail::kMaxOfflineTimelineSamples + 1U,
+        0.0F);
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        valid{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_hierarchical_timeline(
+                hierarchy,
+                valid,
+                too_many_samples);
+        },
+        "hierarchical timeline enforces the established bounded sample count before allocation");
+}
+
 void test_prepared_frame_sequence_rejects_invalid_transform_records() {
     OfflineRenderSettings settings;
     settings.width = 37U;
@@ -1332,6 +1742,8 @@ int main() {
     test_bounded_timeline_validation_contract();
     test_programmatic_hierarchy_matches_explicit_world_frames();
     test_programmatic_hierarchy_validation_contract();
+    test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
+    test_programmatic_hierarchical_timeline_validation_contract();
     test_prepared_frame_sequence_rejects_invalid_transform_records();
     test_reusable_scene_validation_contract();
 
