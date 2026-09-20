@@ -800,13 +800,14 @@ void test_skeletal_rig_validation_contract() {
             });
     Mat4 huge = Mat4::identity();
     huge(0U, 0U) = 1.0e20F;
+    const std::array<Mat4, 2> composed_overflow_pose{
+        huge,
+        huge,
+    };
     check_throws<std::invalid_argument>(
         [&] {
             (void)composed_overflow_rig->resolve_pose(
-                std::array<Mat4, 2>{
-                    huge,
-                    huge,
-                });
+                composed_overflow_pose);
         },
         "skeletal pose rejects finite locals whose parent composition overflows");
 
@@ -815,10 +816,11 @@ void test_skeletal_rig_validation_contract() {
             std::vector<std::optional<std::size_t>>{std::nullopt},
             std::vector<Mat4>{huge},
             one_binding());
+    const std::array<Mat4, 1> final_overflow_pose{huge};
     check_throws<std::invalid_argument>(
         [&] {
             (void)final_overflow_rig->resolve_pose(
-                std::array<Mat4, 1>{huge});
+                final_overflow_pose);
         },
         "skeletal pose rejects world times inverse-bind overflow");
 }
@@ -1120,30 +1122,26 @@ void test_skeletal_prepared_list_fail_closed_on_later_pose_overflow() {
             "later skeletal pose overflow rejects before earlier stencil ownership");
     }
 
+    const std::array<PreparedModelListEntry, 1> painter_entries{{
+        {&valid, Mat4::identity()},
+    }};
     check_throws<std::invalid_argument>(
         [&] {
             (void)order_prepared_model_list_back_to_front(
-                std::array<PreparedModelListEntry, 1>{
-                    PreparedModelListEntry{
-                        &valid,
-                        Mat4::identity(),
-                    },
-                },
+                painter_entries,
                 Mat4::identity());
         },
         "canonical painter ordering rejects deferred skeletal poses");
 
     const PreparedSpatialSubmission spatial =
         prepare_spatial_submission(valid);
+    const std::array<PreparedSpatialListEntry, 1> spatial_entries{{
+        {&spatial, Mat4::identity()},
+    }};
     check_throws<std::invalid_argument>(
         [&] {
             (void)flatten_prepared_model_draws(
-                std::array<PreparedSpatialListEntry, 1>{
-                    PreparedSpatialListEntry{
-                        &spatial,
-                        Mat4::identity(),
-                    },
-                },
+                spatial_entries,
                 Mat4::identity());
         },
         "prepared spatial planning rejects deferred skeletal poses");
