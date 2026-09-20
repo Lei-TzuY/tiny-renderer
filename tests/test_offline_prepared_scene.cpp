@@ -1595,6 +1595,492 @@ void test_programmatic_transform_graph_validation_contract() {
         "transform graph sequence enforces the established bounded frame count");
 }
 
+
+void test_programmatic_transform_graph_timeline_matches_m97_and_local_reference() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+
+    // A 1:1 graph timeline is the same semantic surface as M97: identical
+    // topology, local keyframes, and sample requests must render exactly.
+    const OfflineSceneHierarchy hierarchy({
+        std::optional<std::size_t>{1U},
+        std::nullopt,
+    });
+    const OfflineSceneTransformGraph one_to_one_graph(
+        {
+            std::optional<std::size_t>{1U},
+            std::nullopt,
+        },
+        {0U, 1U});
+    const std::vector<Mat4> local_a{
+        Mat4::translation({0.10F, 0.0F, -0.10F}),
+        Mat4::translation({-0.35F, 0.0F, -0.30F}),
+    };
+    const std::vector<Mat4> local_b{
+        Mat4::translation({0.45F, 0.0F, -0.20F}),
+        Mat4::translation({0.20F, 0.0F, -0.45F}),
+    };
+    const std::array<OfflineSceneHierarchicalTimelineKeyframe, 2>
+        hierarchy_keyframes{{
+            OfflineSceneHierarchicalTimelineKeyframe{
+                0.0F,
+                OfflineSceneHierarchicalFrameState{camera, local_a}},
+            OfflineSceneHierarchicalTimelineKeyframe{
+                2.0F,
+                OfflineSceneHierarchicalFrameState{camera, local_b}},
+        }};
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        graph_keyframes{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{camera, local_a}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{camera, local_b}},
+        }};
+    const std::array<float, 4> sample_times{{2.0F, 1.0F, 0.0F, 1.0F}};
+
+    const auto sampled_graph = sample_offline_transform_graph_timeline(
+        one_to_one_graph,
+        graph_keyframes,
+        sample_times);
+    check(
+        sampled_graph.size() == sample_times.size(),
+        "transform graph timeline preserves caller sample count and order");
+    if (sampled_graph.size() == sample_times.size()) {
+        check(
+            sampled_graph[0].local_transforms[0](0U, 3U)
+                == local_b[0](0U, 3U),
+            "exact graph keyframe requests preserve stored graph-local state without interpolation arithmetic");
+        check(
+            sampled_graph[1].local_transforms[0](0U, 3U)
+                == sampled_graph[3].local_transforms[0](0U, 3U),
+            "repeated graph timeline requests are deterministic");
+    }
+
+    const PreparedOfflineCameraSequence graph_sequence =
+        prepare_offline_transform_graph_timeline_sequence(
+            reusable,
+            one_to_one_graph,
+            graph_keyframes,
+            sample_times);
+    const PreparedOfflineCameraSequence hierarchical_sequence =
+        prepare_offline_hierarchy_timeline_sequence(
+            reusable,
+            hierarchy,
+            hierarchy_keyframes,
+            sample_times);
+    check(
+        graph_sequence.frame_count() == hierarchical_sequence.frame_count()
+            && graph_sequence.frame_count() == sample_times.size(),
+        "1:1 graph timeline preserves M97 prepared sample ownership");
+    for (std::size_t index = 0U;
+         index < graph_sequence.frame_count()
+             && index < hierarchical_sequence.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(graph_sequence, index),
+                render_prepared_camera_sequence_frame(
+                    hierarchical_sequence,
+                    index)),
+            "1:1 graph timeline is exact resolved/hash and 4x per-sample equivalent to M97");
+    }
+
+    // Node 0 is a transform-only animated pivot. Children 1 and 2 are render
+    // bindings. The pivot scale and child translations both change, making
+    // local-interpolate-then-compose observably different from interpolating
+    // the endpoint world matrices.
+    const OfflineSceneTransformGraph grouped_graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+    const Mat4 pivot_a =
+        Mat4::translation({-0.15F, 0.0F, -0.30F})
+        * Mat4::scale({1.0F, 1.0F, 1.0F});
+    const Mat4 pivot_b =
+        Mat4::translation({0.15F, 0.0F, -0.30F})
+        * Mat4::scale({1.6F, 1.0F, 1.0F});
+    const Mat4 red_a = Mat4::translation({0.0F, 0.0F, 0.0F});
+    const Mat4 red_b = Mat4::translation({0.4F, 0.0F, 0.0F});
+    const Mat4 green_a = Mat4::translation({0.30F, 0.0F, -0.10F});
+    const Mat4 green_b = Mat4::translation({-0.20F, 0.0F, -0.10F});
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        grouped_keyframes{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {pivot_a, red_a, green_a}}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {pivot_b, red_b, green_b}}},
+        }};
+    const std::array<float, 1> midpoint{{1.0F}};
+    const auto sampled_midpoint = sample_offline_transform_graph_timeline(
+        grouped_graph,
+        grouped_keyframes,
+        midpoint);
+    check(
+        sampled_midpoint.size() == 1U,
+        "animated transform-only pivot produces the requested graph-local midpoint");
+
+    Mat4 expected_pivot = Mat4::identity();
+    expected_pivot(0U, 0U) = 1.3F;
+    expected_pivot(0U, 3U) = 0.0F;
+    expected_pivot(2U, 3U) = -0.30F;
+    const Mat4 expected_red_local =
+        Mat4::translation({0.20F, 0.0F, 0.0F});
+    const Mat4 expected_green_local =
+        Mat4::translation({0.05F, 0.0F, -0.10F});
+    const Mat4 expected_red_world = expected_pivot * expected_red_local;
+    const Mat4 expected_green_world = expected_pivot * expected_green_local;
+    const std::array<OfflineSceneFrameState, 1> manual_midpoint{{
+        OfflineSceneFrameState{
+            camera,
+            {expected_red_world, expected_green_world}},
+    }};
+
+    if (sampled_midpoint.size() == 1U) {
+        const std::vector<Mat4> resolved =
+            detail::resolve_offline_transform_graph_render_world_transforms(
+                grouped_graph,
+                sampled_midpoint.front().local_transforms);
+        check(
+            resolved.size() == 2U
+                && std::fabs(
+                    resolved[0](0U, 3U)
+                    - expected_red_world(0U, 3U)) < 1.0e-5F,
+            "graph timeline interpolates transform-only and render-bound locals before graph composition");
+        const float endpoint_world_midpoint =
+            0.5F * (
+                (pivot_a * red_a)(0U, 3U)
+                + (pivot_b * red_b)(0U, 3U));
+        check(
+            std::fabs(
+                resolved[0](0U, 3U)
+                - endpoint_world_midpoint) > 1.0e-3F,
+            "graph timeline does not shortcut through endpoint world-transform interpolation");
+    }
+
+    const PreparedOfflineCameraSequence grouped_midpoint =
+        prepare_offline_transform_graph_timeline_sequence(
+            reusable,
+            grouped_graph,
+            grouped_keyframes,
+            midpoint);
+    const PreparedOfflineCameraSequence explicit_midpoint =
+        prepare_offline_frame_sequence(
+            reusable,
+            manual_midpoint);
+    check(
+        grouped_midpoint.frame_count() == 1U
+            && explicit_midpoint.frame_count() == 1U
+            && exact_frame_equal(
+                render_prepared_camera_sequence_frame(grouped_midpoint, 0U),
+                render_prepared_camera_sequence_frame(explicit_midpoint, 0U)),
+        "animated transform-only pivot midpoint is exact-equivalent to independently composed M92 world state");
+}
+
+void test_programmatic_transform_graph_timeline_validation_contract() {
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 1>
+        single_keyframe{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        Mat4::identity(),
+                        Mat4::identity(),
+                    }}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_transform_graph_timeline(
+                graph,
+                single_keyframe,
+                std::span<const float>{});
+        },
+        "transform graph timeline requires at least two keyframes even for an empty sample request");
+
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        missing_local{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_transform_graph_timeline(
+                graph,
+                missing_local,
+                std::span<const float>{});
+        },
+        "transform graph timeline validates complete graph-local ownership before considering sample count");
+
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        non_increasing{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                1.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        Mat4::identity(),
+                        Mat4::identity(),
+                    }}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                1.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        Mat4::identity(),
+                        Mat4::identity(),
+                    }}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_transform_graph_timeline(
+                graph,
+                non_increasing,
+                std::span<const float>{});
+        },
+        "transform graph timeline rejects non-increasing keyframe time");
+
+    const OfflineSceneTransformGraph wrong_binding_graph(
+        {
+            std::nullopt,
+            std::nullopt,
+        },
+        {0U});
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        wrong_binding_keyframes{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {Mat4::identity(), Mat4::identity()}}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_timeline_sequence(
+                reusable,
+                wrong_binding_graph,
+                wrong_binding_keyframes,
+                std::span<const float>{});
+        },
+        "transform graph timeline render binding ownership must match the prepared scene before sampling");
+
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        later_projective{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        Mat4::identity(),
+                        Mat4::identity(),
+                    }}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        Mat4::identity(),
+                        Mat4::perspective(
+                            radians(55.0F),
+                            1.0F,
+                            0.1F,
+                            20.0F),
+                    }}},
+        }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_timeline_sequence(
+                reusable,
+                graph,
+                later_projective,
+                std::span<const float>{});
+        },
+        "transform graph timeline rejects projective graph-local keyframes before sampling");
+    check(
+        shade_calls == 0U,
+        "invalid transform graph timeline keyframes reject before fragment execution");
+
+    const float large_scale =
+        std::numeric_limits<float>::max() / 4.0F;
+    Mat4 large = Mat4::identity();
+    large(0U, 0U) = large_scale;
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        interior_composition_overflow{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        large,
+                        Mat4::identity(),
+                        Mat4::identity(),
+                    }}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera,
+                    {
+                        Mat4::identity(),
+                        large,
+                        Mat4::identity(),
+                    }}},
+        }};
+    const std::array<float, 2> exact_then_interior{{0.0F, 1.0F}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_transform_graph_timeline_sequence(
+                reusable,
+                graph,
+                interior_composition_overflow,
+                exact_then_interior);
+        },
+        "later finite graph-local midpoint whose composed child world overflows rejects the complete timeline transaction");
+    check(
+        shade_calls == 0U,
+        "later graph timeline composition overflow rejects before any earlier requested sample executes fragments");
+
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2> valid{{
+        OfflineSceneTransformGraphTimelineKeyframe{
+            0.0F,
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity(),
+                }}},
+        OfflineSceneTransformGraphTimelineKeyframe{
+            2.0F,
+            OfflineSceneTransformGraphFrameState{
+                camera,
+                {
+                    Mat4::translation({0.1F, 0.0F, 0.0F}),
+                    Mat4::translation({0.2F, 0.0F, 0.0F}),
+                    Mat4::translation({-0.2F, 0.0F, 0.0F}),
+                }}},
+    }};
+
+    const std::array<float, 1> outside_domain{{3.0F}};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)sample_offline_transform_graph_timeline(
+                graph,
+                valid,
+                outside_domain);
+        },
+        "transform graph timeline rejects samples outside the keyframe domain");
+
+    std::vector<float> too_many_samples(
+        detail::kMaxOfflineTimelineSamples + 1U,
+        0.0F);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_transform_graph_timeline(
+                graph,
+                valid,
+                too_many_samples);
+        },
+        "transform graph timeline enforces the established bounded sample count before allocation");
+
+    const PreparedOfflineCameraSequence empty =
+        prepare_offline_transform_graph_timeline_sequence(
+            reusable,
+            graph,
+            valid,
+            std::span<const float>{});
+    check(
+        empty.frame_count() == 0U,
+        "valid graph timeline accepts an empty requested sample span after complete keyframe validation");
+}
+
 void test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference() {
     OfflineRenderSettings settings;
     settings.width = 61U;
@@ -2117,6 +2603,8 @@ int main() {
     test_programmatic_hierarchy_validation_contract();
     test_programmatic_transform_graph_matches_hierarchy_and_group_reference();
     test_programmatic_transform_graph_validation_contract();
+    test_programmatic_transform_graph_timeline_matches_m97_and_local_reference();
+    test_programmatic_transform_graph_timeline_validation_contract();
     test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
     test_programmatic_hierarchical_timeline_validation_contract();
     test_prepared_frame_sequence_rejects_invalid_transform_records();
