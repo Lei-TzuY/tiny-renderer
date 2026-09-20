@@ -69,7 +69,7 @@ constexpr std::size_t kMaxJsonDepth = 64U;
     if (!input) {
         fail("failed to open '" + path.string() + "'");
     }
-    const std::streampos end = input.tellg();
+    const std::streamoff end = input.tellg();
     if (end < 0) {
         fail("failed to determine size of '" + path.string() + "'");
     }
@@ -94,7 +94,7 @@ constexpr std::size_t kMaxJsonDepth = 64U;
     if (!input) {
         fail("failed to open external buffer '" + path.string() + "'");
     }
-    const std::streampos end = input.tellg();
+    const std::streamoff end = input.tellg();
     if (end < 0) {
         fail("failed to determine external buffer size");
     }
@@ -1286,6 +1286,7 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
     const JsonValue root_value = JsonParser(text).parse();
     const auto& root = as_object(root_value, "root");
 
+    reject_member(root, "extensions", "root");
     reject_member(root, "extensionsUsed", "root");
     reject_member(root, "extensionsRequired", "root");
     reject_member(root, "animations", "root");
