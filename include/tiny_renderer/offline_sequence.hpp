@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "tiny_renderer/affine_timeline.hpp"
 #include "tiny_renderer/offline_render.hpp"
 
 namespace tiny_renderer {
@@ -910,23 +911,11 @@ validate_offline_transform_graph_timeline_keyframes(
     const Mat4& a,
     const Mat4& b,
     float t) {
-    Mat4 result = Mat4::identity();
-    for (std::size_t row = 0U; row < 3U; ++row) {
-        for (std::size_t column = 0U; column < 4U; ++column) {
-            result(row, column) =
-                offline_timeline_lerp(a(row, column), b(row, column), t);
-        }
-    }
-    // The affine bottom row is semantic state, not an interpolated quantity.
-    // Endpoints were validated above; interior samples preserve it exactly.
-    result(3U, 0U) = 0.0F;
-    result(3U, 1U) = 0.0F;
-    result(3U, 2U) = 0.0F;
-    result(3U, 3U) = 1.0F;
-    validate_spatial_affine_matrix(
-        result,
+    return interpolate_bounded_affine(
+        a,
+        b,
+        t,
         "offline timeline interpolated model transform");
-    return result;
 }
 
 inline void validate_offline_sparse_clip_blend_weight(float weight) {
@@ -1035,46 +1024,12 @@ template <
     std::string_view timeline_label,
     ValueAccessor value_of,
     InterpolateValue interpolate_value) {
-    if (!std::isfinite(sample_time)) {
-        throw std::invalid_argument(
-            std::string(timeline_label) + " sample time must be finite");
-    }
-    if (sample_time < keyframes.front().time
-        || sample_time > keyframes.back().time) {
-        throw std::out_of_range(
-            std::string(timeline_label)
-            + " sample time is outside the keyframe domain");
-    }
-
-    if (sample_time == keyframes.front().time) {
-        return value_of(keyframes.front());
-    }
-
-    std::size_t upper = 1U;
-    while (upper < keyframes.size()
-           && keyframes[upper].time < sample_time) {
-        ++upper;
-    }
-    if (upper < keyframes.size()
-        && sample_time == keyframes[upper].time) {
-        return value_of(keyframes[upper]);
-    }
-    if (upper >= keyframes.size()) {
-        throw std::logic_error(
-            std::string(timeline_label)
-            + " failed to bracket an in-domain sample");
-    }
-
-    const Keyframe& left = keyframes[upper - 1U];
-    const Keyframe& right = keyframes[upper];
-    const float denominator = right.time - left.time;
-    const float t = (sample_time - left.time) / denominator;
-    if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
-        throw std::logic_error(
-            std::string(timeline_label)
-            + " produced an invalid interpolation parameter");
-    }
-    return interpolate_value(value_of(left), value_of(right), t);
+    return sample_bounded_keyframe_value<Keyframe, Value>(
+        keyframes,
+        sample_time,
+        timeline_label,
+        std::move(value_of),
+        std::move(interpolate_value));
 }
 
 template <typename Keyframe, typename Frame, typename InterpolateFrame>
