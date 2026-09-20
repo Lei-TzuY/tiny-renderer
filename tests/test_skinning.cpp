@@ -15,6 +15,7 @@
 #include "tiny_renderer/prepared_spatial.hpp"
 #include "tiny_renderer/shadow_renderer.hpp"
 #include "tiny_renderer/skinning.hpp"
+#include "tiny_renderer/skeletal_timeline.hpp"
 #include "tiny_renderer/vertex_program.hpp"
 
 using namespace tiny_renderer;
@@ -99,6 +100,53 @@ Mat4 exact_quarter_turn_z() {
     result(1U, 0U) = 1.0F;
     result(1U, 1U) = 0.0F;
     return result;
+}
+
+
+Mat4 manual_affine_lerp(
+    const Mat4& left,
+    const Mat4& right,
+    float t) {
+    Mat4 result = Mat4::identity();
+    for (std::size_t row = 0U; row < 3U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            result(row, column) =
+                left(row, column)
+                + (right(row, column) - left(row, column)) * t;
+        }
+    }
+    return result;
+}
+
+bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
+    for (std::size_t row = 0U; row < 4U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            if (left(row, column) != right(row, column)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool exact_pose_equal(
+    const SkeletalPoseState& left,
+    const SkeletalPoseState& right) {
+    const auto left_locals = left.local_transforms();
+    const auto right_locals = right.local_transforms();
+    if (left_locals.size() != right_locals.size()) {
+        return false;
+    }
+    for (std::size_t index = 0U;
+         index < left_locals.size();
+         ++index) {
+        if (!exact_matrix_equal(
+                left_locals[index],
+                right_locals[index])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Mesh independently_materialize_skinned_lit_mesh(
@@ -1147,6 +1195,559 @@ void test_skeletal_prepared_list_fail_closed_on_later_pose_overflow() {
         "prepared spatial planning rejects deferred skeletal poses");
 }
 
+
+void test_skeletal_timeline_validation_and_determinism() {
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{std::nullopt},
+        std::vector<Mat4>{Mat4::identity()},
+        std::vector<VertexSkinBinding>{
+            binding({SkinInfluence{0U, 1.0F}}),
+        });
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(
+                SkeletalRigPtr{},
+                std::vector<SkeletalPoseTimelineKeyframe>{
+                    {0.0F, {Mat4::identity()}},
+                    {1.0F, {Mat4::identity()}},
+                });
+        },
+        "skeletal timeline requires an immutable rig");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(
+                rig,
+                std::vector<SkeletalPoseTimelineKeyframe>{});
+        },
+        "skeletal timeline rejects fewer than two keyframes");
+
+    std::vector<SkeletalPoseTimelineKeyframe> too_many;
+    too_many.reserve(kMaxSkeletalTimelineKeyframes + 1U);
+    for (std::size_t index = 0U;
+         index <= kMaxSkeletalTimelineKeyframes;
+         ++index) {
+        too_many.push_back({
+            static_cast<float>(index),
+            {Mat4::identity()},
+        });
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(rig, too_many);
+        },
+        "skeletal timeline bounds keyframe count");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(
+                rig,
+                std::vector<SkeletalPoseTimelineKeyframe>{
+                    {
+                        std::numeric_limits<float>::quiet_NaN(),
+                        {Mat4::identity()},
+                    },
+                    {1.0F, {Mat4::identity()}},
+                });
+        },
+        "skeletal timeline rejects non-finite keyframe time");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(
+                rig,
+                std::vector<SkeletalPoseTimelineKeyframe>{
+                    {0.0F, {Mat4::identity()}},
+                    {0.0F, {Mat4::identity()}},
+                });
+        },
+        "skeletal timeline requires strictly increasing keyframe times");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(
+                rig,
+                std::vector<SkeletalPoseTimelineKeyframe>{
+                    {0.0F, {}},
+                    {1.0F, {Mat4::identity()}},
+                });
+        },
+        "skeletal timeline keyframe local count must match rig");
+
+    Mat4 projective = Mat4::identity();
+    projective(3U, 2U) = 0.25F;
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseTimeline(
+                rig,
+                std::vector<SkeletalPoseTimelineKeyframe>{
+                    {0.0F, {Mat4::identity()}},
+                    {1.0F, {projective}},
+                });
+        },
+        "skeletal timeline rejects projective keyframe locals");
+
+    const Mat4 start =
+        Mat4::translation({0.125F, -0.25F, 0.0F});
+    const Mat4 finish =
+        Mat4::translation({0.625F, 0.25F, 0.0F})
+        * Mat4::scale({2.0F, 1.0F, 0.5F});
+    const SkeletalPoseTimeline timeline(
+        rig,
+        std::vector<SkeletalPoseTimelineKeyframe>{
+            {0.0F, {start}},
+            {1.0F, {finish}},
+        });
+
+    const std::array<float, 4> sample_times{
+        1.0F,
+        0.5F,
+        0.0F,
+        0.5F,
+    };
+    const auto sampled = timeline.sample(sample_times);
+    check(
+        sampled.size() == sample_times.size(),
+        "skeletal timeline preserves caller sample order and multiplicity");
+    check(
+        exact_matrix_equal(
+            sampled[0]->local_transforms()[0],
+            finish),
+        "exact final-key sample preserves stored local matrix bit-for-bit");
+    check(
+        exact_matrix_equal(
+            sampled[2]->local_transforms()[0],
+            start),
+        "exact first-key sample preserves stored local matrix bit-for-bit");
+    check(
+        exact_pose_equal(*sampled[1], *sampled[3]),
+        "repeated skeletal timeline samples are deterministic");
+    const Mat4 expected_mid =
+        manual_affine_lerp(start, finish, 0.5F);
+    check(
+        exact_matrix_equal(
+            sampled[1]->local_transforms()[0],
+            expected_mid),
+        "interior skeletal timeline sample matches independent affine top-3x4 interpolation");
+
+    const std::array<float, 1> nonfinite_sample{
+        std::numeric_limits<float>::infinity(),
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)timeline.sample(nonfinite_sample);
+        },
+        "skeletal timeline rejects non-finite sample time");
+
+    const std::array<float, 1> before_domain{-0.25F};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)timeline.sample(before_domain);
+        },
+        "skeletal timeline rejects sample before domain");
+
+    const std::array<float, 1> after_domain{1.25F};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)timeline.sample(after_domain);
+        },
+        "skeletal timeline rejects sample after domain");
+
+    std::vector<float> too_many_samples(
+        kMaxSkeletalTimelineSamples + 1U,
+        0.5F);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)timeline.sample(too_many_samples);
+        },
+        "skeletal timeline bounds sample count");
+}
+
+void test_skeletal_timeline_matches_manual_m108_execution() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    std::vector<VertexSkinBinding> bindings;
+    for (std::size_t vertex_index = 0U;
+         vertex_index < source.mesh.vertices.size();
+         ++vertex_index) {
+        bindings.push_back(
+            binding({SkinInfluence{0U, 1.0F}}));
+    }
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{std::nullopt},
+        std::vector<Mat4>{Mat4::identity()},
+        bindings);
+
+    const Mat4 left =
+        Mat4::translation({-0.25F, 0.0F, 0.0F})
+        * Mat4::scale({1.0F, 2.0F, 1.0F});
+    const Mat4 right =
+        Mat4::translation({0.25F, 0.25F, 0.0F})
+        * Mat4::scale({2.0F, 1.0F, 0.5F});
+    const SkeletalPoseTimeline timeline(
+        rig,
+        std::vector<SkeletalPoseTimelineKeyframe>{
+            {0.0F, {left}},
+            {1.0F, {right}},
+        });
+
+    const std::array<float, 4> sample_times{
+        1.0F,
+        0.5F,
+        0.0F,
+        0.5F,
+    };
+    const auto sampled = timeline.sample(sample_times);
+
+    for (std::size_t sample_index = 0U;
+         sample_index < sample_times.size();
+         ++sample_index) {
+        const float time = sample_times[sample_index];
+        const Mat4 manual_local =
+            time == 0.0F
+                ? left
+                : (time == 1.0F
+                    ? right
+                    : manual_affine_lerp(left, right, time));
+        auto manual_pose =
+            std::make_shared<const SkeletalPoseState>(
+                rig,
+                std::vector<Mat4>{manual_local});
+
+        ModelRenderOptions timeline_options;
+        timeline_options.directional_light =
+            lit_directional_light(
+                normalize(Vec3{0.5F, 0.75F, 0.25F}));
+        timeline_options.skeletal_pose_state =
+            sampled[sample_index];
+
+        ModelRenderOptions manual_options =
+            timeline_options;
+        manual_options.skeletal_pose_state =
+            std::move(manual_pose);
+
+        Framebuffer timeline_fb(51U, 51U, SampleCount::Four);
+        Framebuffer manual_fb(51U, 51U, SampleCount::Four);
+        timeline_fb.clear(
+            {0.01F, 0.02F, 0.03F},
+            1.0F,
+            4U);
+        manual_fb.clear(
+            {0.01F, 0.02F, 0.03F},
+            1.0F,
+            4U);
+        draw_model_asset(
+            timeline_fb,
+            source,
+            Mat4::identity(),
+            Mat4::identity(),
+            Mat4::identity(),
+            timeline_options);
+        draw_model_asset(
+            manual_fb,
+            source,
+            Mat4::identity(),
+            Mat4::identity(),
+            Mat4::identity(),
+            manual_options);
+        check_same_framebuffer(
+            timeline_fb,
+            manual_fb,
+            "skeletal timeline sample renders exactly like independently sampled-local M108 pose");
+    }
+
+    ModelRenderOptions timeline_shadow_options;
+    timeline_shadow_options.skeletal_pose_state = sampled[1];
+    ModelRenderOptions manual_shadow_options;
+    manual_shadow_options.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{
+                manual_affine_lerp(left, right, 0.5F),
+            });
+    const PreparedModelSubmission timeline_prepared =
+        prepare_model_asset(source, timeline_shadow_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_shadow_options);
+    const std::array<PreparedModelListEntry, 1> timeline_entry{{
+        {&timeline_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto timeline_shadow = render_directional_shadow_map(
+        timeline_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    const auto manual_shadow = render_directional_shadow_map(
+        manual_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    for (std::size_t y = 0U; y < timeline_shadow->height(); ++y) {
+        for (std::size_t x = 0U; x < timeline_shadow->width(); ++x) {
+            check(
+                timeline_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "skeletal timeline shadow matches independently sampled-local M108 pose");
+        }
+    }
+}
+
+void test_skeletal_timeline_interpolates_local_before_world() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    // Joint 0 is the child while joint 1 is its root, deliberately declaring
+    // the parent after the child to lock arbitrary-order hierarchy semantics.
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+    };
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            1U,
+            std::nullopt,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        bindings);
+
+    const Mat4 child_left =
+        Mat4::translation({0.0F, 0.0F, 0.0F});
+    const Mat4 parent_left =
+        Mat4::scale({1.0F, 1.0F, 1.0F});
+    const Mat4 child_right =
+        Mat4::translation({2.0F, 0.0F, 0.0F});
+    const Mat4 parent_right =
+        Mat4::scale({3.0F, 1.0F, 1.0F});
+
+    const SkeletalPoseTimeline timeline(
+        rig,
+        std::vector<SkeletalPoseTimelineKeyframe>{
+            {
+                0.0F,
+                {child_left, parent_left},
+            },
+            {
+                1.0F,
+                {child_right, parent_right},
+            },
+        });
+    const std::array<float, 1> midpoint_time{0.5F};
+    const auto sampled = timeline.sample(midpoint_time);
+    const SkinningStatePtr resolved =
+        sampled.front()->resolve();
+    const auto skin_matrices = resolved->skin_matrices();
+
+    check(
+        skin_matrices.size() == 2U,
+        "skeletal timeline midpoint resolves complete arbitrary-order joint palette");
+    if (skin_matrices.size() == 2U) {
+        check(
+            skin_matrices[0](0U, 3U) == 2.0F,
+            "skeletal timeline interpolates child and later-declared parent locals before hierarchy composition");
+        check(
+            skin_matrices[0](0U, 3U) != 3.0F,
+            "skeletal timeline does not interpolate endpoint child world transforms");
+    }
+
+    const Mat4 manual_child =
+        manual_affine_lerp(
+            child_left,
+            child_right,
+            0.5F);
+    const Mat4 manual_parent =
+        manual_affine_lerp(
+            parent_left,
+            parent_right,
+            0.5F);
+
+    ModelRenderOptions timeline_options;
+    timeline_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
+    timeline_options.skeletal_pose_state =
+        sampled.front();
+    ModelRenderOptions manual_options =
+        timeline_options;
+    manual_options.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{
+                manual_child,
+                manual_parent,
+            });
+
+    Framebuffer timeline_fb(49U, 49U, SampleCount::Four);
+    Framebuffer manual_fb(49U, 49U, SampleCount::Four);
+    timeline_fb.clear();
+    manual_fb.clear();
+    draw_model_asset(
+        timeline_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        timeline_options);
+    draw_model_asset(
+        manual_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        timeline_fb,
+        manual_fb,
+        "arbitrary-order skeletal timeline local-before-world midpoint matches independent normal-aware M108 reference");
+
+    const PreparedModelSubmission timeline_prepared =
+        prepare_model_asset(source, timeline_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_options);
+    const std::array<PreparedModelListEntry, 1> timeline_entry{{
+        {&timeline_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto timeline_shadow = render_directional_shadow_map(
+        timeline_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    const auto manual_shadow = render_directional_shadow_map(
+        manual_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    for (std::size_t y = 0U; y < timeline_shadow->height(); ++y) {
+        for (std::size_t x = 0U; x < timeline_shadow->width(); ++x) {
+            check(
+                timeline_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "arbitrary-order skeletal timeline shadow matches independent local-before-world M108 reference");
+        }
+    }
+}
+
+void test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed() {
+    std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{0U, 1.0F}}),
+    };
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            std::nullopt,
+            0U,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        bindings);
+
+    // M^2 remains finite, while 1.25*M^2 exceeds float max. Endpoint
+    // parent*child products below have coefficients no larger than 1.0, but
+    // local-space midpoint interpolation creates a 1.25 coefficient in one
+    // composed world entry. This isolates overflow to the interior sample.
+    constexpr float magnitude = 1.7e19F;
+
+    Mat4 parent_left = Mat4::identity();
+    parent_left(0U, 0U) = -magnitude;
+    parent_left(0U, 1U) = 0.0F;
+    parent_left(1U, 0U) = -magnitude;
+    parent_left(1U, 1U) = -magnitude;
+    Mat4 child_left = Mat4::identity();
+    child_left(0U, 0U) = -magnitude;
+    child_left(0U, 1U) = 0.0F;
+    child_left(1U, 0U) = 0.0F;
+    child_left(1U, 1U) = 0.0F;
+
+    Mat4 parent_right = Mat4::identity();
+    parent_right(0U, 0U) = -magnitude;
+    parent_right(0U, 1U) = 0.0F;
+    parent_right(1U, 0U) = -magnitude;
+    parent_right(1U, 1U) = 0.0F;
+    Mat4 child_right = Mat4::identity();
+    child_right(0U, 0U) = -magnitude;
+    child_right(0U, 1U) = magnitude;
+    child_right(1U, 0U) = -magnitude;
+    child_right(1U, 1U) = magnitude;
+
+    // Construction resolves both endpoint poses, proving they are valid.
+    const SkeletalPoseTimeline timeline(
+        rig,
+        std::vector<SkeletalPoseTimelineKeyframe>{
+            {
+                0.0F,
+                {parent_left, child_left},
+            },
+            {
+                1.0F,
+                {parent_right, child_right},
+            },
+        });
+
+    Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+    framebuffer.clear(
+        {0.17F, 0.27F, 0.37F},
+        0.73F,
+        19U);
+    const auto before = framebuffer.rgb8();
+    const std::array<float, 2> samples{
+        0.0F,
+        0.5F,
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto poses = timeline.sample(samples);
+            for (const SkeletalPoseStatePtr& pose : poses) {
+                ModelRenderOptions options;
+                options.skeletal_pose_state = pose;
+                draw_model_asset(
+                    framebuffer,
+                    model_from_mesh(base_mesh()),
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later skeletal timeline midpoint hierarchy overflow rejects complete sample batch");
+    check(
+        framebuffer.rgb8() == before,
+        "later skeletal timeline midpoint failure occurs before earlier requested sample can own framebuffer color");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(15U, 15U, sample)
+                == 0.73F,
+            "later skeletal timeline midpoint failure occurs before depth ownership");
+        check(
+            framebuffer.sample_stencil_at(15U, 15U, sample)
+                == 19U,
+            "later skeletal timeline midpoint failure occurs before stencil ownership");
+    }
+}
+
 void test_validation_and_lighting_contract() {
     check_throws<std::invalid_argument>(
         [] {
@@ -1428,6 +2029,10 @@ int main() {
     test_skeletal_pose_matches_precomposed_m107_skinning();
     test_skeletal_bind_pose_reduces_to_identity_skinning();
     test_skeletal_prepared_list_fail_closed_on_later_pose_overflow();
+    test_skeletal_timeline_validation_and_determinism();
+    test_skeletal_timeline_matches_manual_m108_execution();
+    test_skeletal_timeline_interpolates_local_before_world();
+    test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed();
     test_validation_and_lighting_contract();
     test_prepared_list_fail_closed_on_later_unsafe_skin();
     test_camera_and_shadow_share_skinned_silhouette();
