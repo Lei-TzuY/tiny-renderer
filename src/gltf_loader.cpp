@@ -1425,8 +1425,11 @@ parse_gltf_animation(
         if (interpolation == "STEP") {
             interpolation_mode =
                 SkeletalInterpolationMode::Step;
+        } else if (interpolation == "CUBICSPLINE") {
+            interpolation_mode =
+                SkeletalInterpolationMode::CubicSpline;
         } else if (interpolation != "LINEAR") {
-            fail("bounded animated importer supports LINEAR or STEP interpolation only");
+            fail("bounded animated importer supports LINEAR, STEP, or CUBICSPLINE interpolation only");
         }
         if (input >= accessors.size()
             || output >= accessors.size()) {
@@ -1525,8 +1528,22 @@ parse_gltf_animation(
             sampler.output);
         const std::vector<float> times =
             read_animation_times(input, bytes);
-        if (output.accessor->count != times.size()) {
-            fail("animation sampler input/output key counts must match");
+        std::size_t expected_output_count = times.size();
+        if (sampler.interpolation
+            == SkeletalInterpolationMode::CubicSpline) {
+            if (!checked_mul(
+                    times.size(),
+                    3U,
+                    expected_output_count)) {
+                fail("CUBICSPLINE animation output count overflows");
+            }
+        }
+        if (output.accessor->count != expected_output_count) {
+            fail(
+                sampler.interpolation
+                    == SkeletalInterpolationMode::CubicSpline
+                ? "CUBICSPLINE animation output count must be exactly three times input key count"
+                : "animation sampler input/output key counts must match");
         }
         clip_start = clip_start
             ? std::min(*clip_start, times.front())
@@ -1544,27 +1561,6 @@ parse_gltf_animation(
                     ? "animation translation output"
                     : "animation scale output",
                 true);
-            std::vector<SkeletalVec3Keyframe> keys;
-            keys.reserve(times.size());
-            for (std::size_t key = 0U;
-                 key < times.size();
-                 ++key) {
-                const auto value3 = read_vec3(
-                    output,
-                    bytes,
-                    key,
-                    path == "translation"
-                        ? "animation translation output"
-                        : "animation scale output");
-                keys.push_back({
-                    times[key],
-                    {
-                        value3[0],
-                        value3[1],
-                        value3[2],
-                    },
-                });
-            }
             std::vector<bool>& seen =
                 path == "translation"
                 ? translation_seen
@@ -1573,18 +1569,93 @@ parse_gltf_animation(
                 fail("animation contains duplicate joint/property target ownership");
             }
             seen[joint] = true;
-            if (path == "translation") {
-                translations.push_back({
-                    joint,
-                    std::move(keys),
-                    sampler.interpolation,
-                });
+
+            if (sampler.interpolation
+                == SkeletalInterpolationMode::CubicSpline) {
+                std::vector<SkeletalCubicVec3Keyframe> cubic_keys;
+                cubic_keys.reserve(times.size());
+                for (std::size_t key = 0U;
+                     key < times.size();
+                     ++key) {
+                    const std::size_t base = key * 3U;
+                    const auto in_value = read_vec3(
+                        output,
+                        bytes,
+                        base,
+                        path == "translation"
+                            ? "animation translation cubic in tangent"
+                            : "animation scale cubic in tangent");
+                    const auto value3 = read_vec3(
+                        output,
+                        bytes,
+                        base + 1U,
+                        path == "translation"
+                            ? "animation translation cubic value"
+                            : "animation scale cubic value");
+                    const auto out_value = read_vec3(
+                        output,
+                        bytes,
+                        base + 2U,
+                        path == "translation"
+                            ? "animation translation cubic out tangent"
+                            : "animation scale cubic out tangent");
+                    cubic_keys.push_back({
+                        times[key],
+                        {in_value[0], in_value[1], in_value[2]},
+                        {value3[0], value3[1], value3[2]},
+                        {out_value[0], out_value[1], out_value[2]},
+                    });
+                }
+                if (path == "translation") {
+                    translations.push_back({
+                        joint,
+                        {},
+                        SkeletalInterpolationMode::CubicSpline,
+                        std::move(cubic_keys),
+                    });
+                } else {
+                    scales.push_back({
+                        joint,
+                        {},
+                        SkeletalInterpolationMode::CubicSpline,
+                        std::move(cubic_keys),
+                    });
+                }
             } else {
-                scales.push_back({
-                    joint,
-                    std::move(keys),
-                    sampler.interpolation,
-                });
+                std::vector<SkeletalVec3Keyframe> keys;
+                keys.reserve(times.size());
+                for (std::size_t key = 0U;
+                     key < times.size();
+                     ++key) {
+                    const auto value3 = read_vec3(
+                        output,
+                        bytes,
+                        key,
+                        path == "translation"
+                            ? "animation translation output"
+                            : "animation scale output");
+                    keys.push_back({
+                        times[key],
+                        {
+                            value3[0],
+                            value3[1],
+                            value3[2],
+                        },
+                    });
+                }
+                if (path == "translation") {
+                    translations.push_back({
+                        joint,
+                        std::move(keys),
+                        sampler.interpolation,
+                    });
+                } else {
+                    scales.push_back({
+                        joint,
+                        std::move(keys),
+                        sampler.interpolation,
+                    });
+                }
             }
         } else {
             require_accessor_shape(
@@ -1597,33 +1668,71 @@ parse_gltf_animation(
                 fail("animation contains duplicate joint/property target ownership");
             }
             rotation_seen[joint] = true;
-            std::vector<SkeletalQuaternionKeyframe> keys;
-            keys.reserve(times.size());
-            for (std::size_t key = 0U;
-                 key < times.size();
-                 ++key) {
-                const auto value4 = read_vec4_f32(
-                    output,
-                    bytes,
-                    key,
-                    "animation rotation output");
-                keys.push_back({
-                    times[key],
-                    {
-                        value4[0],
-                        value4[1],
-                        value4[2],
-                        value4[3],
-                    },
+
+            if (sampler.interpolation
+                == SkeletalInterpolationMode::CubicSpline) {
+                std::vector<SkeletalCubicQuaternionKeyframe> cubic_keys;
+                cubic_keys.reserve(times.size());
+                for (std::size_t key = 0U;
+                     key < times.size();
+                     ++key) {
+                    const std::size_t base = key * 3U;
+                    const auto in_value = read_vec4_f32(
+                        output,
+                        bytes,
+                        base,
+                        "animation rotation cubic in tangent");
+                    const auto value4 = read_vec4_f32(
+                        output,
+                        bytes,
+                        base + 1U,
+                        "animation rotation cubic value");
+                    const auto out_value = read_vec4_f32(
+                        output,
+                        bytes,
+                        base + 2U,
+                        "animation rotation cubic out tangent");
+                    cubic_keys.push_back({
+                        times[key],
+                        {in_value[0], in_value[1], in_value[2], in_value[3]},
+                        {value4[0], value4[1], value4[2], value4[3]},
+                        {out_value[0], out_value[1], out_value[2], out_value[3]},
+                    });
+                }
+                rotations.push_back({
+                    joint,
+                    {},
+                    SkeletalInterpolationMode::CubicSpline,
+                    std::move(cubic_keys),
+                });
+            } else {
+                std::vector<SkeletalQuaternionKeyframe> keys;
+                keys.reserve(times.size());
+                for (std::size_t key = 0U;
+                     key < times.size();
+                     ++key) {
+                    const auto value4 = read_vec4_f32(
+                        output,
+                        bytes,
+                        key,
+                        "animation rotation output");
+                    keys.push_back({
+                        times[key],
+                        {
+                            value4[0],
+                            value4[1],
+                            value4[2],
+                            value4[3],
+                        },
+                    });
+                }
+                rotations.push_back({
+                    joint,
+                    std::move(keys),
+                    sampler.interpolation,
                 });
             }
-            rotations.push_back({
-                joint,
-                std::move(keys),
-                sampler.interpolation,
-            });
-        }
-    }
+        }    }
 
     if (!clip_start || !clip_end
         || !(*clip_end > *clip_start)) {

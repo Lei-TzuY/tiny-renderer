@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 115 semantic STEP skeletal animation
+## Architecture frontier: Milestone 116 semantic CUBICSPLINE skeletal animation
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -475,21 +475,40 @@ M115 adds interpolation-mode ownership to the M111 semantic TRS runtime and proj
 - M115 also closes a pre-existing M112 glTF input-contract gap found during the phase audit: animation sampler input accessors now require scalar `min`/`max`, the first/last decoded key must match those bounds exactly, times must be non-negative, and keys remain strictly increasing. All checked-in animated fixtures now carry valid bounds; regressions reject missing/mismatched bounds and negative time.
 - M115 remains semantic LINEAR+STEP skeletal animation only. CUBICSPLINE tangents, morph weights, controller/state-machine policy, masks/layers, additive/N-way composition, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
 
-## Promotion after Milestone 115
+## Milestone 116 — semantic CUBICSPLINE interpolation and strict glTF interoperability
 
-LINEAR and STEP now cover two of glTF's three core sampler modes. The next highest-value spec/runtime gap is true **bounded semantic CUBICSPLINE interpolation and strict glTF CUBICSPLINE interoperability**, not another controller shell. Milestone 116 should implement cubic Hermite semantics as first-class track data and preserve M108/M113 transactional ownership.
+M116 completes glTF's three core skeletal sampler modes in the existing semantic TRS runtime without introducing matrix-space animation interpolation or a file-only execution path.
 
-A Milestone 116 slice should require:
+- `SkeletalInterpolationMode` now includes `CubicSpline` while existing LINEAR/STEP aggregate initializers remain source-compatible.
+- CUBICSPLINE owns explicit, separate cubic key records rather than overloading ordinary keyframes. Vector keys store `in_tangent, value, out_tangent`; rotation keys store finite four-component tangents around one unit-quaternion value.
+- CUBICSPLINE tracks require two to 256 cubic keys, finite strictly increasing times inside the clip domain, no ordinary key storage, and the same aggregate bounded key ownership as LINEAR/STEP. LINEAR/STEP reject stray cubic-key storage.
+- Interior evaluation uses the glTF cubic Hermite basis over normalized segment time and multiplies outgoing/incoming tangent terms by the segment duration. Exact key timestamps and endpoint holds return the stored semantic value directly without spline arithmetic.
+- Translation and scale evaluate Hermite component-wise. Rotation evaluates four quaternion components with Hermite and then normalizes the complete result; zero/non-finite or numerically unstable results fail closed before T×R×S composition.
+- Sampled semantic poses still apply immutable local prefixes, compose exact joint-local matrices, and fully resolve every pose through M108 before any batch escapes. World-joint and final skin matrices remain non-interpolated.
+- Programmatic regressions use a two-second analytic translation segment whose midpoint is exactly 1.25 only when tangent terms are correctly scaled by segment duration. A cubic rotation midpoint normalizes raw `(z=.75,w=.5)`, making it observably different from both LINEAR shortest-path slerp and STEP hold.
+- The same child-before-parent cubic pose is exact-equivalent to an independently constructed M108 semantic reference for 4× normal-aware fixed-light RGB/depth/stencil and directional-shadow depth.
+- Validation regressions reject mixed ordinary/cubic storage, fewer than two cubic keys, non-finite tangents, non-unit quaternion key values, and a cubic quaternion segment whose midpoint collapses to the zero quaternion.
+- A dedicated cubic scale regression keeps both endpoints executable while finite tangents make only the later midpoint produce huge parent and child scales; M108 composition overflows and the complete requested batch rejects before the earlier endpoint can own RGB/depth/stencil.
+- glTF sampler parsing now accepts explicit `CUBICSPLINE` in addition to omitted/explicit LINEAR and STEP. CUBICSPLINE requires exactly three output elements per input timestamp and decodes `in-tangent, value, out-tangent` for translation/scale VEC3 and rotation VEC4 accessors before constructing the same programmatic M116 tracks.
+- Existing LINEAR/STEP output cardinality stays exactly one element per input timestamp. Checked accessor/buffer bounds still precede every typed tangent/value read.
+- `mixed_cubic.gltf` reuses the existing checked 372-byte external animation buffer and collection ownership. `CubicPose` combines cubic child translation and parent rotation while `MixedPose` retains LINEAR+STEP semantics and `ChildStep` retains STEP.
+- File-driven CUBICSPLINE samples are exact-equivalent joint-for-joint to a separately constructed programmatic M116 clip. The imported CUBICSPLINE clip and existing mixed LINEAR/STEP clip feed M113 directly with independent source times and blend weights; blended locals, 4× fixed-light RGB/depth/stencil, and directional-shadow depth remain exact-equivalent to programmatic references.
+- File regressions reject malformed 3× output cardinality and non-finite cubic tangent data. A cubic-only mutated file drives parent/child scale only through tangent-induced interior growth; endpoints load successfully while the later midpoint overflows during M108 hierarchy composition before earlier framebuffer ownership.
+- M116 remains semantic TRS CUBICSPLINE interoperability only. Morph-weight animation, morph target deformation, controllers/state machines, masks/layers, additive/N-way graphs, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
 
-- extend semantic translation, rotation, and scale tracks with explicit cubic key data containing one in-tangent, property value, and out-tangent per timestamp; do not overload ordinary LINEAR/STEP keyframes with ambiguous tangent storage;
-- retain existing LINEAR/STEP source compatibility and sampling behavior exactly;
-- require at least two keys for a CUBICSPLINE track, finite strictly increasing times, finite vector/quaternion values and tangents, bounded key ownership, and one interpolation representation per joint/property;
-- for an interior segment, evaluate the glTF cubic Hermite equation using the normalized segment parameter and multiply outgoing/incoming tangent terms by the segment duration; exact key timestamps must still return the stored value directly without spline arithmetic;
-- translation and scale operate component-wise. Rotation treats spline values/tangents as four-component data and **normalizes the interpolated quaternion result before composing T×R×S**; an all-zero or non-finite interpolated quaternion must fail closed;
-- complete sampled semantic batches must still compose local prefixes and resolve every pose through M108 before any result escapes; local/world/skin matrices are never interpolated directly;
-- glTF CUBICSPLINE sampler output accessors must contain exactly three output elements per input timestamp in `in-tangent, value, out-tangent` order, while LINEAR/STEP continue to require one output element per input;
-- strict file import must validate sampler/accessor cardinality, finite tangents, semantic target type, quaternion value ownership, duplicate target ownership, and all existing checked-buffer/accessor bounds before constructing a clip;
-- programmatic regressions should use analytic vector Hermite cases plus a rotation case whose normalized cubic result is observably different from both LINEAR slerp and STEP; include arbitrary-order parent topology, fixed-light normal skinning, and shadow silhouettes against independent references;
-- a file-driven mixed collection should combine CUBICSPLINE with existing LINEAR/STEP clips and feed M113 without any interpolation-mode-specific blend path;
-- malformed 3× output cardinality, non-finite tangents, zero interpolated quaternion, and a later cubic sample whose hierarchy composition overflows must reject complete batches before partial rendering;
-- M116 remains semantic TRS CUBICSPLINE interoperability only. Morph-weight animation, controllers/state machines, masks/layers, additive/N-way graphs, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
+## Promotion after Milestone 116
+
+All three glTF skeletal interpolation modes now land on one semantic TRS/M108 execution stack. Continuing with controller shells would add less architectural depth than closing the next deformation-layer gap. The next frontier is **Milestone 117 bounded programmatic morph-target deformation**, establishing the renderer-side capability required before glTF morph targets or `weights` animation can be imported honestly.
+
+A Milestone 117 slice should require:
+
+- one immutable bounded morph target set aligned to one canonical mesh, with 1..8 targets and exactly one position delta per canonical vertex; an optional normal-delta channel may be owned per target only when it is complete and aligned with the renderer's existing normal binding;
+- one immutable morph state owns exactly one finite weight per target. Zero weights must preserve the canonical mesh path exactly; weights are semantic coefficients rather than probabilities and therefore need not sum to one;
+- the canonical object-space deformation order must become **canonical mesh → morph accumulation → M106/M107 skinning → M35 VertexProgram**. Camera, prepared/list, and all shadow paths must consume this one shared ordering rather than a morph-specific renderer;
+- position deltas accumulate deterministically in bounded precision before conversion back to finite safe float positions. Any non-finite delta/weight/result or unsafe final position must fail closed before downstream skinning/raster ownership;
+- when a fixed-light normal binding is active, targets with normal deltas must deform the source geometric normal in object space before skinning's joint inverse-transpose transform, then require a finite non-zero normalized result. A morph submission lacking complete normal semantics must reject lit execution rather than claim stale-normal correctness;
+- topology, UVs, non-normal varyings, interpolation qualifiers, indices, material ownership, and skin bindings must remain unchanged by morphing;
+- zero-weight morphing must be exact-equivalent to canonical direct/prepared/shadow rendering; one-hot and multi-target weighted states must be exact-equivalent to independently pre-deformed manual meshes, including morph-before-skin ordering under a non-trivial M108 pose;
+- heterogeneous prepared-list preparation must materialize every complete morphed/skinned/programmed mesh before the first draw, so a later invalid morph result rejects before earlier RGB/depth/stencil mutation;
+- canonical prepared sorting/spatial planning must reject active position-changing morph state until bounds are made deformation-aware;
+- M117 remains programmatic single-state morph deformation only. glTF primitive `targets`, mesh/node default weights, animated `weights` channels, sparse morph accessors, tangent morphing, GPU execution, parallel paths, and performance claims remain outside the milestone.

@@ -140,6 +140,21 @@ void replace_once(
     text.replace(position, before.size(), after);
 }
 
+void replace_animation_section(
+    std::string& text,
+    const std::string& replacement) {
+    const std::string begin_marker = "  \"animations\": [";
+    const std::string end_marker = "  \"scenes\":";
+    const std::size_t begin = text.find(begin_marker);
+    const std::size_t end = text.find(end_marker, begin);
+    if (begin == std::string::npos || end == std::string::npos) {
+        throw std::runtime_error(
+            "test animation section anchor not found");
+    }
+    text.replace(begin, end - begin, replacement);
+}
+
+
 
 void replace_animations_array(
     std::string& text,
@@ -888,6 +903,77 @@ SkeletalTrsClip manual_child_step_clip(
         {});
 }
 
+SkeletalTrsClip manual_cubic_pose_clip(
+    const SkeletalRigPtr& rig) {
+    return SkeletalTrsClip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{
+                {0.25F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+            SkeletalTrs{
+                {0.1F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+        },
+        {
+            Mat4::translation({0.05F, 0.0F, 0.0F}),
+            Mat4::identity(),
+        },
+        {
+            {
+                0U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {1.0F, 0.0F, 0.0F},
+                        {1.0F, 0.0F, 0.25F},
+                    },
+                    {
+                        1.0F,
+                        {0.75F, 0.25F, 0.0F},
+                        {0.0F, 0.45F, 0.0F},
+                        {0.0F, 0.5F, 1.0F},
+                    },
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {1.0F, 0.0F, 0.0F, 0.0F},
+                        {0.0F, 1.0F, 0.0F, 0.0F},
+                        {0.0F, 0.0F, 1.0F, 0.0F},
+                    },
+                    {
+                        1.0F,
+                        // Accessor 13 intentionally reuses the first
+                        // inverse-bind matrix bytes; the animated fixture's
+                        // child inverse bind is -0.4 after the intermediary
+                        // node was introduced in M112.
+                        {-0.4F, 0.0F, 0.0F, 1.0F},
+                        {1.0F, 0.0F, 0.0F, 0.0F},
+                        {0.0F, 1.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+        },
+        {});
+}
+
 void test_animated_fixture_projects_to_programmatic_m111() {
     const std::filesystem::path path =
         fixture_path("animated/skinned_triangle.gltf");
@@ -1331,6 +1417,330 @@ void test_file_driven_animation_collection_feeds_m113_blending() {
 }
 
 
+void test_mixed_cubic_collection_matches_programmatic_m116_and_m113() {
+    const GltfSkinnedAnimationCollection imported =
+        load_gltf_skinned_animation_collection_file(
+            fixture_path("animated/mixed_cubic.gltf"));
+    check(
+        imported.animations.size() == 3U
+            && imported.animations[0].name
+            && *imported.animations[0].name == "MixedPose"
+            && imported.animations[1].name
+            && *imported.animations[1].name == "CubicPose"
+            && imported.animations[2].name
+            && *imported.animations[2].name == "ChildStep",
+        "mixed CUBICSPLINE collection preserves animation order and names");
+    if (imported.animations.size() != 3U
+        || !imported.animations[0].clip
+        || !imported.animations[1].clip
+        || !imported.animations[2].clip) {
+        check(false,
+              "mixed CUBICSPLINE fixture must produce three semantic clips");
+        return;
+    }
+
+    const SkeletalRigPtr reference_rig =
+        manual_animated_rig();
+    const SkeletalTrsClip reference_mixed =
+        manual_mixed_step_clip(reference_rig);
+    const SkeletalTrsClip reference_cubic =
+        manual_cubic_pose_clip(reference_rig);
+
+    const std::array<float, 4> cubic_times{
+        0.0F,
+        0.5F,
+        1.0F,
+        0.5F,
+    };
+    const auto imported_cubic =
+        imported.animations[1].clip->sample(cubic_times);
+    const auto reference_cubic_poses =
+        reference_cubic.sample(cubic_times);
+    check(
+        imported_cubic.size() == reference_cubic_poses.size(),
+        "file-driven CUBICSPLINE clip preserves sample cardinality");
+    for (std::size_t sample = 0U;
+         sample < imported_cubic.size()
+             && sample < reference_cubic_poses.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_cubic[sample]->local_transforms();
+        const auto reference_locals =
+            reference_cubic_poses[sample]->local_transforms();
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "glTF CUBICSPLINE sampler projection is exact-equivalent to programmatic M116 local state");
+        }
+    }
+
+    const std::array<SkeletalTrsBlendRequest, 4> requests{{
+        {0.0F, 0.0F, 0.0F},
+        {1.0F, 1.0F, 1.0F},
+        {0.5F, 0.9F, 0.5F},
+        {0.5F, 0.9F, 0.5F},
+    }};
+    const auto imported_blend =
+        blend_skeletal_trs_clips(
+            *imported.animations[1].clip,
+            *imported.animations[0].clip,
+            requests);
+    const auto reference_blend =
+        blend_skeletal_trs_clips(
+            reference_cubic,
+            reference_mixed,
+            requests);
+    check(
+        imported_blend.size() == reference_blend.size(),
+        "file-driven CUBICSPLINE plus STEP/LINEAR M113 blend preserves request cardinality");
+    for (std::size_t sample = 0U;
+         sample < imported_blend.size()
+             && sample < reference_blend.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_blend[sample]->local_transforms();
+        const auto reference_locals =
+            reference_blend[sample]->local_transforms();
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "M113 remains interpolation-mode agnostic for file-driven CUBICSPLINE blending");
+        }
+    }
+
+    if (imported_blend.size() < 3U
+        || reference_blend.size() < 3U) {
+        return;
+    }
+    const ModelAsset manual = manual_model();
+    ModelRenderOptions imported_options;
+    imported_options.directional_light = test_light();
+    imported_options.skeletal_pose_state =
+        imported_blend[2];
+    ModelRenderOptions reference_options;
+    reference_options.directional_light = test_light();
+    reference_options.skeletal_pose_state =
+        reference_blend[2];
+
+    Framebuffer imported_fb(57U, 57U, SampleCount::Four);
+    Framebuffer reference_fb(57U, 57U, SampleCount::Four);
+    imported_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 12U);
+    reference_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 12U);
+    draw_model_asset(
+        imported_fb,
+        imported.asset.model,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        imported_options);
+    draw_model_asset(
+        reference_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        reference_options);
+    check_same_framebuffer(
+        imported_fb,
+        reference_fb,
+        "file-driven CUBICSPLINE M113 blend matches independent fixed-light reference");
+
+    const PreparedModelSubmission imported_prepared =
+        prepare_model_asset(imported.asset.model, imported_options);
+    const PreparedModelSubmission reference_prepared =
+        prepare_model_asset(manual, reference_options);
+    const std::array<PreparedModelListEntry, 1> imported_entry{{
+        {&imported_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> reference_entry{{
+        {&reference_prepared, Mat4::identity()},
+    }};
+    const auto imported_shadow =
+        render_directional_shadow_map(
+            imported_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto reference_shadow =
+        render_directional_shadow_map(
+            reference_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < imported_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < imported_shadow->width();
+             ++x) {
+            check(
+                imported_shadow->depth_at(x, y)
+                    == reference_shadow->depth_at(x, y),
+                "file-driven CUBICSPLINE M113 blend shadow matches independent programmatic reference");
+        }
+    }
+}
+
+void test_cubic_file_validation_and_later_overflow() {
+    const std::filesystem::path fixture =
+        fixture_path("animated/mixed_cubic.gltf");
+    const std::string valid = read_text(fixture);
+    const std::vector<std::uint8_t> valid_bytes =
+        read_bytes(fixture_path("animated/skinned_triangle.bin"));
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 12, \"componentType\": 5126, \"count\": 6, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 12, \"componentType\": 5126, \"count\": 5, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_case(
+                        "cubic_output_cardinality",
+                        json,
+                        valid_bytes));
+            },
+            "file-driven CUBICSPLINE rejects malformed three-times output cardinality");
+    }
+
+    {
+        std::string json = valid;
+        replace_animation_section(
+            json,
+            "  \"animations\": [\n"
+            "    {\n"
+            "      \"name\": \"CubicPose\",\n"
+            "      \"samplers\": [\n"
+            "        {\"input\": 6, \"output\": 12, \"interpolation\": \"CUBICSPLINE\"}\n"
+            "      ],\n"
+            "      \"channels\": [\n"
+            "        {\"sampler\": 0, \"target\": {\"node\": 2, \"path\": \"translation\"}}\n"
+            "      ]\n"
+            "    }\n"
+            "  ],\n");
+        std::vector<std::uint8_t> bytes = valid_bytes;
+        set_f32(
+            bytes,
+            276U,
+            std::numeric_limits<float>::quiet_NaN());
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_case(
+                        "cubic_nonfinite_tangent",
+                        json,
+                        bytes));
+            },
+            "file-driven CUBICSPLINE rejects non-finite tangent data");
+    }
+
+    {
+        std::string json = valid;
+        replace_animation_section(
+            json,
+            "  \"animations\": [\n"
+            "    {\n"
+            "      \"name\": \"CubicOverflow\",\n"
+            "      \"samplers\": [\n"
+            "        {\"input\": 6, \"output\": 12, \"interpolation\": \"CUBICSPLINE\"}\n"
+            "      ],\n"
+            "      \"channels\": [\n"
+            "        {\"sampler\": 0, \"target\": {\"node\": 2, \"path\": \"scale\"}},\n"
+            "        {\"sampler\": 0, \"target\": {\"node\": 1, \"path\": \"scale\"}}\n"
+            "      ]\n"
+            "    }\n"
+            "  ],\n");
+        std::vector<std::uint8_t> bytes = valid_bytes;
+        constexpr float huge_tangent = 4.0e20F;
+        // accessor 12: [in0,value0,out0,in1,value1,out1], each VEC3.
+        for (std::size_t component = 0U; component < 3U; ++component) {
+            set_f32(bytes, 276U + component * 4U, 0.0F);
+            set_f32(bytes, 288U + component * 4U, 1.0F);
+            set_f32(bytes, 312U + component * 4U, 0.0F);
+            set_f32(bytes, 324U + component * 4U, 1.0F);
+            set_f32(bytes, 336U + component * 4U, 0.0F);
+        }
+        set_f32(bytes, 300U, huge_tangent);
+        set_f32(bytes, 312U, -huge_tangent);
+
+        const GltfSkinnedAnimationCollection overflow =
+            load_gltf_skinned_animation_collection_file(
+                write_case(
+                    "cubic_later_overflow",
+                    json,
+                    bytes));
+        check(
+            overflow.animations.size() == 1U
+                && overflow.animations[0].clip,
+            "file-driven cubic overflow fixture remains valid at endpoint construction");
+        if (overflow.animations.empty()
+            || !overflow.animations[0].clip) {
+            return;
+        }
+
+        Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+        framebuffer.clear(
+            {0.14F, 0.24F, 0.34F},
+            0.65F,
+            27U);
+        const auto before = framebuffer.rgb8();
+        const std::array<float, 2> times{
+            0.0F,
+            0.5F,
+        };
+        check_throws<std::invalid_argument>(
+            [&] {
+                const auto poses =
+                    overflow.animations[0].clip->sample(times);
+                for (const SkeletalPoseStatePtr& pose : poses) {
+                    ModelRenderOptions options;
+                    options.skeletal_pose_state = pose;
+                    draw_model_asset(
+                        framebuffer,
+                        overflow.asset.model,
+                        Mat4::identity(),
+                        options);
+                }
+            },
+            "later file-driven CUBICSPLINE hierarchy overflow rejects complete requested batch");
+        check(
+            framebuffer.rgb8() == before,
+            "later file-driven CUBICSPLINE failure occurs before earlier endpoint owns framebuffer color");
+        for (std::size_t sample = 0U;
+             sample < framebuffer.samples_per_pixel();
+             ++sample) {
+            check(
+                framebuffer.sample_depth_at(15U, 15U, sample)
+                    == 0.65F,
+                "later file-driven CUBICSPLINE failure occurs before depth ownership");
+            check(
+                framebuffer.sample_stencil_at(15U, 15U, sample)
+                    == 27U,
+                "later file-driven CUBICSPLINE failure occurs before stencil ownership");
+        }
+    }
+}
+
 void test_mixed_step_collection_matches_programmatic_m115_and_m113() {
     const GltfSkinnedAnimationCollection imported =
         load_gltf_skinned_animation_collection_file(
@@ -1692,9 +2102,12 @@ void test_animation_schema_and_data_fail_closed() {
         check_throws<GltfLoadError>(
             [&] {
                 (void)load_gltf_skinned_animated_asset_file(
-                    write_case("animation_cubic", json, valid_bytes));
+                    write_case(
+                        "animation_cubic_bad_cardinality",
+                        json,
+                        valid_bytes));
             },
-            "CUBICSPLINE animation interpolation is rejected rather than degraded");
+            "CUBICSPLINE sampler requires exactly three output elements per input key");
     }
 
     {
@@ -1949,6 +2362,8 @@ int main() {
     test_animated_fixture_projects_to_programmatic_m111();
     test_animation_collection_preserves_order_and_single_wrapper_compatibility();
     test_file_driven_animation_collection_feeds_m113_blending();
+    test_mixed_cubic_collection_matches_programmatic_m116_and_m113();
+    test_cubic_file_validation_and_later_overflow();
     test_mixed_step_collection_matches_programmatic_m115_and_m113();
     test_animation_collection_fail_closed_contract();
     test_animation_schema_and_data_fail_closed();

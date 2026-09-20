@@ -38,9 +38,24 @@ struct SkeletalQuaternionKeyframe {
     Quaternion value{};
 };
 
+struct SkeletalCubicVec3Keyframe {
+    float time{};
+    Vec3 in_tangent{};
+    Vec3 value{};
+    Vec3 out_tangent{};
+};
+
+struct SkeletalCubicQuaternionKeyframe {
+    float time{};
+    Vec4 in_tangent{};
+    Quaternion value{};
+    Vec4 out_tangent{};
+};
+
 enum class SkeletalInterpolationMode {
     Linear,
     Step,
+    CubicSpline,
 };
 
 struct SkeletalTranslationTrack {
@@ -48,6 +63,7 @@ struct SkeletalTranslationTrack {
     std::vector<SkeletalVec3Keyframe> keyframes{};
     SkeletalInterpolationMode interpolation{
         SkeletalInterpolationMode::Linear};
+    std::vector<SkeletalCubicVec3Keyframe> cubic_keyframes{};
 };
 
 struct SkeletalRotationTrack {
@@ -55,6 +71,7 @@ struct SkeletalRotationTrack {
     std::vector<SkeletalQuaternionKeyframe> keyframes{};
     SkeletalInterpolationMode interpolation{
         SkeletalInterpolationMode::Linear};
+    std::vector<SkeletalCubicQuaternionKeyframe> cubic_keyframes{};
 };
 
 struct SkeletalScaleTrack {
@@ -62,6 +79,7 @@ struct SkeletalScaleTrack {
     std::vector<SkeletalVec3Keyframe> keyframes{};
     SkeletalInterpolationMode interpolation{
         SkeletalInterpolationMode::Linear};
+    std::vector<SkeletalCubicVec3Keyframe> cubic_keyframes{};
 };
 
 namespace detail {
@@ -128,6 +146,7 @@ inline void validate_trs_interpolation(
     switch (mode) {
         case SkeletalInterpolationMode::Linear:
         case SkeletalInterpolationMode::Step:
+        case SkeletalInterpolationMode::CubicSpline:
             return;
     }
     throw std::invalid_argument(
@@ -180,7 +199,132 @@ template <typename Keyframe, typename Value, typename ValueAccessor, typename In
     return value_of(keyframes[upper - 1U]);
 }
 
-template <typename Track, typename ValidateValue>
+inline void validate_trs_vec4(
+    const Vec4& value,
+    std::string_view label) {
+    if (!std::isfinite(value.x)
+        || !std::isfinite(value.y)
+        || !std::isfinite(value.z)
+        || !std::isfinite(value.w)) {
+        throw std::invalid_argument(
+            std::string(label) + " must contain only finite values");
+    }
+}
+
+[[nodiscard]] inline float hermite_scalar(
+    float p0,
+    float m0,
+    float p1,
+    float m1,
+    float t,
+    float duration,
+    std::string_view label) {
+    if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)
+        || !std::isfinite(duration) || !(duration > 0.0F)) {
+        throw std::invalid_argument(
+            std::string(label) + " received invalid Hermite segment state");
+    }
+    const double td = static_cast<double>(t);
+    const double t2 = td * td;
+    const double t3 = t2 * td;
+    const double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    const double h10 = t3 - 2.0 * t2 + td;
+    const double h01 = -2.0 * t3 + 3.0 * t2;
+    const double h11 = t3 - t2;
+    const double value =
+        h00 * static_cast<double>(p0)
+        + h10 * static_cast<double>(duration)
+            * static_cast<double>(m0)
+        + h01 * static_cast<double>(p1)
+        + h11 * static_cast<double>(duration)
+            * static_cast<double>(m1);
+    const float result = static_cast<float>(value);
+    if (!std::isfinite(result)) {
+        throw std::invalid_argument(
+            std::string(label) + " Hermite interpolation is non-finite");
+    }
+    return result;
+}
+
+[[nodiscard]] inline Vec3 hermite_vec3(
+    const Vec3& p0,
+    const Vec3& m0,
+    const Vec3& p1,
+    const Vec3& m1,
+    float t,
+    float duration,
+    std::string_view label) {
+    const Vec3 result{
+        hermite_scalar(p0.x, m0.x, p1.x, m1.x, t, duration, label),
+        hermite_scalar(p0.y, m0.y, p1.y, m1.y, t, duration, label),
+        hermite_scalar(p0.z, m0.z, p1.z, m1.z, t, duration, label),
+    };
+    validate_trs_vec3(result, label);
+    return result;
+}
+
+[[nodiscard]] inline Quaternion hermite_quaternion(
+    const Quaternion& p0,
+    const Vec4& m0,
+    const Quaternion& p1,
+    const Vec4& m1,
+    float t,
+    float duration,
+    std::string_view label) {
+    const Quaternion raw{
+        hermite_scalar(p0.x, m0.x, p1.x, m1.x, t, duration, label),
+        hermite_scalar(p0.y, m0.y, p1.y, m1.y, t, duration, label),
+        hermite_scalar(p0.z, m0.z, p1.z, m1.z, t, duration, label),
+        hermite_scalar(p0.w, m0.w, p1.w, m1.w, t, duration, label),
+    };
+    return normalized_quaternion(raw, label);
+}
+
+template <typename Keyframe, typename Value, typename ValueAccessor, typename Interpolate>
+[[nodiscard]] inline Value sample_cubic_held_track(
+    std::span<const Keyframe> keyframes,
+    float sample_time,
+    std::string_view label,
+    ValueAccessor value_of,
+    Interpolate interpolate) {
+    if (keyframes.empty()) {
+        throw std::logic_error(
+            std::string(label) + " has no cubic keyframes");
+    }
+    if (sample_time <= keyframes.front().time) {
+        return value_of(keyframes.front());
+    }
+    if (sample_time >= keyframes.back().time) {
+        return value_of(keyframes.back());
+    }
+
+    std::size_t upper = 1U;
+    while (upper < keyframes.size()
+           && keyframes[upper].time < sample_time) {
+        ++upper;
+    }
+    if (upper >= keyframes.size()) {
+        throw std::logic_error(
+            std::string(label)
+            + " failed to bracket an in-domain cubic sample");
+    }
+    if (sample_time == keyframes[upper].time) {
+        return value_of(keyframes[upper]);
+    }
+
+    const Keyframe& left = keyframes[upper - 1U];
+    const Keyframe& right = keyframes[upper];
+    const float duration = right.time - left.time;
+    const float t = (sample_time - left.time) / duration;
+    if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
+        throw std::logic_error(
+            std::string(label)
+            + " produced an invalid cubic interpolation parameter");
+    }
+    return interpolate(left, right, t, duration);
+}
+
+template <typename Track, typename ValidateValue, typename ValidateCubic>
 inline void validate_trs_tracks(
     const std::vector<Track>& tracks,
     std::size_t joint_count,
@@ -188,6 +332,7 @@ inline void validate_trs_tracks(
     float end_time,
     std::string_view label,
     ValidateValue validate_value,
+    ValidateCubic validate_cubic,
     std::size_t& aggregate_keys) {
     std::vector<bool> seen(joint_count, false);
     for (const Track& track : tracks) {
@@ -203,6 +348,52 @@ inline void validate_trs_tracks(
                 std::string(label) + " contains duplicate joint ownership");
         }
         seen[track.joint] = true;
+
+        const bool cubic =
+            track.interpolation == SkeletalInterpolationMode::CubicSpline;
+        if (cubic) {
+            if (!track.keyframes.empty()
+                || track.cubic_keyframes.size() < 2U
+                || track.cubic_keyframes.size()
+                    > kMaxSkeletalTrsTrackKeys) {
+                throw std::invalid_argument(
+                    std::string(label)
+                    + " CUBICSPLINE requires two to 256 cubic keys and no ordinary keys");
+            }
+            if (track.cubic_keyframes.size()
+                > kMaxSkeletalTrsClipKeys - aggregate_keys) {
+                throw std::invalid_argument(
+                    "skeletal TRS clip aggregate key count exceeds bounded limit");
+            }
+            aggregate_keys += track.cubic_keyframes.size();
+            for (std::size_t index = 0U;
+                 index < track.cubic_keyframes.size();
+                 ++index) {
+                const auto& keyframe = track.cubic_keyframes[index];
+                if (!std::isfinite(keyframe.time)
+                    || keyframe.time < start_time
+                    || keyframe.time > end_time) {
+                    throw std::invalid_argument(
+                        std::string(label)
+                        + " cubic key time must be finite and inside the clip domain");
+                }
+                if (index > 0U
+                    && !(keyframe.time
+                        > track.cubic_keyframes[index - 1U].time)) {
+                    throw std::invalid_argument(
+                        std::string(label)
+                        + " cubic key times must be strictly increasing");
+                }
+                validate_cubic(keyframe);
+            }
+            continue;
+        }
+
+        if (!track.cubic_keyframes.empty()) {
+            throw std::invalid_argument(
+                std::string(label)
+                + " LINEAR/STEP tracks cannot own cubic key data");
+        }
         if (track.keyframes.empty()
             || track.keyframes.size() > kMaxSkeletalTrsTrackKeys) {
             throw std::invalid_argument(
@@ -347,6 +538,17 @@ public:
                     value,
                     "skeletal translation key");
             },
+            [](const SkeletalCubicVec3Keyframe& key) {
+                detail::validate_trs_vec3(
+                    key.in_tangent,
+                    "skeletal translation cubic in tangent");
+                detail::validate_trs_vec3(
+                    key.value,
+                    "skeletal translation cubic value");
+                detail::validate_trs_vec3(
+                    key.out_tangent,
+                    "skeletal translation cubic out tangent");
+            },
             aggregate_keys);
         detail::validate_trs_tracks(
             rotation_tracks_,
@@ -359,6 +561,17 @@ public:
                     value,
                     "skeletal rotation key");
             },
+            [](const SkeletalCubicQuaternionKeyframe& key) {
+                detail::validate_trs_vec4(
+                    key.in_tangent,
+                    "skeletal rotation cubic in tangent");
+                detail::validate_unit_quaternion(
+                    key.value,
+                    "skeletal rotation cubic value");
+                detail::validate_trs_vec4(
+                    key.out_tangent,
+                    "skeletal rotation cubic out tangent");
+            },
             aggregate_keys);
         detail::validate_trs_tracks(
             scale_tracks_,
@@ -370,6 +583,17 @@ public:
                 detail::validate_trs_vec3(
                     value,
                     "skeletal scale key");
+            },
+            [](const SkeletalCubicVec3Keyframe& key) {
+                detail::validate_trs_vec3(
+                    key.in_tangent,
+                    "skeletal scale cubic in tangent");
+                detail::validate_trs_vec3(
+                    key.value,
+                    "skeletal scale cubic value");
+                detail::validate_trs_vec3(
+                    key.out_tangent,
+                    "skeletal scale cubic out tangent");
             },
             aggregate_keys);
     }
@@ -465,7 +689,30 @@ private:
         for (const SkeletalTranslationTrack& track
              : translation_tracks_) {
             semantic_pose[track.joint].translation =
-                detail::sample_held_track<
+                track.interpolation == SkeletalInterpolationMode::CubicSpline
+                ? detail::sample_cubic_held_track<
+                    SkeletalCubicVec3Keyframe,
+                    Vec3>(
+                    track.cubic_keyframes,
+                    sample_time,
+                    "skeletal translation cubic track",
+                    [](const SkeletalCubicVec3Keyframe& keyframe) {
+                        return keyframe.value;
+                    },
+                    [](const SkeletalCubicVec3Keyframe& left,
+                       const SkeletalCubicVec3Keyframe& right,
+                       float t,
+                       float duration) {
+                        return detail::hermite_vec3(
+                            left.value,
+                            left.out_tangent,
+                            right.value,
+                            right.in_tangent,
+                            t,
+                            duration,
+                            "skeletal translation cubic");
+                    })
+                : detail::sample_held_track<
                     SkeletalVec3Keyframe,
                     Vec3>(
                     track.keyframes,
@@ -488,7 +735,30 @@ private:
         for (const SkeletalRotationTrack& track
              : rotation_tracks_) {
             semantic_pose[track.joint].rotation =
-                detail::sample_held_track<
+                track.interpolation == SkeletalInterpolationMode::CubicSpline
+                ? detail::sample_cubic_held_track<
+                    SkeletalCubicQuaternionKeyframe,
+                    Quaternion>(
+                    track.cubic_keyframes,
+                    sample_time,
+                    "skeletal rotation cubic track",
+                    [](const SkeletalCubicQuaternionKeyframe& keyframe) {
+                        return keyframe.value;
+                    },
+                    [](const SkeletalCubicQuaternionKeyframe& left,
+                       const SkeletalCubicQuaternionKeyframe& right,
+                       float t,
+                       float duration) {
+                        return detail::hermite_quaternion(
+                            left.value,
+                            left.out_tangent,
+                            right.value,
+                            right.in_tangent,
+                            t,
+                            duration,
+                            "skeletal rotation cubic");
+                    })
+                : detail::sample_held_track<
                     SkeletalQuaternionKeyframe,
                     Quaternion>(
                     track.keyframes,
@@ -507,7 +777,30 @@ private:
         for (const SkeletalScaleTrack& track
              : scale_tracks_) {
             semantic_pose[track.joint].scale =
-                detail::sample_held_track<
+                track.interpolation == SkeletalInterpolationMode::CubicSpline
+                ? detail::sample_cubic_held_track<
+                    SkeletalCubicVec3Keyframe,
+                    Vec3>(
+                    track.cubic_keyframes,
+                    sample_time,
+                    "skeletal scale cubic track",
+                    [](const SkeletalCubicVec3Keyframe& keyframe) {
+                        return keyframe.value;
+                    },
+                    [](const SkeletalCubicVec3Keyframe& left,
+                       const SkeletalCubicVec3Keyframe& right,
+                       float t,
+                       float duration) {
+                        return detail::hermite_vec3(
+                            left.value,
+                            left.out_tangent,
+                            right.value,
+                            right.in_tangent,
+                            t,
+                            duration,
+                            "skeletal scale cubic");
+                    })
+                : detail::sample_held_track<
                     SkeletalVec3Keyframe,
                     Vec3>(
                     track.keyframes,
