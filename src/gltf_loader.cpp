@@ -1314,6 +1314,8 @@ validate_node_hierarchy(
 struct GltfAnimationSamplerInfo {
     std::size_t input{};
     std::size_t output{};
+    SkeletalInterpolationMode interpolation{
+        SkeletalInterpolationMode::Linear};
 };
 
 [[nodiscard]] std::vector<float> read_animation_times(
@@ -1347,7 +1349,7 @@ struct GltfAnimationSamplerInfo {
 }
 
 [[nodiscard]] std::shared_ptr<const SkeletalTrsClip>
-parse_gltf_linear_animation(
+parse_gltf_animation(
     const JsonValue& animation_value,
     const std::vector<AccessorInfo>& accessors,
     const std::vector<BufferViewInfo>& views,
@@ -1405,14 +1407,23 @@ parse_gltf_linear_animation(
                       "interpolation"),
                   "animation sampler interpolation")
             : "LINEAR";
-        if (interpolation != "LINEAR") {
-            fail("bounded animated importer supports LINEAR interpolation only");
+        SkeletalInterpolationMode interpolation_mode =
+            SkeletalInterpolationMode::Linear;
+        if (interpolation == "STEP") {
+            interpolation_mode =
+                SkeletalInterpolationMode::Step;
+        } else if (interpolation != "LINEAR") {
+            fail("bounded animated importer supports LINEAR or STEP interpolation only");
         }
         if (input >= accessors.size()
             || output >= accessors.size()) {
             fail("animation sampler accessor index is out of range");
         }
-        samplers.push_back({input, output});
+        samplers.push_back({
+            input,
+            output,
+            interpolation_mode,
+        });
     }
 
     std::vector<SkeletalTranslationTrack> translations;
@@ -1553,11 +1564,13 @@ parse_gltf_linear_animation(
                 translations.push_back({
                     joint,
                     std::move(keys),
+                    sampler.interpolation,
                 });
             } else {
                 scales.push_back({
                     joint,
                     std::move(keys),
+                    sampler.interpolation,
                 });
             }
         } else {
@@ -1594,6 +1607,7 @@ parse_gltf_linear_animation(
             rotations.push_back({
                 joint,
                 std::move(keys),
+                sampler.interpolation,
             });
         }
     }
@@ -2134,7 +2148,7 @@ struct GltfImportBundle {
                     "animation name");
             }
             std::shared_ptr<const SkeletalTrsClip> clip =
-                parse_gltf_linear_animation(
+                parse_gltf_animation(
                     animation_value,
                     accessors,
                     views,
