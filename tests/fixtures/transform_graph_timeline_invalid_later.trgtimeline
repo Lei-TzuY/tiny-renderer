@@ -1,0 +1,22 @@
+tiny-renderer-transform-graph-timeline-v1
+node 1 0
+node 3 root
+node 0 root
+node 2 root
+bind 0 1
+bind 1 2
+bind 2 3
+keyframe 0 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+local 0 8.5070587e37 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 2 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 3 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+end
+keyframe 2 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+local 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 1 8.5070587e37 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 2 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+local 3 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1
+end
+sample 0
+sample 1
