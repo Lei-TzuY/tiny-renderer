@@ -10,6 +10,7 @@
 
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/skinning.hpp"
+#include "tiny_renderer/skeletal_trs_timeline.hpp"
 
 namespace tiny_renderer {
 
@@ -31,6 +32,15 @@ struct GltfSkinnedAsset {
 };
 
 [[nodiscard]] GltfSkinnedAsset load_gltf_skinned_asset_file(
+    const std::filesystem::path& path);
+
+struct GltfSkinnedAnimatedAsset {
+    GltfSkinnedAsset asset{};
+    std::shared_ptr<const SkeletalTrsClip> animation{};
+};
+
+[[nodiscard]] GltfSkinnedAnimatedAsset
+load_gltf_skinned_animated_asset_file(
     const std::filesystem::path& path);
 
 }  // namespace tiny_renderer
