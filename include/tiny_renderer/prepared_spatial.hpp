@@ -180,7 +180,8 @@ inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label
 
     const PreparedModelSubmission& prepared = entry.prepared->prepared();
     if (prepared.options().vertex_program
-        || prepared.options().skinning_state) {
+        || prepared.options().skinning_state
+        || prepared.options().skeletal_pose_state) {
         throw std::invalid_argument(
             "prepared draw execution does not support position-changing object-space deformation");
     }
@@ -331,7 +332,8 @@ flatten_prepared_model_draws(
             throw std::invalid_argument("prepared spatial list entry requires a prepared submission");
         }
         if (entry.prepared->prepared().options().vertex_program
-            || entry.prepared->prepared().options().skinning_state) {
+            || entry.prepared->prepared().options().skinning_state
+            || entry.prepared->prepared().options().skeletal_pose_state) {
             throw std::invalid_argument(
                 "prepared draw spatial planning does not support position-changing object-space deformation");
         }
@@ -375,8 +377,8 @@ flatten_prepared_model_draws(
 // order. More-negative view Z sorts first. Equal depths preserve the flatten
 // order, so caller entry order and canonical material-draw order remain the tie
 // break. The spatial contract accepts affine model/view transforms only and
-// rejects vertex programs and skinning because prepared canonical bounds cannot
-// represent position-changing object-space execution.
+// rejects vertex programs, direct skinning, and deferred skeletal poses because
+// prepared canonical bounds cannot represent position-changing object-space execution.
 [[nodiscard]] inline std::vector<PreparedDrawOrderEntry>
 order_prepared_model_draws_back_to_front(
     std::span<const PreparedSpatialListEntry> entries,
