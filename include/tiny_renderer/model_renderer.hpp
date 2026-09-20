@@ -10,6 +10,7 @@
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/rasterizer.hpp"
+#include "tiny_renderer/morph.hpp"
 #include "tiny_renderer/skinning.hpp"
 
 namespace tiny_renderer {
@@ -33,6 +34,7 @@ struct ModelRenderOptions {
     PointLight point_light{};
     FixedLightCollection fixed_lights{};
     PointShadowState point_shadow_state{};
+    MorphStatePtr morph_state{};
     SkinningStatePtr skinning_state{};
     SkeletalPoseStatePtr skeletal_pose_state{};
 };
@@ -132,9 +134,13 @@ order_prepared_model_list_back_to_front(
         if (asset.draws.empty()) {
             continue;
         }
-        if (entry.prepared->options().vertex_program
-            || entry.prepared->options().skinning_state
-            || entry.prepared->options().skeletal_pose_state) {
+        const ModelRenderOptions& options =
+            entry.prepared->options();
+        if (options.vertex_program
+            || (options.morph_state
+                && options.morph_state->has_active_weights())
+            || options.skinning_state
+            || options.skeletal_pose_state) {
             throw std::invalid_argument(
                 "back-to-front prepared list does not support position-changing object-space deformation");
         }
