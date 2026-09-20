@@ -229,20 +229,27 @@ struct PreparedObjectSpaceMesh {
 
 [[nodiscard]] inline PreparedObjectSpaceMesh prepare_object_space_mesh(
     const SkinningStatePtr& skinning,
+    const SkeletalPoseStatePtr& skeletal_pose,
     const VertexProgramPtr& vertex_program,
     const Mesh& mesh,
     const NormalBinding* skinning_normal_binding = nullptr) {
     validate_vertex_program_static(
         vertex_program,
         vertex_program_varying_count(mesh));
+    if (skinning && skeletal_pose) {
+        throw std::invalid_argument(
+            "object-space preparation cannot bind direct skinning and a skeletal pose simultaneously");
+    }
 
-    if (!skinning && !vertex_program) {
+    const SkinningStatePtr resolved_skinning =
+        skeletal_pose ? skeletal_pose->resolve() : skinning;
+    if (!resolved_skinning && !vertex_program) {
         return PreparedObjectSpaceMesh{&mesh, std::nullopt};
     }
 
-    Mesh transformed = skinning
+    Mesh transformed = resolved_skinning
         ? apply_linear_blend_skinning(
-            *skinning,
+            *resolved_skinning,
             mesh,
             skinning_normal_binding)
         : mesh;
