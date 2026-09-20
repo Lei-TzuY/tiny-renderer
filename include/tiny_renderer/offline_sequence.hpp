@@ -487,7 +487,7 @@ public:
 
         validate_offline_scene_camera(default_camera_);
         for (const Mat4& local : default_local_transforms_) {
-            validate_spatial_affine_matrix(
+            detail::validate_spatial_affine_matrix(
                 local,
                 "offline sparse clip default local transform");
         }
@@ -573,7 +573,7 @@ public:
                     throw std::invalid_argument(
                         "offline sparse clip transform key times must be strictly increasing");
                 }
-                validate_spatial_affine_matrix(
+                detail::validate_spatial_affine_matrix(
                     key.local_transform,
                     "offline sparse clip transform key local transform");
             }
