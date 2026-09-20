@@ -12,7 +12,7 @@
 #include "tiny_renderer/point_shadow_renderer.hpp"
 #include "tiny_renderer/spot_shadow_renderer.hpp"
 #include "rasterizer_validation.hpp"
-#include "vertex_program_internal.hpp"
+#include "skinning_internal.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -118,12 +118,13 @@ void validate_shadow_entries(
     }
 }
 
-std::vector<detail::PreparedVertexMesh> prepare_shadow_meshes(
+std::vector<detail::PreparedObjectSpaceMesh> prepare_shadow_meshes(
     std::span<const PreparedModelListEntry> entries) {
-    std::vector<detail::PreparedVertexMesh> meshes;
+    std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(entries.size());
     for (const PreparedModelListEntry& entry : entries) {
-        meshes.push_back(detail::prepare_vertex_program_mesh(
+        meshes.push_back(detail::prepare_object_space_mesh(
+            entry.prepared->options().skinning_state,
             entry.prepared->options().vertex_program,
             entry.prepared->asset().mesh));
     }
@@ -133,7 +134,7 @@ std::vector<detail::PreparedVertexMesh> prepare_shadow_meshes(
 void preflight_shadow_entries(
     const Framebuffer& framebuffer,
     std::span<const PreparedModelListEntry> entries,
-    const std::vector<detail::PreparedVertexMesh>& meshes,
+    const std::vector<detail::PreparedObjectSpaceMesh>& meshes,
     CullMode cull_mode,
     FrontFace front_face) {
     const BlendState depth_only_blend = depth_only_blend_state();
@@ -173,7 +174,7 @@ void preflight_shadow_entries(
 void draw_shadow_entries(
     Framebuffer& framebuffer,
     std::span<const PreparedModelListEntry> entries,
-    const std::vector<detail::PreparedVertexMesh>& meshes,
+    const std::vector<detail::PreparedObjectSpaceMesh>& meshes,
     const Mat4& light_view_projection,
     CullMode cull_mode,
     FrontFace front_face) {
@@ -330,7 +331,7 @@ std::shared_ptr<const DepthTexture2D> render_directional_shadow_map(
     }
     validate_culling(options.cull_mode, options.front_face);
     validate_shadow_entries(entries);
-    const std::vector<detail::PreparedVertexMesh> meshes =
+    const std::vector<detail::PreparedObjectSpaceMesh> meshes =
         prepare_shadow_meshes(entries);
 
     Framebuffer framebuffer{options.width, options.height, SampleCount::One};
@@ -363,7 +364,7 @@ std::shared_ptr<const CascadedDirectionalShadowMap> render_directional_shadow_ca
     validate_cascade_capture_definition(camera_view, cascades);
     validate_culling(options.cull_mode, options.front_face);
     validate_shadow_entries(entries);
-    const std::vector<detail::PreparedVertexMesh> meshes =
+    const std::vector<detail::PreparedObjectSpaceMesh> meshes =
         prepare_shadow_meshes(entries);
 
     Framebuffer framebuffer{options.width, options.height, SampleCount::One};
@@ -412,7 +413,7 @@ std::shared_ptr<const DepthCubemap> render_point_shadow_cubemap(
             options.far_plane);
     validate_culling(options.cull_mode, options.front_face);
     validate_shadow_entries(entries);
-    const std::vector<detail::PreparedVertexMesh> meshes =
+    const std::vector<detail::PreparedObjectSpaceMesh> meshes =
         prepare_shadow_meshes(entries);
 
     Framebuffer framebuffer{options.size, options.size, SampleCount::One};
@@ -456,7 +457,7 @@ std::shared_ptr<const SpotShadowMap> render_spot_shadow_map(
         options.far_plane);
     validate_culling(options.cull_mode, options.front_face);
     validate_shadow_entries(entries);
-    const std::vector<detail::PreparedVertexMesh> meshes =
+    const std::vector<detail::PreparedObjectSpaceMesh> meshes =
         prepare_shadow_meshes(entries);
 
     Framebuffer framebuffer{options.size, options.size, SampleCount::One};
