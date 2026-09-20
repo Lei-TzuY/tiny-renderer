@@ -548,6 +548,20 @@ void test_json_schema_and_path_fail_closed() {
             "POSITION accessor without required min/max is rejected");
     }
 
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "\"max\": [0.5, 0.5, 0.0]",
+            "\"max\": [0.4, 0.5, 0.0]");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_case("position_bounds_mismatch", json, bytes));
+            },
+            "POSITION data outside declared accessor min/max is rejected");
+    }
+
 }
 
 void test_binary_range_joint_weight_and_inverse_bind_fail_closed() {
