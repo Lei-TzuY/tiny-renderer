@@ -16,6 +16,7 @@
 #include "tiny_renderer/shadow_renderer.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "tiny_renderer/skeletal_timeline.hpp"
+#include "tiny_renderer/skeletal_trs_timeline.hpp"
 #include "tiny_renderer/vertex_program.hpp"
 
 using namespace tiny_renderer;
@@ -1748,6 +1749,545 @@ void test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed() {
     }
 }
 
+
+Quaternion quarter_turn_z_quaternion() {
+    constexpr float root_half = 0.70710678118654752440F;
+    return {0.0F, 0.0F, root_half, root_half};
+}
+
+Mat4 independent_quaternion_matrix(const Quaternion& quaternion) {
+    const float x = quaternion.x;
+    const float y = quaternion.y;
+    const float z = quaternion.z;
+    const float w = quaternion.w;
+    Mat4 result = Mat4::identity();
+    result(0U, 0U) = 1.0F - 2.0F * (y * y + z * z);
+    result(0U, 1U) = 2.0F * (x * y - z * w);
+    result(0U, 2U) = 2.0F * (x * z + y * w);
+    result(1U, 0U) = 2.0F * (x * y + z * w);
+    result(1U, 1U) = 1.0F - 2.0F * (x * x + z * z);
+    result(1U, 2U) = 2.0F * (y * z - x * w);
+    result(2U, 0U) = 2.0F * (x * z - y * w);
+    result(2U, 1U) = 2.0F * (y * z + x * w);
+    result(2U, 2U) = 1.0F - 2.0F * (x * x + y * y);
+    return result;
+}
+
+void test_skeletal_trs_validation_sampling_and_shortest_path() {
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{std::nullopt},
+        std::vector<Mat4>{Mat4::identity()},
+        std::vector<VertexSkinBinding>{
+            binding({SkinInfluence{0U, 1.0F}}),
+        });
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                SkeletalRigPtr{},
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {},
+                {},
+                {});
+        },
+        "semantic TRS clip requires an immutable rig");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                1.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {},
+                {},
+                {});
+        },
+        "semantic TRS clip requires a strictly increasing finite domain");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {},
+                {},
+                {},
+                {});
+        },
+        "semantic TRS default pose cardinality matches rig");
+
+    SkeletalTrs bad_default;
+    bad_default.rotation = {0.0F, 0.0F, 0.0F, 2.0F};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {bad_default},
+                {},
+                {},
+                {});
+        },
+        "semantic TRS default pose rejects non-unit quaternion");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    {0U, {{0.0F, {0.0F, 0.0F, 0.0F}}}},
+                    {0U, {{1.0F, {1.0F, 0.0F, 0.0F}}}},
+                },
+                {},
+                {});
+        },
+        "semantic TRS clip rejects duplicate property ownership for one joint");
+
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    {1U, {{0.0F, {0.0F, 0.0F, 0.0F}}}},
+                },
+                {},
+                {});
+        },
+        "semantic TRS track joint index is bounded by rig ownership");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    {
+                        0U,
+                        {
+                            {0.5F, {0.0F, 0.0F, 0.0F}},
+                            {0.5F, {1.0F, 0.0F, 0.0F}},
+                        },
+                    },
+                },
+                {},
+                {});
+        },
+        "semantic TRS property keys require strictly increasing time");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {},
+                {
+                    {
+                        0U,
+                        {
+                            {0.0F, {0.0F, 0.0F, 0.0F, 1.0F}},
+                            {1.0F, {0.0F, 0.0F, 0.0F, 2.0F}},
+                        },
+                    },
+                },
+                {});
+        },
+        "semantic TRS rotation track rejects non-unit key quaternion");
+
+    const Quaternion identity{};
+    const Quaternion half_turn_z{0.0F, 0.0F, 1.0F, 0.0F};
+    const SkeletalTrsClip clip(
+        rig,
+        0.0F,
+        1.0F,
+        {SkeletalTrs{}},
+        {
+            {
+                0U,
+                {
+                    {0.25F, {0.0F, 0.0F, 0.0F}},
+                    {0.75F, {2.0F, 0.0F, 0.0F}},
+                },
+            },
+        },
+        {
+            {
+                0U,
+                {
+                    {0.0F, identity},
+                    {1.0F, half_turn_z},
+                },
+            },
+        },
+        {
+            {
+                0U,
+                {
+                    {0.5F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {2.0F, 1.0F, 1.0F}},
+                },
+            },
+        });
+
+    const std::array<float, 6> times{
+        0.0F,
+        0.25F,
+        0.5F,
+        0.75F,
+        1.0F,
+        0.5F,
+    };
+    const auto poses = clip.sample(times);
+    check(
+        poses.size() == times.size(),
+        "semantic TRS clip preserves caller order and multiplicity");
+    check(
+        exact_pose_equal(*poses[2], *poses[5]),
+        "repeated semantic TRS samples are deterministic");
+
+    const auto at_start = poses[0]->local_transforms();
+    check(
+        at_start[0](0U, 3U) == 0.0F
+            && at_start[0](0U, 0U) == 1.0F,
+        "semantic property tracks hold their first key before a narrower property domain");
+
+    const auto at_translation_key = poses[3]->local_transforms();
+    check(
+        at_translation_key[0](0U, 3U) == 2.0F,
+        "exact semantic translation key preserves stored translation without interpolation drift");
+
+    const Mat4 midpoint = poses[2]->local_transforms()[0];
+    const Quaternion expected_mid_rotation = quarter_turn_z_quaternion();
+    const Mat4 expected_mid =
+        Mat4::translation({1.0F, 0.0F, 0.0F})
+        * independent_quaternion_matrix(expected_mid_rotation)
+        * Mat4::scale({1.0F, 1.0F, 1.0F});
+    check(
+        exact_matrix_equal(midpoint, expected_mid),
+        "semantic midpoint composes independent translation lerp, quaternion slerp, and held scale as T*R*S");
+
+    Mat4 half_turn_matrix = Mat4::identity();
+    half_turn_matrix(0U, 0U) = -1.0F;
+    half_turn_matrix(1U, 1U) = -1.0F;
+    const Mat4 matrix_lerp =
+        manual_affine_lerp(
+            Mat4::identity(),
+            half_turn_matrix,
+            0.5F);
+    check(
+        std::fabs(midpoint(0U, 1U) - matrix_lerp(0U, 1U))
+            > 0.5F,
+        "semantic quaternion midpoint is observably different from affine matrix-element interpolation");
+
+    const Quaternion antipodal{
+        -expected_mid_rotation.x,
+        -expected_mid_rotation.y,
+        -expected_mid_rotation.z,
+        -expected_mid_rotation.w,
+    };
+    const Quaternion shortest =
+        slerp_shortest(
+            expected_mid_rotation,
+            antipodal,
+            0.5F);
+    const Mat4 shortest_matrix =
+        quaternion_rotation_matrix(shortest);
+    const Mat4 equivalent_matrix =
+        quaternion_rotation_matrix(expected_mid_rotation);
+    check(
+        exact_matrix_equal(shortest_matrix, equivalent_matrix),
+        "shortest-path slerp canonicalizes equivalent antipodal quaternion endpoints deterministically");
+
+    const std::array<float, 1> nonfinite{
+        std::numeric_limits<float>::quiet_NaN(),
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)clip.sample(nonfinite);
+        },
+        "semantic TRS sampling rejects non-finite request time");
+
+    const std::array<float, 1> outside{1.25F};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)clip.sample(outside);
+        },
+        "semantic TRS sampling rejects time outside clip domain");
+
+    std::vector<float> too_many(
+        kMaxSkeletalTrsSamples + 1U,
+        0.5F);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)clip.sample(too_many);
+        },
+        "semantic TRS sampling bounds requested batch size");
+}
+
+void test_skeletal_trs_local_before_world_matches_manual_render_and_shadow() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+    };
+    // Child joint 0 is declared before its parent joint 1.
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            1U,
+            std::nullopt,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        bindings);
+
+    const SkeletalTrsClip clip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{},
+            SkeletalTrs{},
+        },
+        {
+            {
+                0U,
+                {
+                    {0.0F, {0.0F, 0.0F, 0.0F}},
+                    {1.0F, {0.4F, 0.0F, 0.0F}},
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.0F, Quaternion{}},
+                    {1.0F, {0.0F, 0.0F, 1.0F, 0.0F}},
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.0F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.5F, 1.0F, 1.0F}},
+                },
+            },
+        });
+
+    const std::array<float, 1> midpoint_time{0.5F};
+    const auto sampled = clip.sample(midpoint_time);
+    const Mat4 manual_child =
+        Mat4::translation({0.2F, 0.0F, 0.0F});
+    const Mat4 manual_parent =
+        independent_quaternion_matrix(
+            quarter_turn_z_quaternion())
+        * Mat4::scale({1.25F, 1.0F, 1.0F});
+    const auto sampled_locals =
+        sampled.front()->local_transforms();
+    check(
+        exact_matrix_equal(sampled_locals[0], manual_child)
+            && exact_matrix_equal(sampled_locals[1], manual_parent),
+        "semantic TRS clip samples complete joint-local state before arbitrary-order hierarchy composition");
+
+    const SkinningStatePtr resolved =
+        sampled.front()->resolve();
+    const Mat4 expected_child_world =
+        manual_parent * manual_child;
+    check(
+        exact_matrix_equal(
+            resolved->skin_matrices()[0],
+            expected_child_world),
+        "M108 composes semantic child local under later-declared parent after TRS interpolation");
+
+    auto manual_pose =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{
+                manual_child,
+                manual_parent,
+            });
+
+    ModelRenderOptions semantic_options;
+    semantic_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
+    semantic_options.skeletal_pose_state =
+        sampled.front();
+
+    ModelRenderOptions manual_options =
+        semantic_options;
+    manual_options.skeletal_pose_state =
+        std::move(manual_pose);
+
+    Framebuffer semantic_fb(53U, 53U, SampleCount::Four);
+    Framebuffer manual_fb(53U, 53U, SampleCount::Four);
+    semantic_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 4U);
+    manual_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 4U);
+    draw_model_asset(
+        semantic_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        semantic_options);
+    draw_model_asset(
+        manual_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        semantic_fb,
+        manual_fb,
+        "semantic TRS skeletal midpoint matches independent normal-aware M108 fixed-light execution");
+
+    const PreparedModelSubmission semantic_prepared =
+        prepare_model_asset(source, semantic_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_options);
+    const std::array<PreparedModelListEntry, 1> semantic_entry{{
+        {&semantic_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto semantic_shadow =
+        render_directional_shadow_map(
+            semantic_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                43U,
+                43U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto manual_shadow =
+        render_directional_shadow_map(
+            manual_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                43U,
+                43U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < semantic_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < semantic_shadow->width();
+             ++x) {
+            check(
+                semantic_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "semantic TRS shadow silhouette matches independent local-before-world M108 reference");
+        }
+    }
+}
+
+void test_skeletal_trs_later_world_overflow_is_batch_fail_closed() {
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            std::nullopt,
+            0U,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        std::vector<VertexSkinBinding>{
+            binding({SkinInfluence{0U, 1.0F}}),
+        });
+
+    const SkeletalTrsClip clip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{},
+            SkeletalTrs{},
+        },
+        {},
+        {},
+        {
+            {
+                0U,
+                {
+                    {0.0F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.0e20F, 1.0F, 1.0F}},
+                },
+            },
+            {
+                1U,
+                {
+                    {0.0F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.0e20F, 1.0F, 1.0F}},
+                },
+            },
+        });
+
+    Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+    framebuffer.clear(
+        {0.17F, 0.27F, 0.37F},
+        0.73F,
+        19U);
+    const auto before = framebuffer.rgb8();
+    const ModelAsset source = model_from_mesh(base_mesh());
+    const std::array<float, 2> samples{
+        0.0F,
+        1.0F,
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto poses = clip.sample(samples);
+            for (const SkeletalPoseStatePtr& pose : poses) {
+                ModelRenderOptions options;
+                options.skeletal_pose_state = pose;
+                draw_model_asset(
+                    framebuffer,
+                    source,
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later semantic TRS hierarchy overflow rejects the complete requested batch");
+    check(
+        framebuffer.rgb8() == before,
+        "later semantic TRS failure occurs before any earlier requested pose owns framebuffer color");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(15U, 15U, sample)
+                == 0.73F,
+            "later semantic TRS failure occurs before framebuffer depth ownership");
+        check(
+            framebuffer.sample_stencil_at(15U, 15U, sample)
+                == 19U,
+            "later semantic TRS failure occurs before framebuffer stencil ownership");
+    }
+}
+
 void test_validation_and_lighting_contract() {
     check_throws<std::invalid_argument>(
         [] {
@@ -2033,6 +2573,9 @@ int main() {
     test_skeletal_timeline_matches_manual_m108_execution();
     test_skeletal_timeline_interpolates_local_before_world();
     test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed();
+    test_skeletal_trs_validation_sampling_and_shortest_path();
+    test_skeletal_trs_local_before_world_matches_manual_render_and_shadow();
+    test_skeletal_trs_later_world_overflow_is_batch_fail_closed();
     test_validation_and_lighting_contract();
     test_prepared_list_fail_closed_on_later_unsafe_skin();
     test_camera_and_shadow_share_skinned_silhouette();
