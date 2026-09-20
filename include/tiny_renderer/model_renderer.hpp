@@ -34,6 +34,7 @@ struct ModelRenderOptions {
     FixedLightCollection fixed_lights{};
     PointShadowState point_shadow_state{};
     SkinningStatePtr skinning_state{};
+    SkeletalPoseStatePtr skeletal_pose_state{};
 };
 
 class PreparedModelSubmission {
@@ -107,8 +108,9 @@ void draw_prepared_model_list(
 // draw_prepared_model_list_back_to_front without executing the list. Each
 // non-empty entry is keyed by mean view-space Z of canonical mesh vertices;
 // more-negative Z is first and equal-depth entries preserve caller order.
-// Position-changing vertex programs and skinning are rejected because they
-// may move geometry after the canonical key has been computed.
+// Position-changing vertex programs, direct skinning, and deferred skeletal
+// poses are rejected because they may move geometry after the canonical key
+// has been computed.
 [[nodiscard]] inline std::vector<PreparedModelListEntry>
 order_prepared_model_list_back_to_front(
     std::span<const PreparedModelListEntry> entries,
@@ -131,7 +133,8 @@ order_prepared_model_list_back_to_front(
             continue;
         }
         if (entry.prepared->options().vertex_program
-            || entry.prepared->options().skinning_state) {
+            || entry.prepared->options().skinning_state
+            || entry.prepared->options().skeletal_pose_state) {
             throw std::invalid_argument(
                 "back-to-front prepared list does not support position-changing object-space deformation");
         }
