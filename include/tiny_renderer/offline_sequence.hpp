@@ -446,6 +446,48 @@ struct OfflineSceneSparseClipBlendScheduleEntry {
     float weight{};
 };
 
+// M105 immutable local-space blend mask. The mask is graph-node aligned at
+// use time; construction validates only intrinsic bounded finite weights.
+class OfflineSceneSparseClipBlendMask {
+public:
+    OfflineSceneSparseClipBlendMask(
+        float camera_weight,
+        std::vector<float> node_weights)
+        : camera_weight_(camera_weight),
+          node_weights_(std::move(node_weights)) {
+        if (!std::isfinite(camera_weight_)
+            || camera_weight_ < 0.0F
+            || camera_weight_ > 1.0F) {
+            throw std::invalid_argument(
+                "offline sparse clip blend mask camera weight must be finite and within [0, 1]");
+        }
+        if (node_weights_.size() > detail::kMaxOfflineTransformGraphNodes) {
+            throw std::invalid_argument(
+                "offline sparse clip blend mask node count exceeds bounded graph limit");
+        }
+        for (const float weight : node_weights_) {
+            if (!std::isfinite(weight)
+                || weight < 0.0F
+                || weight > 1.0F) {
+                throw std::invalid_argument(
+                    "offline sparse clip blend mask node weights must be finite and within [0, 1]");
+            }
+        }
+    }
+
+    [[nodiscard]] float camera_weight() const noexcept {
+        return camera_weight_;
+    }
+
+    [[nodiscard]] std::span<const float> node_weights() const noexcept {
+        return {node_weights_.data(), node_weights_.size()};
+    }
+
+private:
+    float camera_weight_{};
+    std::vector<float> node_weights_{};
+};
+
 // Strict file-facing M98 state. The sidecar owns one fixed validated hierarchy
 // plus hierarchy-local keyframes and caller-ordered sample requests. Parsing
 // does not interpolate local transforms or resolve world transforms.
@@ -925,6 +967,59 @@ blend_offline_transform_graph_frame_state(
                 left.local_transforms[local_index],
                 right.local_transforms[local_index],
                 weight));
+    }
+    return blended;
+}
+
+[[nodiscard]] inline OfflineSceneTransformGraphFrameState
+blend_offline_transform_graph_frame_state_masked(
+    const OfflineSceneTransformGraphFrameState& left,
+    const OfflineSceneTransformGraphFrameState& right,
+    float global_weight,
+    const OfflineSceneSparseClipBlendMask& mask) {
+    validate_offline_sparse_clip_blend_weight(global_weight);
+    if (left.local_transforms.size() != right.local_transforms.size()) {
+        throw std::invalid_argument(
+            "offline sparse clip masked blend frame local ownership must match");
+    }
+    const std::span<const float> node_weights = mask.node_weights();
+    if (node_weights.size() != left.local_transforms.size()) {
+        throw std::invalid_argument(
+            "offline sparse clip blend mask node count must match frame local ownership");
+    }
+
+    const float camera_weight = global_weight * mask.camera_weight();
+    OfflineSceneTransformGraphFrameState blended;
+    if (camera_weight == 0.0F) {
+        blended.camera = left.camera;
+    } else if (camera_weight == 1.0F) {
+        blended.camera = right.camera;
+    } else {
+        blended.camera = interpolate_offline_timeline_camera(
+            left.camera,
+            right.camera,
+            camera_weight);
+    }
+
+    blended.local_transforms.reserve(node_weights.size());
+    for (std::size_t local_index = 0U;
+         local_index < node_weights.size();
+         ++local_index) {
+        const float effective_weight =
+            global_weight * node_weights[local_index];
+        if (effective_weight == 0.0F) {
+            blended.local_transforms.push_back(
+                left.local_transforms[local_index]);
+        } else if (effective_weight == 1.0F) {
+            blended.local_transforms.push_back(
+                right.local_transforms[local_index]);
+        } else {
+            blended.local_transforms.push_back(
+                interpolate_offline_timeline_affine(
+                    left.local_transforms[local_index],
+                    right.local_transforms[local_index],
+                    effective_weight));
+        }
     }
     return blended;
 }
@@ -1507,15 +1602,19 @@ blend_offline_sparse_transform_graph_clips(
     return blended_frames;
 }
 
-// M104 schedules independent source times and a per-output blend weight. The
-// complete left and right source batches are materialized before any output
-// frame is blended, preserving fail-closed transaction semantics above M99.
-[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
-blend_offline_sparse_transform_graph_clip_schedule(
+namespace detail {
+
+struct OfflineSceneSparseClipBlendSourceBatch {
+    std::vector<OfflineSceneTransformGraphFrameState> left_frames{};
+    std::vector<OfflineSceneTransformGraphFrameState> right_frames{};
+};
+
+[[nodiscard]] inline OfflineSceneSparseClipBlendSourceBatch
+materialize_offline_sparse_clip_blend_schedule_sources(
     const OfflineSceneSparseTransformGraphClip& left_clip,
     const OfflineSceneSparseTransformGraphClip& right_clip,
     std::span<const OfflineSceneSparseClipBlendScheduleEntry> schedule) {
-    if (schedule.size() > detail::kMaxOfflineTimelineSamples) {
+    if (schedule.size() > kMaxOfflineTimelineSamples) {
         throw std::invalid_argument(
             "offline sparse clip blend schedule exceeds bounded sample limit");
     }
@@ -1537,33 +1636,85 @@ blend_offline_sparse_transform_graph_clip_schedule(
             throw std::invalid_argument(
                 "offline sparse clip blend schedule source times must be finite");
         }
-        detail::validate_offline_sparse_clip_blend_weight(entry.weight);
+        validate_offline_sparse_clip_blend_weight(entry.weight);
         left_times.push_back(entry.left_time);
         right_times.push_back(entry.right_time);
     }
 
-    const std::vector<OfflineSceneTransformGraphFrameState> left_frames =
-        sample_offline_sparse_transform_graph_clip(
-            left_clip,
-            left_times);
-    const std::vector<OfflineSceneTransformGraphFrameState> right_frames =
-        sample_offline_sparse_transform_graph_clip(
-            right_clip,
-            right_times);
-    if (left_frames.size() != schedule.size()
-        || right_frames.size() != schedule.size()) {
+    OfflineSceneSparseClipBlendSourceBatch batch;
+    batch.left_frames = sample_offline_sparse_transform_graph_clip(
+        left_clip,
+        left_times);
+    batch.right_frames = sample_offline_sparse_transform_graph_clip(
+        right_clip,
+        right_times);
+    if (batch.left_frames.size() != schedule.size()
+        || batch.right_frames.size() != schedule.size()) {
         throw std::logic_error(
             "offline sparse clip blend schedule sampling produced mismatched frame counts");
     }
+    return batch;
+}
+
+}  // namespace detail
+
+// M104 schedules independent source times and a per-output blend weight. The
+// complete left and right source batches are materialized before any output
+// frame is blended, preserving fail-closed transaction semantics above M99.
+[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
+blend_offline_sparse_transform_graph_clip_schedule(
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const OfflineSceneSparseClipBlendScheduleEntry> schedule) {
+    const detail::OfflineSceneSparseClipBlendSourceBatch batch =
+        detail::materialize_offline_sparse_clip_blend_schedule_sources(
+            left_clip,
+            right_clip,
+            schedule);
 
     std::vector<OfflineSceneTransformGraphFrameState> blended_frames;
     blended_frames.reserve(schedule.size());
     for (std::size_t index = 0U; index < schedule.size(); ++index) {
         blended_frames.push_back(
             detail::blend_offline_transform_graph_frame_state(
-                left_frames[index],
-                right_frames[index],
+                batch.left_frames[index],
+                batch.right_frames[index],
                 schedule[index].weight));
+    }
+    return blended_frames;
+}
+
+// M105 applies one immutable camera/node mask over the complete M104 source
+// batches. Effective weights are global schedule weight times mask weight;
+// all blending still occurs in graph-local space before any M99 composition.
+[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
+blend_offline_sparse_transform_graph_clip_schedule_masked(
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const OfflineSceneSparseClipBlendScheduleEntry> schedule,
+    const OfflineSceneSparseClipBlendMask& mask) {
+    const std::size_t local_count =
+        left_clip.default_local_transforms().size();
+    if (mask.node_weights().size() != local_count) {
+        throw std::invalid_argument(
+            "offline sparse clip blend mask node count must match clip graph-local ownership");
+    }
+
+    const detail::OfflineSceneSparseClipBlendSourceBatch batch =
+        detail::materialize_offline_sparse_clip_blend_schedule_sources(
+            left_clip,
+            right_clip,
+            schedule);
+
+    std::vector<OfflineSceneTransformGraphFrameState> blended_frames;
+    blended_frames.reserve(schedule.size());
+    for (std::size_t index = 0U; index < schedule.size(); ++index) {
+        blended_frames.push_back(
+            detail::blend_offline_transform_graph_frame_state_masked(
+                batch.left_frames[index],
+                batch.right_frames[index],
+                schedule[index].weight,
+                mask));
     }
     return blended_frames;
 }
@@ -3142,6 +3293,45 @@ prepare_offline_sparse_transform_graph_clip_blend_schedule_sequence(
             left_clip,
             right_clip,
             schedule);
+    return prepare_offline_transform_graph_sequence(
+        scene,
+        graph,
+        blended_frames);
+}
+
+// Programmatic M105 path: validates graph/scene/clip/mask ownership, applies
+// the mask only to complete independently timed M102 source frames, then sends
+// the complete masked local-frame batch through M99 and M92.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneTransformGraph& graph,
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const OfflineSceneSparseClipBlendScheduleEntry> schedule,
+    const OfflineSceneSparseClipBlendMask& mask) {
+    if (graph.render_entry_nodes().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline sparse clip masked blend schedule render binding count must match prepared scene entry count");
+    }
+
+    const std::size_t graph_node_count = graph.parents().size();
+    if (left_clip.default_local_transforms().size() != graph_node_count
+        || right_clip.default_local_transforms().size() != graph_node_count) {
+        throw std::invalid_argument(
+            "offline sparse clip masked blend schedule local ownership must match graph node count");
+    }
+    if (mask.node_weights().size() != graph_node_count) {
+        throw std::invalid_argument(
+            "offline sparse clip blend mask node count must match graph node count");
+    }
+
+    const std::vector<OfflineSceneTransformGraphFrameState> blended_frames =
+        blend_offline_sparse_transform_graph_clip_schedule_masked(
+            left_clip,
+            right_clip,
+            schedule,
+            mask);
     return prepare_offline_transform_graph_sequence(
         scene,
         graph,
