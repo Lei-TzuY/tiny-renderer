@@ -285,7 +285,9 @@ void test_validation_and_lighting_contract() {
 
     check_throws<std::invalid_argument>(
         [] {
-            (void)SkinningState({}, {Mat4::identity()});
+            (void)SkinningState(
+                std::vector<VertexSkinBinding>{},
+                std::vector<Mat4>{Mat4::identity()});
         },
         "skinning state rejects empty vertex ownership");
 
@@ -351,11 +353,12 @@ void test_validation_and_lighting_contract() {
         },
         "single-pose skinning rejects fixed lighting until normal deformation exists");
 
+    ModelRenderOptions spatial_options;
+    spatial_options.skinning_state =
+        identity_skin(asset.mesh.vertices.size());
     PreparedModelSubmission skinned = prepare_model_asset(
         asset,
-        ModelRenderOptions{
-            .skinning_state = identity_skin(asset.mesh.vertices.size()),
-        });
+        spatial_options);
     const std::array<PreparedModelListEntry, 1> entry{{
         {&skinned, Mat4::identity()},
     }};
