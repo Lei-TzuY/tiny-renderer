@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 102 bounded programmatic sparse transform-graph animation clip
+## Architecture frontier: Milestone 103 bounded two-clip local-space transform-graph blending
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -233,17 +233,32 @@ M102 removes the dense-timeline requirement that every keyframe repeat camera pl
 - A sparse clip whose endpoint locals are individually valid but whose requested interior transform-only parent/child composition overflows rejects the complete batch before any earlier requested sample can execute fragments.
 - M102 adds no sparse-clip file syntax, easing curves, looping/extrapolation, topology animation/reparenting, skeletal skinning, animation blending/layers, parallel execution, alternate raster path, or performance claim.
 
-## Promotion after Milestone 102
+## Milestone 103 — bounded two-clip local-space transform-graph blending
 
-Sparse per-node animation removes redundant dense key ownership. The next architectural capability gap is combining independently authored motions without converting them into another dense timeline. Milestone 103 should establish **bounded two-clip local-space blending** over the same immutable transform graph.
+M103 composes two independently authored M102 sparse clips over one immutable transform graph without densifying either clip and without introducing a world-space blending shortcut.
 
-A Milestone 103 slice should require:
+- `blend_offline_sparse_transform_graph_clips` accepts two validated M102 clips, a caller-ordered bounded sample span, and one finite blend weight in `[0,1]`.
+- Both clips are sampled independently through the complete M102 path before any passthrough or blend result is returned. A requested time that is invalid for either clip rejects the whole request, including blend weights `0` and `1`.
+- The two clips must materialize equal graph-local ownership. Weight `0` returns the complete left sampled frames and weight `1` returns the complete right sampled frames without camera/local blend arithmetic.
+- Interior weights reuse the established camera and affine interpolation primitives on **complete graph-local frames** only. Every graph node is blended in local space before any parent/child composition.
+- `prepare_offline_sparse_transform_graph_clip_blend_sequence` validates prepared-entry bindings plus both clip node counts against the immutable graph, then delegates the fully blended local-frame batch to M99 `prepare_offline_transform_graph_sequence`; M99/M92 remain the only graph/world/preflight/raster execution path.
+- Endpoint weights are exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to preparing the corresponding M102 source clip directly across repeated and out-of-order requests.
+- An interior-weight case with one transform-only pivot and two render descendants is exact-equivalent to an independently constructed local-blend-then-M99 frame batch. Repeated requests remain deterministic and the blended pivot observably moves both descendants.
+- Validation regressions cover non-finite/out-of-range weights, unequal clip graph-local ownership, sample times outside either clip domain even at endpoint weights, graph-node ownership mismatch, and valid empty sample requests.
+- A batch whose first blended sample composes safely but whose later sample only overflows after local-space parent/child blending rejects the complete batch before any earlier sample can execute fragments. This also guards against replacing local-space blending with world-matrix blending.
+- M103 adds no file syntax, per-node blend masks, additive blending, N-way layers, source-time remapping, easing/looping/extrapolation, topology animation/reparenting, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
 
-- two validated M102 clips whose default graph-local ownership matches the same immutable graph, plus a finite blend weight in `[0,1]` and caller-ordered bounded sample requests that are valid in both clip domains;
-- each clip is sampled independently through M102 first; only complete graph-local frames may enter blending, so sparse/static ownership remains resolved before combination;
-- weight `0` and `1` are exact passthrough paths with no blend arithmetic. Interior weights reuse the established camera and affine interpolation primitives per complete graph-local frame;
-- blending occurs in **local space before M99 graph composition**. World-transform blending shortcuts are forbidden;
-- both clips must materialize the same graph-node count. Camera/local interpolation failure, domain mismatch, non-finite/out-of-range weight, or later composed-world overflow rejects the complete batch before M92 preparation;
-- endpoint-weight results must be exact-equivalent to executing the corresponding source clip directly, while an interior-weight transform-only pivot case must match an independently constructed local-blend-then-compose M99 reference;
-- repeated/out-of-order requested times remain deterministic and existing M92 ordering, visibility, reflection rebinding, preflight, and raster ownership remain authoritative;
-- M103 remains programmatic and two-source only. It adds no file syntax, additive blending, per-node masks/weights, N-way animation layers, easing/looping/extrapolation, topology animation, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
+## Promotion after Milestone 103
+
+Uniform-weight, same-time two-clip blending is now executable and transactional. The next architectural limitation is that both clips must be sampled at the same caller time and use one constant blend weight for the whole batch. Milestone 104 should establish a **bounded programmatic blend schedule with independent source times and per-sample weights**.
+
+A Milestone 104 slice should require:
+
+- one bounded caller-ordered schedule record per output sample containing finite `left_time`, finite `right_time`, and finite `weight` in `[0,1]`;
+- left and right source times are sampled independently through M102, so clips may have different valid domains/durations without adding looping or extrapolation;
+- the complete left-time and right-time batches are validated/materialized before any scheduled output frame is blended or sent to M99;
+- each schedule record reuses M103 endpoint passthrough and local-space camera/affine blend semantics. No world-transform blending or alternate interpolation formula is permitted;
+- a schedule whose `left_time == right_time` for every record and whose weights are constant must be exact-equivalent to M103;
+- a cross-fade regression must cover different clip domains, independently advancing source times, varying endpoint/interior weights, repeated/out-of-order schedule records, and exact comparison against independently materialized M102-local/M99 reference frames;
+- any invalid later source time, invalid weight, node-count mismatch, or later composed-world overflow rejects the entire scheduled batch before M92 execution;
+- M104 remains programmatic and two-source only. It adds no file grammar, per-node masks, additive/N-way animation layers, easing/looping/extrapolation, topology animation, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
