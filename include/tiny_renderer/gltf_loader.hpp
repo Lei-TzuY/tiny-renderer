@@ -11,7 +11,6 @@
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "tiny_renderer/skeletal_trs_timeline.hpp"
-#include "tiny_renderer/skeletal_trs_timeline.hpp"
 
 namespace tiny_renderer {
 
@@ -38,6 +37,23 @@ struct GltfSkinnedAsset {
 
 // One bounded static M110 projection plus exactly one M112 LINEAR skeletal
 // animation projected onto the shared M111 semantic TRS evaluator.
+struct GltfImportedAnimation {
+    std::optional<std::string> name{};
+    std::shared_ptr<const SkeletalTrsClip> clip{};
+};
+
+struct GltfSkinnedAnimationCollection {
+    GltfSkinnedAsset asset{};
+    std::vector<GltfImportedAnimation> animations{};
+};
+
+[[nodiscard]] GltfSkinnedAnimationCollection
+load_gltf_skinned_animation_collection_file(
+    const std::filesystem::path& path);
+
+// Compatibility wrapper for the M112 exactly-one-animation contract. It uses
+// the same collection import path and rejects multi-animation assets rather
+// than silently selecting a clip.
 struct GltfSkinnedAnimatedAsset {
     GltfSkinnedAsset asset{};
     std::shared_ptr<const SkeletalTrsClip> animation{};
