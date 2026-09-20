@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 104 bounded programmatic independent-time blend schedule
+## Architecture frontier: Milestone 105 bounded programmatic per-node blend mask
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -265,17 +265,35 @@ M104 lifts M103's same-source-time and constant-weight restriction while preserv
 - A first safe scheduled sample followed by a later independently timed local blend whose transform-only parent/child composition overflows rejects the complete batch before any earlier sample can execute fragments.
 - M104 adds no file grammar, per-node masks, additive/N-way layers, easing/looping/extrapolation, topology animation/reparenting, skeletal skinning, parallel execution, alternate renderer path, or performance claim.
 
-## Promotion after Milestone 104
+## Milestone 105 — bounded programmatic per-node blend mask
 
-Independent source-time scheduling makes two-clip cross-fades expressive at the batch level. The next architectural limitation is that every graph node still receives the same per-sample blend weight. Milestone 105 should establish a **bounded programmatic per-node blend mask** layered over M104.
+M105 adds independently controllable graph-local blend regions on top of M104 without changing source-time scheduling, transform-graph composition, or renderer ownership.
 
-A Milestone 105 slice should require:
+- `OfflineSceneSparseClipBlendMask` is immutable after construction and owns one finite camera weight plus at most 512 finite node weights, all constrained to `[0,1]`.
+- Mask cardinality is graph-aligned at use time: masked blending rejects unless the mask owns exactly one node weight for every complete graph-local transform.
+- M104 schedule validation/source sampling is factored into one shared `materialize_offline_sparse_clip_blend_schedule_sources` transaction. M104 and M105 therefore validate all schedule records and materialize both complete M102 source batches through the same path before any output blend exists.
+- A masked frame uses `effective_weight = schedule.weight * mask.weight` independently for camera and each graph node. Effective weight zero copies the left source state exactly; effective weight one copies the right state exactly; interior values reuse the established camera/affine interpolation primitives.
+- Masking is applied only to complete graph-local source frames. No parent/child composition, render-entry extraction, visibility operation, or world-space patch occurs inside the mask layer.
+- `prepare_offline_sparse_transform_graph_clip_blend_schedule_masked_sequence` validates prepared-entry bindings, both clip node counts, and mask node ownership against the immutable graph, then delegates the complete masked local-frame batch to M99 and M92.
+- An all-ones camera/node mask is exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to M104 across endpoint/interior/repeated schedule records.
+- A regional mask blends a transform-only pivot, pins one render-bound child at zero local weight, partially blends another child, and pins the camera left. The pinned child's local transform remains bit-exact while its world transform still moves through the blended ancestor under ordinary M99 composition.
+- The regional masked result is exact-equivalent to an independently materialized masked-local M99 reference, proving node-local control without a second world-transform path.
+- Validation regressions cover non-finite/out-of-range camera or node mask weights, mask capacity overflow, mask/clip/graph ownership mismatch, later invalid source time, and valid empty schedules.
+- A first safe frame followed by a later frame whose half-weight masked transform-only parent/child locals overflow only after M99 composition rejects the complete batch before any earlier fragment execution.
+- M105 adds no file syntax, additive blending, N-way layer stacks, skeletal deformation, easing/looping/extrapolation, topology animation, parallel execution, alternate raster path, or performance claim.
 
-- one immutable validated mask with exactly one finite weight in `[0,1]` per graph node plus one finite camera weight in `[0,1]`;
-- one M104 schedule record still supplies the per-output global blend weight. Effective camera/node weights are bounded products of global weight and the corresponding mask weight;
-- an all-ones mask must be exact-equivalent to M104, while a zero node mask must preserve that node's left-source local transform exactly even when other nodes cross-fade;
-- mask application occurs only on complete M102 graph-local frames and strictly before M99 composition. A masked transform-only pivot must influence all descendants through ordinary graph composition rather than any world-space patch;
-- mask node count must match the immutable graph and both sampled source frames before blending. Non-finite/out-of-range mask weights, ownership mismatch, invalid source times, or invalid schedule weights reject the whole batch before M99/M92;
-- a regression should blend one transform-only pivot while pinning one render-bound child to the left clip, proving independently controllable local graph regions and exact comparison against a manually materialized masked-local M99 reference;
-- later masked local/composed overflow must reject the complete requested batch before any earlier frame executes;
-- M105 remains programmatic and two-source only. It adds no file syntax, additive blending, N-way layer stacks, skeletal skinning, easing/looping/extrapolation, topology animation, parallel execution, alternate raster path, or performance claim.
+## Promotion after Milestone 105
+
+Rigid transform-graph animation now supports sparse tracks, independent-time cross-fades, and graph-local masks. Continuing to add blend orchestration would yield diminishing architectural value. The next capability gap is **vertex deformation**: the repository has M35 object-space vertex programmability but no joint/bone ownership, skin weights, or skin palette. Milestone 106 should establish a **bounded programmatic single-pose linear-blend skinning vertical slice** that feeds the existing object-space mesh-preparation path.
+
+A Milestone 106 slice should require:
+
+- one immutable skin binding aligned 1:1 with canonical `Mesh::vertices`, with at most four explicit joint influences per vertex and a bounded joint palette;
+- every influence owns a bounded joint index and finite non-negative weight; malformed cardinality, out-of-range indices, zero/invalid total weight, non-finite/projective joint matrices, and unsafe skinned positions reject fail-closed before framebuffer mutation;
+- the first slice accepts caller-supplied affine **skin matrices** directly rather than claiming a skeleton file format, inverse-bind import, IK, or retargeting. Matrix application and normalized weighted position accumulation are deterministic and regression-locked;
+- complete skinning of the canonical mesh occurs in object space **before** the existing M35 `VertexProgram`, model/view/projection transforms, clipping, shadow transforms, and rasterization. The downstream renderer must consume the same prepared mesh path rather than introducing a skinned rasterizer;
+- no-skin behavior remains byte/hash compatible. A one-joint identity skin is exact-equivalent to the canonical mesh, and a multi-joint pose must be exact-equivalent to an independently pre-deformed manual mesh under unlit direct/prepared execution;
+- prepared submissions retain skin-binding/palette lifetime, and heterogeneous prepared-list preflight must reject a malformed later skinned entry before an earlier valid entry can write;
+- camera and shadow silhouettes must both consume the same already-skinned object-space geometry where the existing path supports shadow capture, preventing divergent deformation between passes;
+- the first slice may explicitly bound or reject lighting/normal-map combinations whose normal/tangent deformation semantics are not yet implemented; it must not silently claim correct skinned normals;
+- M106 is programmatic single-pose skinning only. It adds no OBJ/glTF skeletal import, animated joint palettes, dual-quaternion skinning, morph targets, IK/constraints, GPU shaders, parallel execution, or performance claim.
