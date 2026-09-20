@@ -179,9 +179,10 @@ inline void validate_spatial_affine_matrix(const Mat4& matrix, const char* label
         "prepared draw execution model transform");
 
     const PreparedModelSubmission& prepared = entry.prepared->prepared();
-    if (prepared.options().vertex_program) {
+    if (prepared.options().vertex_program
+        || prepared.options().skinning_state) {
         throw std::invalid_argument(
-            "prepared draw execution does not support position-changing vertex programs");
+            "prepared draw execution does not support position-changing object-space deformation");
     }
     const auto metadata = entry.prepared->draws();
     const ModelAsset& asset = prepared.asset();
@@ -329,9 +330,10 @@ flatten_prepared_model_draws(
         if (entry.prepared == nullptr) {
             throw std::invalid_argument("prepared spatial list entry requires a prepared submission");
         }
-        if (entry.prepared->prepared().options().vertex_program) {
+        if (entry.prepared->prepared().options().vertex_program
+            || entry.prepared->prepared().options().skinning_state) {
             throw std::invalid_argument(
-                "prepared draw spatial planning does not support position-changing vertex programs");
+                "prepared draw spatial planning does not support position-changing object-space deformation");
         }
         detail::validate_spatial_affine_matrix(
             entry.model,
@@ -373,8 +375,8 @@ flatten_prepared_model_draws(
 // order. More-negative view Z sorts first. Equal depths preserve the flatten
 // order, so caller entry order and canonical material-draw order remain the tie
 // break. The spatial contract accepts affine model/view transforms only and
-// rejects vertex programs because prepared canonical bounds cannot represent
-// position-changing execution.
+// rejects vertex programs and skinning because prepared canonical bounds cannot
+// represent position-changing object-space execution.
 [[nodiscard]] inline std::vector<PreparedDrawOrderEntry>
 order_prepared_model_draws_back_to_front(
     std::span<const PreparedSpatialListEntry> entries,

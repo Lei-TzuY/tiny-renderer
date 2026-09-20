@@ -10,6 +10,7 @@
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/rasterizer.hpp"
+#include "tiny_renderer/skinning.hpp"
 
 namespace tiny_renderer {
 
@@ -32,6 +33,7 @@ struct ModelRenderOptions {
     PointLight point_light{};
     FixedLightCollection fixed_lights{};
     PointShadowState point_shadow_state{};
+    SkinningStatePtr skinning_state{};
 };
 
 class PreparedModelSubmission {
@@ -89,7 +91,7 @@ void draw_prepared_model_instances(
 // Runs the complete target-dependent list preparation and dynamic validation
 // without submitting fragments. This is useful for higher-level transactions
 // that must validate several execution phases before the first framebuffer
-// mutation. It uses the same vertex-program preparation and per-draw preflight
+// mutation. It uses the same skinning/vertex-program preparation and per-draw preflight
 // path as draw_prepared_model_list.
 void preflight_prepared_model_list(
     const Framebuffer& framebuffer,
@@ -105,8 +107,8 @@ void draw_prepared_model_list(
 // draw_prepared_model_list_back_to_front without executing the list. Each
 // non-empty entry is keyed by mean view-space Z of canonical mesh vertices;
 // more-negative Z is first and equal-depth entries preserve caller order.
-// Vertex programs are rejected because they may move geometry after the
-// canonical key has been computed.
+// Position-changing vertex programs and skinning are rejected because they
+// may move geometry after the canonical key has been computed.
 [[nodiscard]] inline std::vector<PreparedModelListEntry>
 order_prepared_model_list_back_to_front(
     std::span<const PreparedModelListEntry> entries,
@@ -128,9 +130,10 @@ order_prepared_model_list_back_to_front(
         if (asset.draws.empty()) {
             continue;
         }
-        if (entry.prepared->options().vertex_program) {
+        if (entry.prepared->options().vertex_program
+            || entry.prepared->options().skinning_state) {
             throw std::invalid_argument(
-                "back-to-front prepared list does not support position-changing vertex programs");
+                "back-to-front prepared list does not support position-changing object-space deformation");
         }
         if (mesh.vertices.empty()) {
             throw std::logic_error("non-empty prepared draw list requires canonical mesh vertices");
