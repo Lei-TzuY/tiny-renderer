@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "tiny_renderer/affine_timeline.hpp"
+#include "tiny_renderer/quaternion.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -596,38 +597,6 @@ void reject_member(
     return result;
 }
 
-[[nodiscard]] Mat4 quaternion_matrix(
-    const std::array<float, 4>& q) {
-    const double length_squared =
-        static_cast<double>(q[0]) * q[0]
-        + static_cast<double>(q[1]) * q[1]
-        + static_cast<double>(q[2]) * q[2]
-        + static_cast<double>(q[3]) * q[3];
-    if (!std::isfinite(length_squared)
-        || std::fabs(length_squared - 1.0) > 1.0e-4) {
-        fail("node rotation quaternion must be unit length");
-    }
-
-    const float x = q[0];
-    const float y = q[1];
-    const float z = q[2];
-    const float w = q[3];
-    Mat4 result = Mat4::identity();
-    result(0U, 0U) = 1.0F - 2.0F * (y * y + z * z);
-    result(0U, 1U) = 2.0F * (x * y - z * w);
-    result(0U, 2U) = 2.0F * (x * z + y * w);
-    result(1U, 0U) = 2.0F * (x * y + z * w);
-    result(1U, 1U) = 1.0F - 2.0F * (x * x + z * z);
-    result(1U, 2U) = 2.0F * (y * z - x * w);
-    result(2U, 0U) = 2.0F * (x * z - y * w);
-    result(2U, 1U) = 2.0F * (y * z + x * w);
-    result(2U, 2U) = 1.0F - 2.0F * (x * x + y * y);
-    validate_gltf_affine_matrix(
-        result,
-        "glTF node rotation matrix");
-    return result;
-}
-
 [[nodiscard]] Mat4 parse_node_local(
     const std::map<std::string, JsonValue>& object) {
     const JsonValue* matrix_value = optional_member(object, "matrix");
@@ -668,17 +637,30 @@ void reject_member(
         scale = {values[0], values[1], values[2]};
     }
 
-    std::array<float, 4> rotation{0.0F, 0.0F, 0.0F, 1.0F};
+    Quaternion rotation{};
     if (const JsonValue* value =
             optional_member(object, "rotation")) {
         const auto values = number_array(
             *value, 4U, "node rotation");
-        std::copy(values.begin(), values.end(), rotation.begin());
+        rotation = {
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+        };
+    }
+
+    Mat4 rotation_matrix;
+    try {
+        rotation_matrix =
+            quaternion_rotation_matrix(rotation);
+    } catch (const std::invalid_argument& error) {
+        fail(error.what());
     }
 
     const Mat4 local =
         Mat4::translation(translation)
-        * quaternion_matrix(rotation)
+        * rotation_matrix
         * Mat4::scale(scale);
     validate_gltf_affine_matrix(
         local,
