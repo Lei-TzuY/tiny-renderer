@@ -73,11 +73,11 @@ std::vector<std::uint8_t> read_bytes(
     const std::string raw{
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>()};
-    return {
-        reinterpret_cast<const std::uint8_t*>(raw.data()),
-        reinterpret_cast<const std::uint8_t*>(raw.data())
-            + raw.size(),
-    };
+    const auto* begin =
+        reinterpret_cast<const std::uint8_t*>(raw.data());
+    return std::vector<std::uint8_t>(
+        begin,
+        begin + raw.size());
 }
 
 void write_text(
