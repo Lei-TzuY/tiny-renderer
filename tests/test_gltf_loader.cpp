@@ -797,6 +797,97 @@ SkeletalTrsClip manual_child_shift_clip(
         {});
 }
 
+
+SkeletalTrsClip manual_mixed_step_clip(
+    const SkeletalRigPtr& rig) {
+    return SkeletalTrsClip(
+        rig,
+        0.0F,
+        1.0F,
+        {
+            SkeletalTrs{
+                {0.25F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+            SkeletalTrs{
+                {0.1F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+        },
+        {
+            Mat4::translation({0.05F, 0.0F, 0.0F}),
+            Mat4::identity(),
+        },
+        {
+            {
+                0U,
+                {
+                    {0.25F, {0.25F, 0.0F, 0.0F}},
+                    {0.75F, {0.45F, 0.0F, 0.0F}},
+                },
+                SkeletalInterpolationMode::Linear,
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.0F, Quaternion{}},
+                    {1.0F, {0.0F, 0.0F, 1.0F, 0.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        },
+        {
+            {
+                1U,
+                {
+                    {0.5F, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, {1.5F, 1.0F, 1.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        });
+}
+
+SkeletalTrsClip manual_child_step_clip(
+    const SkeletalRigPtr& rig) {
+    return SkeletalTrsClip(
+        rig,
+        0.25F,
+        0.75F,
+        {
+            SkeletalTrs{
+                {0.25F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+            SkeletalTrs{
+                {0.1F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+        },
+        {
+            Mat4::translation({0.05F, 0.0F, 0.0F}),
+            Mat4::identity(),
+        },
+        {
+            {
+                0U,
+                {
+                    {0.25F, {0.25F, 0.0F, 0.0F}},
+                    {0.75F, {0.45F, 0.0F, 0.0F}},
+                },
+                SkeletalInterpolationMode::Step,
+            },
+        },
+        {},
+        {});
+}
+
 void test_animated_fixture_projects_to_programmatic_m111() {
     const std::filesystem::path path =
         fixture_path("animated/skinned_triangle.gltf");
@@ -1239,6 +1330,222 @@ void test_file_driven_animation_collection_feeds_m113_blending() {
     }
 }
 
+
+void test_mixed_step_collection_matches_programmatic_m115_and_m113() {
+    const GltfSkinnedAnimationCollection imported =
+        load_gltf_skinned_animation_collection_file(
+            fixture_path("animated/mixed_step.gltf"));
+    check(
+        imported.animations.size() == 2U
+            && imported.animations[0].name
+            && *imported.animations[0].name == "MixedPose"
+            && imported.animations[1].name
+            && *imported.animations[1].name == "ChildStep",
+        "mixed LINEAR+STEP glTF preserves M114 collection order and names");
+    if (imported.animations.size() != 2U
+        || !imported.animations[0].clip
+        || !imported.animations[1].clip) {
+        check(false,
+              "mixed LINEAR+STEP fixture must produce two semantic clips");
+        return;
+    }
+
+    const SkeletalRigPtr reference_rig =
+        manual_animated_rig();
+    const SkeletalTrsClip reference_mixed =
+        manual_mixed_step_clip(reference_rig);
+    const SkeletalTrsClip reference_child =
+        manual_child_step_clip(reference_rig);
+
+    const std::array<float, 7> mixed_times{
+        0.0F,
+        0.5F,
+        0.749F,
+        0.75F,
+        0.9F,
+        1.0F,
+        0.749F,
+    };
+    const auto imported_mixed =
+        imported.animations[0].clip->sample(mixed_times);
+    const auto reference_mixed_poses =
+        reference_mixed.sample(mixed_times);
+    check(
+        imported_mixed.size() == reference_mixed_poses.size(),
+        "mixed STEP file-driven clip preserves requested sample cardinality");
+    for (std::size_t sample = 0U;
+         sample < imported_mixed.size()
+             && sample < reference_mixed_poses.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_mixed[sample]->local_transforms();
+        const auto reference_locals =
+            reference_mixed_poses[sample]->local_transforms();
+        check(
+            imported_locals.size() == reference_locals.size(),
+            "mixed STEP imported/programmatic poses preserve joint cardinality");
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "glTF STEP sampler projection is exact-equivalent to programmatic M115 semantic local state");
+        }
+    }
+
+    const std::array<float, 5> child_times{
+        0.25F,
+        0.5F,
+        0.749F,
+        0.75F,
+        0.5F,
+    };
+    const auto imported_child =
+        imported.animations[1].clip->sample(child_times);
+    const auto reference_child_poses =
+        reference_child.sample(child_times);
+    for (std::size_t sample = 0U;
+         sample < imported_child.size()
+             && sample < reference_child_poses.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_child[sample]->local_transforms();
+        const auto reference_locals =
+            reference_child_poses[sample]->local_transforms();
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "file-driven child STEP track switches only at its exact key boundary");
+        }
+    }
+
+    const std::array<SkeletalTrsBlendRequest, 5> requests{{
+        {0.0F, 0.25F, 0.0F},
+        {1.0F, 0.75F, 1.0F},
+        {0.9F, 0.5F, 0.5F},
+        {0.749F, 0.749F, 0.25F},
+        {0.9F, 0.5F, 0.5F},
+    }};
+    const auto imported_blend =
+        blend_skeletal_trs_clips(
+            *imported.animations[0].clip,
+            *imported.animations[1].clip,
+            requests);
+    const auto reference_blend =
+        blend_skeletal_trs_clips(
+            reference_mixed,
+            reference_child,
+            requests);
+    check(
+        imported_blend.size() == reference_blend.size(),
+        "mixed STEP file-driven M113 blend preserves request cardinality");
+    for (std::size_t sample = 0U;
+         sample < imported_blend.size()
+             && sample < reference_blend.size();
+         ++sample) {
+        const auto imported_locals =
+            imported_blend[sample]->local_transforms();
+        const auto reference_locals =
+            reference_blend[sample]->local_transforms();
+        for (std::size_t joint = 0U;
+             joint < imported_locals.size()
+                 && joint < reference_locals.size();
+             ++joint) {
+            check(
+                exact_matrix_equal(
+                    imported_locals[joint],
+                    reference_locals[joint]),
+                "mixed STEP collection feeds M113 with exact programmatic semantic state");
+        }
+    }
+
+    if (imported_blend.size() < 3U
+        || reference_blend.size() < 3U) {
+        return;
+    }
+    const ModelAsset manual = manual_model();
+    ModelRenderOptions imported_options;
+    imported_options.directional_light = test_light();
+    imported_options.skeletal_pose_state = imported_blend[2];
+    ModelRenderOptions reference_options;
+    reference_options.directional_light = test_light();
+    reference_options.skeletal_pose_state = reference_blend[2];
+
+    Framebuffer imported_fb(57U, 57U, SampleCount::Four);
+    Framebuffer reference_fb(57U, 57U, SampleCount::Four);
+    imported_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 10U);
+    reference_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 10U);
+    draw_model_asset(
+        imported_fb,
+        imported.asset.model,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        imported_options);
+    draw_model_asset(
+        reference_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        reference_options);
+    check_same_framebuffer(
+        imported_fb,
+        reference_fb,
+        "mixed STEP file-driven M113 blend matches independent fixed-light reference");
+
+    const PreparedModelSubmission imported_prepared =
+        prepare_model_asset(imported.asset.model, imported_options);
+    const PreparedModelSubmission reference_prepared =
+        prepare_model_asset(manual, reference_options);
+    const std::array<PreparedModelListEntry, 1> imported_entry{{
+        {&imported_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> reference_entry{{
+        {&reference_prepared, Mat4::identity()},
+    }};
+    const auto imported_shadow =
+        render_directional_shadow_map(
+            imported_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto reference_shadow =
+        render_directional_shadow_map(
+            reference_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < imported_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < imported_shadow->width();
+             ++x) {
+            check(
+                imported_shadow->depth_at(x, y)
+                    == reference_shadow->depth_at(x, y),
+                "mixed STEP file-driven M113 shadow matches programmatic reference");
+        }
+    }
+}
+
 void test_animation_collection_fail_closed_contract() {
     const std::string multi =
         read_text(
@@ -1319,13 +1626,13 @@ void test_animation_schema_and_data_fail_closed() {
         replace_once(
             json,
             "\"interpolation\": \"LINEAR\"",
-            "\"interpolation\": \"STEP\"");
+            "\"interpolation\": \"CATMULLROM\"");
         check_throws<GltfLoadError>(
             [&] {
                 (void)load_gltf_skinned_animated_asset_file(
-                    write_case("animation_step", json, valid_bytes));
+                    write_case("animation_unknown_interpolation", json, valid_bytes));
             },
-            "STEP animation interpolation is rejected rather than degraded");
+            "unknown animation interpolation mode is rejected rather than degraded");
     }
 
     {
@@ -1386,6 +1693,10 @@ void test_animation_schema_and_data_fail_closed() {
 
     {
         std::string json = valid;
+        replace_once(
+            json,
+            "{\"input\": 10, \"output\": 11, \"interpolation\": \"LINEAR\"}",
+            "{\"input\": 10, \"output\": 11, \"interpolation\": \"STEP\"}");
         replace_once(
             json,
             "{\"sampler\": 2, \"target\": {\"node\": 1, \"path\": \"scale\"}}",
@@ -1582,6 +1893,7 @@ int main() {
     test_animated_fixture_projects_to_programmatic_m111();
     test_animation_collection_preserves_order_and_single_wrapper_compatibility();
     test_file_driven_animation_collection_feeds_m113_blending();
+    test_mixed_step_collection_matches_programmatic_m115_and_m113();
     test_animation_collection_fail_closed_contract();
     test_animation_schema_and_data_fail_closed();
     test_imported_animation_later_overflow_is_batch_fail_closed();
