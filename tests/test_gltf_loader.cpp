@@ -1774,6 +1774,14 @@ void test_imported_animation_later_overflow_is_batch_fail_closed() {
         json,
         "{\"sampler\": 1, \"target\": {\"node\": 2, \"path\": \"translation\"}}",
         "{\"sampler\": 1, \"target\": {\"node\": 2, \"path\": \"scale\"}}");
+    replace_once(
+        json,
+        "{\"input\": 8, \"output\": 9}",
+        "{\"input\": 8, \"output\": 9, \"interpolation\": \"STEP\"}");
+    replace_once(
+        json,
+        "{\"input\": 10, \"output\": 11, \"interpolation\": \"LINEAR\"}",
+        "{\"input\": 10, \"output\": 11, \"interpolation\": \"STEP\"}");
     // Child scale output: identity -> huge X.
     set_f32(bytes, 316U + 0U, 1.0F);
     set_f32(bytes, 316U + 4U, 1.0F);
@@ -1798,7 +1806,7 @@ void test_imported_animation_later_overflow_is_batch_fail_closed() {
         21U);
     const auto before = framebuffer.rgb8();
     const std::array<float, 2> sample_times{
-        0.0F,
+        0.5F,
         1.0F,
     };
     check_throws<std::invalid_argument>(
@@ -1815,10 +1823,10 @@ void test_imported_animation_later_overflow_is_batch_fail_closed() {
                     options);
             }
         },
-        "later file-driven semantic hierarchy overflow rejects complete requested batch");
+        "later exact file-driven STEP key hierarchy overflow rejects complete requested batch");
     check(
         framebuffer.rgb8() == before,
-        "later file-driven animation failure occurs before earlier sample owns framebuffer color");
+        "later file-driven STEP failure occurs before earlier held sample owns framebuffer color");
     for (std::size_t sample = 0U;
          sample < framebuffer.samples_per_pixel();
          ++sample) {
