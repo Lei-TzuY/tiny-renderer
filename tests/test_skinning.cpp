@@ -119,6 +119,26 @@ Mat4 manual_affine_lerp(
     return result;
 }
 
+double manual_hermite_scalar(
+    double p0,
+    double m0,
+    double p1,
+    double m1,
+    double t,
+    double duration) {
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    const double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    const double h10 = t3 - 2.0 * t2 + t;
+    const double h01 = -2.0 * t3 + 3.0 * t2;
+    const double h11 = t3 - t2;
+    return h00 * p0
+        + h10 * duration * m0
+        + h01 * p1
+        + h11 * duration * m1;
+}
+
+
 bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
@@ -2178,6 +2198,529 @@ void test_skeletal_trs_validation_sampling_and_shortest_path() {
 }
 
 
+void test_skeletal_trs_cubic_spline_semantics_and_rendering() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+    };
+    // Child joint zero is intentionally declared before parent joint one.
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            1U,
+            std::nullopt,
+        },
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        bindings);
+
+    const Quaternion identity{};
+    const Quaternion half_turn_z{
+        0.0F, 0.0F, 1.0F, 0.0F};
+
+    const SkeletalTrsClip clip(
+        rig,
+        0.0F,
+        2.0F,
+        {SkeletalTrs{}, SkeletalTrs{}},
+        {
+            {
+                0U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {0.0F, 0.0F, 0.0F},
+                        {1.0F, 0.0F, 0.0F},
+                    },
+                    {
+                        2.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {2.0F, 0.0F, 0.0F},
+                        {0.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                        identity,
+                        {0.0F, 0.0F, 1.0F, 0.0F},
+                    },
+                    {
+                        2.0F,
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                        half_turn_z,
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+        },
+        {
+            {
+                1U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {1.0F, 1.0F, 1.0F},
+                        {0.0F, 0.0F, 0.0F},
+                    },
+                    {
+                        2.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {2.0F, 1.0F, 1.0F},
+                        {0.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+        });
+
+    const std::array<float, 4> times{
+        0.0F,
+        1.0F,
+        2.0F,
+        1.0F,
+    };
+    const auto states = clip.sample_states(times);
+    check(
+        states.size() == times.size(),
+        "CUBICSPLINE semantic sampling preserves caller order and multiplicity");
+    if (states.size() != times.size()) {
+        return;
+    }
+
+    check(
+        states[0].semantic_pose[0].translation.x == 0.0F
+            && states[2].semantic_pose[0].translation.x == 2.0F,
+        "CUBICSPLINE exact key requests preserve stored translation values");
+    check(
+        states[0].semantic_pose[1].rotation.w == 1.0F
+            && states[2].semantic_pose[1].rotation.z == 1.0F
+            && states[2].semantic_pose[1].rotation.w == 0.0F,
+        "CUBICSPLINE exact key requests preserve stored quaternion values");
+
+    const float expected_translation = static_cast<float>(
+        manual_hermite_scalar(
+            0.0,
+            1.0,
+            2.0,
+            0.0,
+            0.5,
+            2.0));
+    check(
+        expected_translation == 1.25F
+            && states[1].semantic_pose[0].translation.x
+                == expected_translation,
+        "CUBICSPLINE translation multiplies tangents by segment duration");
+
+    const double raw_z = manual_hermite_scalar(
+        0.0, 1.0, 1.0, 0.0, 0.5, 2.0);
+    const double raw_w = manual_hermite_scalar(
+        1.0, 0.0, 0.0, 0.0, 0.5, 2.0);
+    const double inverse_length =
+        1.0 / std::sqrt(raw_z * raw_z + raw_w * raw_w);
+    const Quaternion expected_rotation{
+        0.0F,
+        0.0F,
+        static_cast<float>(raw_z * inverse_length),
+        static_cast<float>(raw_w * inverse_length),
+    };
+    const Quaternion sampled_rotation =
+        states[1].semantic_pose[1].rotation;
+    check(
+        sampled_rotation.z == expected_rotation.z
+            && sampled_rotation.w == expected_rotation.w,
+        "CUBICSPLINE rotation normalizes the four-component Hermite result");
+
+    const Quaternion linear_mid = quarter_turn_z_quaternion();
+    check(
+        std::fabs(sampled_rotation.z - linear_mid.z) > 0.10F
+            && std::fabs(sampled_rotation.w - 1.0F) > 0.10F,
+        "CUBICSPLINE rotation midpoint is observably different from LINEAR slerp and STEP hold");
+
+    check(
+        states[1].semantic_pose[1].scale.x == 1.5F,
+        "zero-tangent CUBICSPLINE scale produces analytic Hermite midpoint");
+    check(
+        exact_pose_equal(
+            *states[1].resolved_pose,
+            *states[3].resolved_pose),
+        "repeated CUBICSPLINE requests remain deterministic");
+
+    const Mat4 manual_child =
+        Mat4::translation({
+            expected_translation,
+            0.0F,
+            0.0F,
+        });
+    const Mat4 manual_parent =
+        independent_quaternion_matrix(expected_rotation)
+        * Mat4::scale({1.5F, 1.0F, 1.0F});
+    const auto manual_pose =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{
+                manual_child,
+                manual_parent,
+            });
+    (void)manual_pose->resolve();
+
+    ModelRenderOptions cubic_options;
+    cubic_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
+    cubic_options.skeletal_pose_state =
+        states[1].resolved_pose;
+    ModelRenderOptions manual_options = cubic_options;
+    manual_options.skeletal_pose_state = manual_pose;
+
+    Framebuffer cubic_fb(53U, 53U, SampleCount::Four);
+    Framebuffer manual_fb(53U, 53U, SampleCount::Four);
+    cubic_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 8U);
+    manual_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 8U);
+    draw_model_asset(
+        cubic_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        cubic_options);
+    draw_model_asset(
+        manual_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        cubic_fb,
+        manual_fb,
+        "CUBICSPLINE arbitrary-order pose matches independent normal-aware M108 fixed-light reference");
+
+    const PreparedModelSubmission cubic_prepared =
+        prepare_model_asset(source, cubic_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_options);
+    const std::array<PreparedModelListEntry, 1> cubic_entry{{
+        {&cubic_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto cubic_shadow = render_directional_shadow_map(
+        cubic_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            43U,
+            43U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    const auto manual_shadow = render_directional_shadow_map(
+        manual_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            43U,
+            43U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    for (std::size_t y = 0U; y < cubic_shadow->height(); ++y) {
+        for (std::size_t x = 0U; x < cubic_shadow->width(); ++x) {
+            check(
+                cubic_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "CUBICSPLINE arbitrary-order shadow matches independent M108 reference");
+        }
+    }
+}
+
+void test_skeletal_trs_cubic_validation_and_fail_closed() {
+    const auto one_joint_rig =
+        std::make_shared<const SkeletalRig>(
+            std::vector<std::optional<std::size_t>>{
+                std::nullopt,
+            },
+            std::vector<Mat4>{Mat4::identity()},
+            std::vector<VertexSkinBinding>{
+                binding({SkinInfluence{0U, 1.0F}}),
+            });
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                one_joint_rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    {
+                        0U,
+                        {
+                            {0.0F, {0.0F, 0.0F, 0.0F}},
+                            {1.0F, {1.0F, 0.0F, 0.0F}},
+                        },
+                        SkeletalInterpolationMode::CubicSpline,
+                    },
+                },
+                {},
+                {});
+        },
+        "CUBICSPLINE track rejects ordinary key storage");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                one_joint_rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    {
+                        0U,
+                        {},
+                        SkeletalInterpolationMode::CubicSpline,
+                        {
+                            {
+                                0.0F,
+                                {0.0F, 0.0F, 0.0F},
+                                {0.0F, 0.0F, 0.0F},
+                                {0.0F, 0.0F, 0.0F},
+                            },
+                        },
+                    },
+                },
+                {},
+                {});
+        },
+        "CUBICSPLINE track requires at least two cubic keys");
+
+    {
+        const float nan =
+            std::numeric_limits<float>::quiet_NaN();
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)SkeletalTrsClip(
+                    one_joint_rig,
+                    0.0F,
+                    1.0F,
+                    {SkeletalTrs{}},
+                    {
+                        {
+                            0U,
+                            {},
+                            SkeletalInterpolationMode::CubicSpline,
+                            {
+                                {
+                                    0.0F,
+                                    {nan, 0.0F, 0.0F},
+                                    {0.0F, 0.0F, 0.0F},
+                                    {0.0F, 0.0F, 0.0F},
+                                },
+                                {
+                                    1.0F,
+                                    {0.0F, 0.0F, 0.0F},
+                                    {1.0F, 0.0F, 0.0F},
+                                    {0.0F, 0.0F, 0.0F},
+                                },
+                            },
+                        },
+                    },
+                    {},
+                    {});
+            },
+            "CUBICSPLINE track rejects non-finite tangents");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                one_joint_rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {},
+                {
+                    {
+                        0U,
+                        {},
+                        SkeletalInterpolationMode::CubicSpline,
+                        {
+                            {
+                                0.0F,
+                                {0.0F, 0.0F, 0.0F, 0.0F},
+                                {0.0F, 0.0F, 0.0F, 2.0F},
+                                {0.0F, 0.0F, 0.0F, 0.0F},
+                            },
+                            {
+                                1.0F,
+                                {0.0F, 0.0F, 0.0F, 0.0F},
+                                Quaternion{},
+                                {0.0F, 0.0F, 0.0F, 0.0F},
+                            },
+                        },
+                    },
+                },
+                {});
+        },
+        "CUBICSPLINE rotation keys retain unit-quaternion value ownership");
+
+    const SkeletalTrsClip zero_rotation(
+        one_joint_rig,
+        0.0F,
+        1.0F,
+        {SkeletalTrs{}},
+        {},
+        {
+            {
+                0U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                        Quaternion{},
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                    },
+                    {
+                        1.0F,
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                        {0.0F, 0.0F, 0.0F, -1.0F},
+                        {0.0F, 0.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+        },
+        {});
+    const std::array<float, 2> zero_times{
+        0.0F,
+        0.5F,
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)zero_rotation.sample(zero_times);
+        },
+        "zero CUBICSPLINE quaternion interpolation fails closed before returning a partial batch");
+
+    const auto hierarchy_rig =
+        std::make_shared<const SkeletalRig>(
+            std::vector<std::optional<std::size_t>>{
+                std::nullopt,
+                0U,
+            },
+            std::vector<Mat4>{
+                Mat4::identity(),
+                Mat4::identity(),
+            },
+            std::vector<VertexSkinBinding>{
+                binding({SkinInfluence{0U, 1.0F}}),
+            });
+    constexpr float huge_tangent = 4.0e20F;
+    const SkeletalTrsClip overflow_clip(
+        hierarchy_rig,
+        0.0F,
+        1.0F,
+        {SkeletalTrs{}, SkeletalTrs{}},
+        {},
+        {},
+        {
+            {
+                0U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {1.0F, 1.0F, 1.0F},
+                        {huge_tangent, 0.0F, 0.0F},
+                    },
+                    {
+                        1.0F,
+                        {-huge_tangent, 0.0F, 0.0F},
+                        {1.0F, 1.0F, 1.0F},
+                        {0.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+            {
+                1U,
+                {},
+                SkeletalInterpolationMode::CubicSpline,
+                {
+                    {
+                        0.0F,
+                        {0.0F, 0.0F, 0.0F},
+                        {1.0F, 1.0F, 1.0F},
+                        {huge_tangent, 0.0F, 0.0F},
+                    },
+                    {
+                        1.0F,
+                        {-huge_tangent, 0.0F, 0.0F},
+                        {1.0F, 1.0F, 1.0F},
+                        {0.0F, 0.0F, 0.0F},
+                    },
+                },
+            },
+        });
+
+    Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+    framebuffer.clear(
+        {0.16F, 0.26F, 0.36F},
+        0.67F,
+        25U);
+    const auto before = framebuffer.rgb8();
+    const std::array<float, 2> sample_times{
+        0.0F,
+        0.5F,
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto poses = overflow_clip.sample(sample_times);
+            for (const SkeletalPoseStatePtr& pose : poses) {
+                ModelRenderOptions options;
+                options.skeletal_pose_state = pose;
+                draw_model_asset(
+                    framebuffer,
+                    model_from_mesh(base_mesh()),
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later CUBICSPLINE hierarchy overflow rejects complete requested batch");
+    check(
+        framebuffer.rgb8() == before,
+        "later CUBICSPLINE failure occurs before earlier endpoint owns framebuffer color");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(15U, 15U, sample)
+                == 0.67F,
+            "later CUBICSPLINE failure occurs before framebuffer depth ownership");
+        check(
+            framebuffer.sample_stencil_at(15U, 15U, sample)
+                == 25U,
+            "later CUBICSPLINE failure occurs before framebuffer stencil ownership");
+    }
+}
+
 void test_skeletal_trs_step_interpolation_and_exact_boundaries() {
     const ModelAsset source = model_from_mesh(lit_base_mesh());
     const std::vector<VertexSkinBinding> bindings{
@@ -3602,6 +4145,8 @@ int main() {
     test_skeletal_timeline_interpolates_local_before_world();
     test_skeletal_timeline_later_midpoint_overflow_is_batch_fail_closed();
     test_skeletal_trs_validation_sampling_and_shortest_path();
+    test_skeletal_trs_cubic_spline_semantics_and_rendering();
+    test_skeletal_trs_cubic_validation_and_fail_closed();
     test_skeletal_trs_step_interpolation_and_exact_boundaries();
     test_skeletal_trs_step_later_overflow_is_batch_fail_closed();
     test_skeletal_trs_local_before_world_matches_manual_render_and_shadow();
