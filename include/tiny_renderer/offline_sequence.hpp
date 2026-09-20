@@ -611,9 +611,6 @@ private:
 namespace detail {
 
 [[nodiscard]] inline std::vector<Mat4>
-resolve_offline_hierarchy_world_transformsnamespace detail {
-
-[[nodiscard]] inline std::vector<Mat4>
 resolve_offline_hierarchy_world_transforms(
     const OfflineSceneHierarchy& hierarchy,
     std::span<const Mat4> local_transforms) {
