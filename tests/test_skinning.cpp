@@ -647,6 +647,508 @@ void test_normal_skinning_fail_closed_contract() {
     }
 }
 
+
+void test_skeletal_rig_validation_contract() {
+    const auto one_binding = [] {
+        return std::vector<VertexSkinBinding>{
+            binding({SkinInfluence{0U, 1.0F}}),
+        };
+    };
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalRig(
+                std::vector<std::optional<std::size_t>>{},
+                std::vector<Mat4>{},
+                one_binding());
+        },
+        "skeletal rig rejects an empty joint topology");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalRig(
+                std::vector<std::optional<std::size_t>>(
+                    kMaxSkinJoints + 1U,
+                    std::nullopt),
+                std::vector<Mat4>(
+                    kMaxSkinJoints + 1U,
+                    Mat4::identity()),
+                one_binding());
+        },
+        "skeletal rig enforces the bounded joint limit");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalRig(
+                {std::nullopt, 0U},
+                {Mat4::identity()},
+                one_binding());
+        },
+        "skeletal rig requires one inverse bind per joint");
+
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)SkeletalRig(
+                {2U, std::nullopt},
+                {Mat4::identity(), Mat4::identity()},
+                one_binding());
+        },
+        "skeletal rig rejects out-of-range parents");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalRig(
+                {0U},
+                {Mat4::identity()},
+                one_binding());
+        },
+        "skeletal rig rejects self-parenting");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalRig(
+                {1U, 0U},
+                {Mat4::identity(), Mat4::identity()},
+                one_binding());
+        },
+        "skeletal rig rejects parent cycles");
+
+    Mat4 projective = Mat4::identity();
+    projective(3U, 0U) = 0.25F;
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalRig(
+                {std::nullopt},
+                {projective},
+                one_binding());
+        },
+        "skeletal rig rejects projective inverse binds");
+
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)SkeletalRig(
+                {std::nullopt},
+                {Mat4::identity()},
+                std::vector<VertexSkinBinding>{
+                    binding({SkinInfluence{1U, 1.0F}}),
+                });
+        },
+        "skeletal rig validates vertex influence ownership");
+
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{std::nullopt},
+        std::vector<Mat4>{Mat4::identity()},
+        one_binding());
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseState(
+                SkeletalRigPtr{},
+                {Mat4::identity()});
+        },
+        "skeletal pose requires an immutable rig");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseState(rig, {});
+        },
+        "skeletal pose local count must match rig joint count");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalPoseState(rig, {projective});
+        },
+        "skeletal pose rejects projective local transforms");
+
+    const ModelAsset asset = model_from_mesh(base_mesh());
+    ModelRenderOptions both;
+    both.skinning_state =
+        identity_skin(asset.mesh.vertices.size());
+    both.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{Mat4::identity()});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_model_asset(asset, both);
+        },
+        "model submission rejects simultaneous direct and skeletal skinning");
+
+    ModelRenderOptions wrong_cardinality;
+    wrong_cardinality.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{Mat4::identity()});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_model_asset(asset, wrong_cardinality);
+        },
+        "skeletal rig binding count must match canonical mesh vertex count");
+
+    const auto composed_overflow_rig =
+        std::make_shared<const SkeletalRig>(
+            std::vector<std::optional<std::size_t>>{
+                std::nullopt,
+                0U,
+            },
+            std::vector<Mat4>{
+                Mat4::identity(),
+                Mat4::identity(),
+            },
+            std::vector<VertexSkinBinding>{
+                binding({SkinInfluence{0U, 1.0F}}),
+            });
+    Mat4 huge = Mat4::identity();
+    huge(0U, 0U) = 1.0e20F;
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)composed_overflow_rig->resolve_pose(
+                std::array<Mat4, 2>{
+                    huge,
+                    huge,
+                });
+        },
+        "skeletal pose rejects finite locals whose parent composition overflows");
+
+    const auto final_overflow_rig =
+        std::make_shared<const SkeletalRig>(
+            std::vector<std::optional<std::size_t>>{std::nullopt},
+            std::vector<Mat4>{huge},
+            one_binding());
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)final_overflow_rig->resolve_pose(
+                std::array<Mat4, 1>{huge});
+        },
+        "skeletal pose rejects world times inverse-bind overflow");
+}
+
+void test_skeletal_pose_matches_precomposed_m107_skinning() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+
+    {
+        std::vector<VertexSkinBinding> bindings;
+        for (std::size_t i = 0U;
+             i < source.mesh.vertices.size();
+             ++i) {
+            bindings.push_back(
+                binding({SkinInfluence{0U, 1.0F}}));
+        }
+        const Mat4 root =
+            Mat4::translation({0.125F, -0.25F, 0.0F})
+            * Mat4::scale({2.0F, 1.0F, 0.5F});
+        const auto rig = std::make_shared<const SkeletalRig>(
+            std::vector<std::optional<std::size_t>>{std::nullopt},
+            std::vector<Mat4>{Mat4::identity()},
+            bindings);
+
+        ModelRenderOptions skeletal;
+        skeletal.directional_light =
+            lit_directional_light(
+                normalize(Vec3{0.75F, 0.5F, 0.25F}));
+        skeletal.skeletal_pose_state =
+            std::make_shared<const SkeletalPoseState>(
+                rig,
+                std::vector<Mat4>{root});
+
+        ModelRenderOptions direct = skeletal;
+        direct.skeletal_pose_state.reset();
+        direct.skinning_state =
+            std::make_shared<const SkinningState>(
+                bindings,
+                std::vector<Mat4>{root});
+
+        Framebuffer skeletal_fb(53U, 53U, SampleCount::Four);
+        Framebuffer direct_fb(53U, 53U, SampleCount::Four);
+        skeletal_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 1U);
+        direct_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 1U);
+        draw_model_asset(
+            skeletal_fb,
+            source,
+            Mat4::identity(),
+            Mat4::identity(),
+            Mat4::identity(),
+            skeletal);
+        draw_model_asset(
+            direct_fb,
+            source,
+            Mat4::identity(),
+            Mat4::identity(),
+            Mat4::identity(),
+            direct);
+        check_same_framebuffer(
+            skeletal_fb,
+            direct_fb,
+            "root-only skeletal resolution is exact-equivalent to precomposed M107 skin matrices");
+    }
+
+    std::vector<VertexSkinBinding> chain_bindings{
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{2U, 1.0F}}),
+    };
+    const std::vector<std::optional<std::size_t>> parents{
+        2U,
+        std::nullopt,
+        1U,
+    };
+    const std::vector<Mat4> locals{
+        Mat4::translation({0.125F, 0.0F, 0.0F}),
+        Mat4::scale({1.0F, 2.0F, 1.0F}),
+        exact_quarter_turn_z(),
+    };
+    const Mat4 world1 = locals[1];
+    const Mat4 world2 = world1 * locals[2];
+    const Mat4 world0 = world2 * locals[0];
+
+    auto rig = std::make_shared<const SkeletalRig>(
+        parents,
+        std::vector<Mat4>{
+            Mat4::identity(),
+            Mat4::identity(),
+            Mat4::identity(),
+        },
+        chain_bindings);
+    auto pose = std::make_shared<const SkeletalPoseState>(
+        rig,
+        locals);
+
+    ModelRenderOptions skeletal;
+    skeletal.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.25F, 0.75F, 0.5F}));
+    skeletal.skeletal_pose_state = pose;
+
+    ModelRenderOptions direct = skeletal;
+    direct.skeletal_pose_state.reset();
+    direct.skinning_state =
+        std::make_shared<const SkinningState>(
+            chain_bindings,
+            std::vector<Mat4>{world0, world1, world2});
+
+    const PreparedModelSubmission prepared_skeletal =
+        prepare_model_asset(source, skeletal);
+    const PreparedModelSubmission prepared_direct =
+        prepare_model_asset(source, direct);
+
+    rig.reset();
+    pose.reset();
+    skeletal.skeletal_pose_state.reset();
+
+    Framebuffer skeletal_fb(55U, 55U, SampleCount::Four);
+    Framebuffer direct_fb(55U, 55U, SampleCount::Four);
+    skeletal_fb.clear();
+    direct_fb.clear();
+    draw_prepared_model(
+        skeletal_fb,
+        prepared_skeletal,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity());
+    draw_prepared_model(
+        direct_fb,
+        prepared_direct,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity());
+    check_same_framebuffer(
+        skeletal_fb,
+        direct_fb,
+        "arbitrary-order skeletal chain matches independently precomposed M107 skin matrices after caller rig lifetime ends");
+
+    const std::array<PreparedModelListEntry, 1> skeletal_entry{{
+        {&prepared_skeletal, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> direct_entry{{
+        {&prepared_direct, Mat4::identity()},
+    }};
+    const auto skeletal_shadow = render_directional_shadow_map(
+        skeletal_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    const auto direct_shadow = render_directional_shadow_map(
+        direct_entry,
+        Mat4::identity(),
+        DirectionalShadowMapOptions{
+            41U,
+            41U,
+            CullMode::None,
+            FrontFace::CounterClockwise,
+        });
+    for (std::size_t y = 0U; y < skeletal_shadow->height(); ++y) {
+        for (std::size_t x = 0U; x < skeletal_shadow->width(); ++x) {
+            check(
+                skeletal_shadow->depth_at(x, y)
+                    == direct_shadow->depth_at(x, y),
+                "skeletal shadow silhouette matches precomposed M107 skin state");
+        }
+    }
+}
+
+void test_skeletal_bind_pose_reduces_to_identity_skinning() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({
+            SkinInfluence{0U, 0.5F},
+            SkinInfluence{1U, 0.5F},
+        }),
+    };
+
+    const Mat4 root_local =
+        Mat4::translation({0.25F, 0.0F, 0.0F});
+    const Mat4 child_local =
+        Mat4::translation({0.125F, 0.0F, 0.0F});
+    const auto rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{
+            std::nullopt,
+            0U,
+        },
+        std::vector<Mat4>{
+            Mat4::translation({-0.25F, 0.0F, 0.0F}),
+            Mat4::translation({-0.375F, 0.0F, 0.0F}),
+        },
+        bindings);
+
+    ModelRenderOptions skeletal;
+    skeletal.directional_light =
+        lit_directional_light({1.0F, 0.0F, 0.0F});
+    skeletal.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            rig,
+            std::vector<Mat4>{root_local, child_local});
+
+    ModelRenderOptions canonical = skeletal;
+    canonical.skeletal_pose_state.reset();
+
+    Framebuffer skeletal_fb(47U, 47U, SampleCount::Four);
+    Framebuffer canonical_fb(47U, 47U, SampleCount::Four);
+    skeletal_fb.clear({0.04F, 0.03F, 0.02F}, 1.0F, 2U);
+    canonical_fb.clear({0.04F, 0.03F, 0.02F}, 1.0F, 2U);
+    draw_model_asset(
+        skeletal_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        skeletal);
+    draw_model_asset(
+        canonical_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        canonical);
+    check_same_framebuffer(
+        skeletal_fb,
+        canonical_fb,
+        "bind-compatible local pose times inverse binds reduces exactly to canonical geometry");
+}
+
+void test_skeletal_prepared_list_fail_closed_on_later_pose_overflow() {
+    const ModelAsset source = model_from_mesh(base_mesh());
+    std::vector<VertexSkinBinding> bindings;
+    for (std::size_t i = 0U;
+         i < source.mesh.vertices.size();
+         ++i) {
+        bindings.push_back(
+            binding({SkinInfluence{0U, 1.0F}}));
+    }
+
+    const auto valid_rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{std::nullopt},
+        std::vector<Mat4>{Mat4::identity()},
+        bindings);
+    ModelRenderOptions valid_options;
+    valid_options.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            valid_rig,
+            std::vector<Mat4>{Mat4::identity()});
+    const PreparedModelSubmission valid =
+        prepare_model_asset(source, valid_options);
+
+    Mat4 huge = Mat4::identity();
+    huge(0U, 0U) = 1.0e20F;
+    const auto invalid_rig = std::make_shared<const SkeletalRig>(
+        std::vector<std::optional<std::size_t>>{std::nullopt},
+        std::vector<Mat4>{huge},
+        bindings);
+    ModelRenderOptions invalid_options;
+    invalid_options.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            invalid_rig,
+            std::vector<Mat4>{huge});
+    const PreparedModelSubmission invalid =
+        prepare_model_asset(source, invalid_options);
+
+    const std::array<PreparedModelListEntry, 2> entries{{
+        {&valid, Mat4::identity()},
+        {&invalid, Mat4::identity()},
+    }};
+
+    Framebuffer framebuffer(41U, 41U, SampleCount::Four);
+    framebuffer.clear({0.12F, 0.23F, 0.34F}, 0.81F, 17U);
+    const auto before = framebuffer.rgb8();
+    check_throws<std::invalid_argument>(
+        [&] {
+            draw_prepared_model_list(
+                framebuffer,
+                entries,
+                Mat4::identity(),
+                Mat4::identity());
+        },
+        "later skeletal world-times-inverse-bind overflow rejects complete prepared list");
+    check(
+        framebuffer.rgb8() == before,
+        "later skeletal pose overflow rejects before earlier RGB ownership");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(20U, 20U, sample)
+                == 0.81F,
+            "later skeletal pose overflow rejects before earlier depth ownership");
+        check(
+            framebuffer.sample_stencil_at(20U, 20U, sample)
+                == 17U,
+            "later skeletal pose overflow rejects before earlier stencil ownership");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)order_prepared_model_list_back_to_front(
+                std::array<PreparedModelListEntry, 1>{
+                    PreparedModelListEntry{
+                        &valid,
+                        Mat4::identity(),
+                    },
+                },
+                Mat4::identity());
+        },
+        "canonical painter ordering rejects deferred skeletal poses");
+
+    const PreparedSpatialSubmission spatial =
+        prepare_spatial_submission(valid);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)flatten_prepared_model_draws(
+                std::array<PreparedSpatialListEntry, 1>{
+                    PreparedSpatialListEntry{
+                        &spatial,
+                        Mat4::identity(),
+                    },
+                },
+                Mat4::identity());
+        },
+        "prepared spatial planning rejects deferred skeletal poses");
+}
+
 void test_validation_and_lighting_contract() {
     check_throws<std::invalid_argument>(
         [] {
@@ -924,6 +1426,10 @@ int main() {
     test_identity_skin_with_fixed_lighting_is_exact();
     test_multi_joint_normal_skinning_matches_manual_and_normal_map();
     test_normal_skinning_fail_closed_contract();
+    test_skeletal_rig_validation_contract();
+    test_skeletal_pose_matches_precomposed_m107_skinning();
+    test_skeletal_bind_pose_reduces_to_identity_skinning();
+    test_skeletal_prepared_list_fail_closed_on_later_pose_overflow();
     test_validation_and_lighting_contract();
     test_prepared_list_fail_closed_on_later_unsafe_skin();
     test_camera_and_shadow_share_skinned_silhouette();
