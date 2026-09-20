@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -34,6 +35,8 @@ inline constexpr std::string_view kOfflineFrameSequenceHeader =
     "tiny-renderer-frame-sequence-v1";
 inline constexpr std::string_view kOfflineTimelineSequenceHeader =
     "tiny-renderer-timeline-v1";
+inline constexpr std::string_view kOfflineHierarchicalTimelineSequenceHeader =
+    "tiny-renderer-hierarchy-timeline-v1";
 
 [[nodiscard]] inline float offline_sequence_aspect(
     const OfflineRenderSettings& settings) {
@@ -309,6 +312,15 @@ struct OfflineSceneHierarchicalTimelineKeyframe {
     OfflineSceneHierarchicalFrameState frame{};
 };
 
+// Strict file-facing M98 state. The sidecar owns one fixed validated hierarchy
+// plus hierarchy-local keyframes and caller-ordered sample requests. Parsing
+// does not interpolate local transforms or resolve world transforms.
+struct OfflineSceneHierarchicalTimelineFile {
+    OfflineSceneHierarchy hierarchy;
+    std::vector<OfflineSceneHierarchicalTimelineKeyframe> keyframes{};
+    std::vector<float> sample_times{};
+};
+
 namespace detail {
 
 [[nodiscard]] inline std::vector<Mat4>
@@ -508,6 +520,15 @@ validate_offline_hierarchical_timeline_keyframes(
         + std::to_string(line) + ": " + message);
 }
 
+[[noreturn]] inline void offline_hierarchical_timeline_sequence_error(
+    const std::filesystem::path& path,
+    std::size_t line,
+    const std::string& message) {
+    throw std::invalid_argument(
+        "offline hierarchical timeline " + path.string() + ": line "
+        + std::to_string(line) + ": " + message);
+}
+
 using OfflineSequenceErrorFunction = void (*)(
     const std::filesystem::path&,
     std::size_t,
@@ -530,6 +551,27 @@ using OfflineSequenceErrorFunction = void (*)(
         error(path, line, std::string(label) + " must be a finite number");
     }
     return value;
+}
+
+[[nodiscard]] inline std::size_t parse_offline_sequence_index(
+    const std::filesystem::path& path,
+    std::size_t line,
+    std::string_view token,
+    const char* label,
+    OfflineSequenceErrorFunction error) {
+    std::size_t consumed = 0U;
+    unsigned long long value = 0ULL;
+    try {
+        value = std::stoull(std::string(token), &consumed, 10);
+    } catch (const std::exception&) {
+        error(path, line, std::string(label) + " must be a non-negative integer");
+    }
+    if (consumed != token.size()
+        || value > static_cast<unsigned long long>(
+            std::numeric_limits<std::size_t>::max())) {
+        error(path, line, std::string(label) + " must be a non-negative integer");
+    }
+    return static_cast<std::size_t>(value);
 }
 
 inline void reject_offline_sequence_extra_tokens(
@@ -1071,6 +1113,351 @@ sample_offline_hierarchical_timeline(
     // programmatic time-domain contract.
     (void)detail::validate_offline_timeline_keyframes(result.keyframes);
     return result;
+}
+
+
+// Strict bounded sidecar for M97 hierarchical timeline state:
+//
+//   tiny-renderer-hierarchy-timeline-v1
+//   parent ENTRY root
+//   parent ENTRY PARENT_ENTRY
+//   ... exactly one parent record per prepared scene entry ...
+//   keyframe TIME EX EY EZ TX TY TZ UX UY UZ VFOV_RADIANS NEAR FAR
+//   local M00 M01 M02 M03 M10 M11 M12 M13 M20 M21 M22 M23 M30 M31 M32 M33
+//   ... exactly one local transform per prepared scene entry ...
+//   end
+//   ... at least two strictly increasing keyframes ...
+//   sample TIME
+//   ... one or more caller-ordered sample requests ...
+//
+// Parent records may appear in arbitrary order because ENTRY is explicit, but
+// all topology records must precede keyframes. The loader validates strict
+// syntax, complete/unique topology ownership, camera/local affine state,
+// keyframe ordering, and sample-domain membership. It performs no interpolation
+// and no local-to-world composition; M97 remains the sole semantic authority.
+[[nodiscard]] inline OfflineSceneHierarchicalTimelineFile
+load_offline_hierarchical_timeline_sequence_file(
+    const std::filesystem::path& path,
+    std::size_t expected_model_count) {
+    if (expected_model_count > detail::kMaxOfflineSceneEntries) {
+        throw std::invalid_argument(
+            "offline hierarchical timeline expected model count exceeds bounded scene entry limit");
+    }
+
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error(
+            "failed to open offline hierarchical timeline: " + path.string());
+    }
+
+    std::vector<std::optional<std::size_t>> parents(expected_model_count);
+    std::vector<unsigned char> parent_seen(expected_model_count, 0U);
+    std::size_t parent_count = 0U;
+    std::optional<OfflineSceneHierarchy> hierarchy;
+    std::vector<OfflineSceneHierarchicalTimelineKeyframe> keyframes;
+    std::vector<float> sample_times;
+    std::optional<OfflineSceneHierarchicalTimelineKeyframe> current;
+    bool header_seen = false;
+    bool samples_started = false;
+    std::string line_text;
+    std::size_t line_number = 0U;
+
+    const auto finalize_hierarchy = [&](std::size_t diagnostic_line) {
+        if (hierarchy) {
+            return;
+        }
+        if (parent_count != expected_model_count) {
+            detail::offline_hierarchical_timeline_sequence_error(
+                path,
+                diagnostic_line,
+                "hierarchy requires exactly one parent record per prepared scene entry before keyframes");
+        }
+        try {
+            hierarchy.emplace(parents);
+        } catch (const std::exception& caught) {
+            detail::offline_hierarchical_timeline_sequence_error(
+                path, diagnostic_line, caught.what());
+        }
+    };
+
+    while (std::getline(input, line_text)) {
+        ++line_number;
+        if (detail::offline_sequence_ignorable_line(line_text)) {
+            continue;
+        }
+
+        std::istringstream line(line_text);
+        std::string directive;
+        line >> directive;
+
+        if (!header_seen) {
+            if (directive != detail::kOfflineHierarchicalTimelineSequenceHeader) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "first non-comment line must be tiny-renderer-hierarchy-timeline-v1");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_hierarchical_timeline_sequence_error);
+            header_seen = true;
+            continue;
+        }
+
+        if (directive == "parent") {
+            if (hierarchy || current || !keyframes.empty() || samples_started) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "parent records must precede all keyframes and samples");
+            }
+
+            std::string entry_token;
+            std::string parent_token;
+            if (!(line >> entry_token >> parent_token)) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "parent requires ENTRY followed by root or PARENT_ENTRY");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_hierarchical_timeline_sequence_error);
+
+            const std::size_t entry = detail::parse_offline_sequence_index(
+                path,
+                line_number,
+                entry_token,
+                "hierarchy entry index",
+                detail::offline_hierarchical_timeline_sequence_error);
+            if (entry >= expected_model_count) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "hierarchy entry index exceeds prepared scene entry count");
+            }
+            if (parent_seen[entry] != 0U) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "duplicate parent record for hierarchy entry");
+            }
+
+            if (parent_token == "root") {
+                parents[entry] = std::nullopt;
+            } else {
+                const std::size_t parent = detail::parse_offline_sequence_index(
+                    path,
+                    line_number,
+                    parent_token,
+                    "hierarchy parent index",
+                    detail::offline_hierarchical_timeline_sequence_error);
+                if (parent >= expected_model_count) {
+                    detail::offline_hierarchical_timeline_sequence_error(
+                        path,
+                        line_number,
+                        "hierarchy parent index exceeds prepared scene entry count");
+                }
+                if (parent == entry) {
+                    detail::offline_hierarchical_timeline_sequence_error(
+                        path,
+                        line_number,
+                        "offline hierarchy entry cannot parent itself");
+                }
+                parents[entry] = parent;
+            }
+            parent_seen[entry] = 1U;
+            ++parent_count;
+            if (parent_count == expected_model_count) {
+                finalize_hierarchy(line_number);
+            }
+            continue;
+        }
+
+        if (directive == "keyframe") {
+            if (samples_started) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframes must precede all sample directives");
+            }
+            if (current) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "new keyframe encountered before previous keyframe end");
+            }
+            finalize_hierarchy(line_number);
+            if (keyframes.size() >= detail::kMaxOfflineTimelineKeyframes) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe count exceeds bounded timeline limit");
+            }
+
+            std::string time_token;
+            if (!(line >> time_token)) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe requires TIME followed by camera state");
+            }
+            const float time = detail::parse_offline_sequence_float(
+                path,
+                line_number,
+                time_token,
+                "keyframe time",
+                detail::offline_hierarchical_timeline_sequence_error);
+            if (!keyframes.empty() && !(time > keyframes.back().time)) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe times must be strictly increasing");
+            }
+
+            current.emplace();
+            current->time = time;
+            current->frame.camera = detail::parse_offline_sequence_camera(
+                path,
+                line_number,
+                line,
+                "keyframe",
+                detail::offline_hierarchical_timeline_sequence_error);
+            current->frame.local_transforms.reserve(expected_model_count);
+            continue;
+        }
+
+        if (directive == "local") {
+            if (!current) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "local record requires an active keyframe");
+            }
+            if (current->frame.local_transforms.size() >= expected_model_count) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "local transform count exceeds prepared scene entry count");
+            }
+            current->frame.local_transforms.push_back(
+                detail::parse_offline_sequence_model_matrix(
+                    path,
+                    line_number,
+                    line,
+                    "offline hierarchical timeline keyframe local transform",
+                    detail::offline_hierarchical_timeline_sequence_error));
+            continue;
+        }
+
+        if (directive == "end") {
+            if (!current) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path, line_number, "end requires an active keyframe");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_hierarchical_timeline_sequence_error);
+            if (current->frame.local_transforms.size() != expected_model_count) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "keyframe local transform count must match prepared scene entry count");
+            }
+            keyframes.push_back(std::move(*current));
+            current.reset();
+            continue;
+        }
+
+        if (directive == "sample") {
+            if (current) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample cannot appear inside an active keyframe");
+            }
+            if (keyframes.size() < 2U) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "samples require at least two completed keyframes");
+            }
+            samples_started = true;
+            if (sample_times.size() >= detail::kMaxOfflineTimelineSamples) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample count exceeds bounded timeline limit");
+            }
+
+            std::string time_token;
+            if (!(line >> time_token)) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path, line_number, "sample requires TIME");
+            }
+            detail::reject_offline_sequence_extra_tokens(
+                path,
+                line_number,
+                line,
+                detail::offline_hierarchical_timeline_sequence_error);
+            const float sample_time = detail::parse_offline_sequence_float(
+                path,
+                line_number,
+                time_token,
+                "sample time",
+                detail::offline_hierarchical_timeline_sequence_error);
+            if (sample_time < keyframes.front().time
+                || sample_time > keyframes.back().time) {
+                detail::offline_hierarchical_timeline_sequence_error(
+                    path,
+                    line_number,
+                    "sample time is outside the keyframe domain");
+            }
+            sample_times.push_back(sample_time);
+            continue;
+        }
+
+        detail::offline_hierarchical_timeline_sequence_error(
+            path, line_number, "unknown directive '" + directive + "'");
+    }
+
+    if (!header_seen) {
+        throw std::invalid_argument(
+            "offline hierarchical timeline " + path.string()
+            + ": missing tiny-renderer-hierarchy-timeline-v1 header");
+    }
+    if (current) {
+        detail::offline_hierarchical_timeline_sequence_error(
+            path,
+            line_number,
+            "unterminated keyframe record requires end");
+    }
+    finalize_hierarchy(line_number);
+    if (keyframes.size() < 2U) {
+        throw std::invalid_argument(
+            "offline hierarchical timeline " + path.string()
+            + ": at least two keyframe records are required");
+    }
+    if (sample_times.empty()) {
+        throw std::invalid_argument(
+            "offline hierarchical timeline " + path.string()
+            + ": at least one sample record is required");
+    }
+
+    (void)detail::validate_offline_hierarchical_timeline_keyframes(
+        *hierarchy,
+        keyframes);
+    return OfflineSceneHierarchicalTimelineFile{
+        std::move(*hierarchy),
+        std::move(keyframes),
+        std::move(sample_times),
+    };
 }
 
 // Strict bounded sidecar for exact frame samples:
