@@ -1404,6 +1404,83 @@ sample_offline_sparse_transform_graph_clip(
     return frames;
 }
 
+// M103 combines two independently sampled M102 clips in graph-local space.
+// Both clips are fully sampled and validated before endpoint passthrough or
+// interior blending, so neither endpoint weight can bypass the other clip's
+// requested-domain contract. Graph/world composition remains exclusively M99.
+[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
+blend_offline_sparse_transform_graph_clips(
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const float> sample_times,
+    float weight) {
+    if (!std::isfinite(weight) || weight < 0.0F || weight > 1.0F) {
+        throw std::invalid_argument(
+            "offline sparse clip blend weight must be finite and within [0, 1]");
+    }
+
+    const std::size_t local_count =
+        left_clip.default_local_transforms().size();
+    if (right_clip.default_local_transforms().size() != local_count) {
+        throw std::invalid_argument(
+            "offline sparse clip blend requires equal graph-local ownership");
+    }
+
+    std::vector<OfflineSceneTransformGraphFrameState> left_frames =
+        sample_offline_sparse_transform_graph_clip(
+            left_clip,
+            sample_times);
+    std::vector<OfflineSceneTransformGraphFrameState> right_frames =
+        sample_offline_sparse_transform_graph_clip(
+            right_clip,
+            sample_times);
+    if (left_frames.size() != right_frames.size()) {
+        throw std::logic_error(
+            "offline sparse clip blend sampling produced mismatched frame counts");
+    }
+
+    if (weight == 0.0F) {
+        return left_frames;
+    }
+    if (weight == 1.0F) {
+        return right_frames;
+    }
+
+    std::vector<OfflineSceneTransformGraphFrameState> blended_frames;
+    blended_frames.reserve(left_frames.size());
+    for (std::size_t frame_index = 0U;
+         frame_index < left_frames.size();
+         ++frame_index) {
+        const OfflineSceneTransformGraphFrameState& left =
+            left_frames[frame_index];
+        const OfflineSceneTransformGraphFrameState& right =
+            right_frames[frame_index];
+        if (left.local_transforms.size() != local_count
+            || right.local_transforms.size() != local_count) {
+            throw std::logic_error(
+                "offline sparse clip blend sampled frame lost graph-local ownership");
+        }
+
+        OfflineSceneTransformGraphFrameState blended;
+        blended.camera = detail::interpolate_offline_timeline_camera(
+            left.camera,
+            right.camera,
+            weight);
+        blended.local_transforms.reserve(local_count);
+        for (std::size_t local_index = 0U;
+             local_index < local_count;
+             ++local_index) {
+            blended.local_transforms.push_back(
+                detail::interpolate_offline_timeline_affine(
+                    left.local_transforms[local_index],
+                    right.local_transforms[local_index],
+                    weight));
+        }
+        blended_frames.push_back(std::move(blended));
+    }
+    return blended_frames;
+}
+
 // Strict bounded sidecar for programmatic M94 timeline state:
 //
 //   tiny-renderer-timeline-v1
@@ -2914,6 +2991,41 @@ prepare_offline_sparse_transform_graph_clip_sequence(
         scene,
         graph,
         sampled_frames);
+}
+
+// Programmatic M103 path: validates prepared-scene/graph/clip ownership,
+ // samples both sparse clips completely, blends only complete graph-local
+ // state, then delegates one complete batch to M99 and finally M92.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_sparse_transform_graph_clip_blend_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneTransformGraph& graph,
+    const OfflineSceneSparseTransformGraphClip& left_clip,
+    const OfflineSceneSparseTransformGraphClip& right_clip,
+    std::span<const float> sample_times,
+    float weight) {
+    if (graph.render_entry_nodes().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline sparse clip blend render binding count must match prepared scene entry count");
+    }
+
+    const std::size_t graph_node_count = graph.parents().size();
+    if (left_clip.default_local_transforms().size() != graph_node_count
+        || right_clip.default_local_transforms().size() != graph_node_count) {
+        throw std::invalid_argument(
+            "offline sparse clip blend local ownership must match graph node count");
+    }
+
+    const std::vector<OfflineSceneTransformGraphFrameState> blended_frames =
+        blend_offline_sparse_transform_graph_clips(
+            left_clip,
+            right_clip,
+            sample_times,
+            weight);
+    return prepare_offline_transform_graph_sequence(
+        scene,
+        graph,
+        blended_frames);
 }
 
 // Programmatic M97 path: samples camera and local affine state with M94's
