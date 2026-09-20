@@ -1908,6 +1908,110 @@ void test_skeletal_trs_validation_sampling_and_shortest_path() {
         },
         "semantic TRS rotation track rejects non-unit key quaternion");
 
+    {
+        std::vector<SkeletalVec3Keyframe> too_many_keys(
+            kMaxSkeletalTrsTrackKeys + 1U);
+        for (std::size_t index = 0U;
+             index < too_many_keys.size();
+             ++index) {
+            too_many_keys[index] = {
+                static_cast<float>(index),
+                {0.0F, 0.0F, 0.0F},
+            };
+        }
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)SkeletalTrsClip(
+                    rig,
+                    0.0F,
+                    static_cast<float>(kMaxSkeletalTrsTrackKeys),
+                    {SkeletalTrs{}},
+                    {
+                        {0U, too_many_keys},
+                    },
+                    {},
+                    {});
+            },
+            "semantic TRS clip bounds key count per property track");
+    }
+
+    {
+        constexpr std::size_t joint_count = 17U;
+        std::vector<std::optional<std::size_t>> parents(
+            joint_count,
+            std::nullopt);
+        std::vector<Mat4> inverse_binds(
+            joint_count,
+            Mat4::identity());
+        const auto many_joint_rig =
+            std::make_shared<const SkeletalRig>(
+                std::move(parents),
+                std::move(inverse_binds),
+                std::vector<VertexSkinBinding>{
+                    binding({SkinInfluence{0U, 1.0F}}),
+                });
+        std::vector<SkeletalTrs> defaults(
+            joint_count,
+            SkeletalTrs{});
+        std::vector<SkeletalTranslationTrack> tracks;
+        tracks.reserve(joint_count);
+        for (std::size_t joint = 0U;
+             joint < joint_count;
+             ++joint) {
+            std::vector<SkeletalVec3Keyframe> keys;
+            keys.reserve(kMaxSkeletalTrsTrackKeys);
+            for (std::size_t key = 0U;
+                 key < kMaxSkeletalTrsTrackKeys;
+                 ++key) {
+                keys.push_back({
+                    static_cast<float>(key),
+                    {
+                        static_cast<float>(joint),
+                        0.0F,
+                        0.0F,
+                    },
+                });
+            }
+            tracks.push_back({
+                joint,
+                std::move(keys),
+            });
+        }
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)SkeletalTrsClip(
+                    many_joint_rig,
+                    0.0F,
+                    static_cast<float>(
+                        kMaxSkeletalTrsTrackKeys - 1U),
+                    defaults,
+                    tracks,
+                    {},
+                    {});
+            },
+            "semantic TRS clip bounds aggregate property key ownership");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    {
+                        0U,
+                        {
+                            {1.25F, {0.0F, 0.0F, 0.0F}},
+                        },
+                    },
+                },
+                {},
+                {});
+        },
+        "semantic TRS property key time must stay inside clip domain");
+
     const Quaternion identity{};
     const Quaternion half_turn_z{0.0F, 0.0F, 1.0F, 0.0F};
     const SkeletalTrsClip clip(
