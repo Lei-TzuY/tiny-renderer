@@ -48,9 +48,9 @@ Vertex vertex(const Vec3& position) {
 Mesh base_mesh() {
     Mesh mesh;
     mesh.vertices = {
-        vertex({-0.60F, -0.55F, 0.0F}),
-        vertex({0.45F, -0.55F, 0.0F}),
-        vertex({-0.05F, 0.60F, 0.0F}),
+        vertex({-0.50F, -0.50F, 0.0F}),
+        vertex({0.25F, -0.50F, 0.0F}),
+        vertex({-0.125F, 0.50F, 0.0F}),
     };
     mesh.triangles = {{0U, 1U, 2U}};
     return mesh;
