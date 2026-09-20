@@ -2660,17 +2660,22 @@ void test_skeletal_trs_blend_matches_independent_semantic_reference() {
         Mat4::translation({0.05F, 0.0F, 0.0F}),
         Mat4::translation({0.10F, 0.0F, 0.0F}),
     };
-    const Quaternion quarter = quarter_turn_z_quaternion();
+    const Quaternion half_turn{
+        0.0F,
+        0.0F,
+        1.0F,
+        0.0F,
+    };
     const Quaternion antipodal{
-        -quarter.x,
-        -quarter.y,
-        -quarter.z,
-        -quarter.w,
+        0.0F,
+        0.0F,
+        -1.0F,
+        0.0F,
     };
 
     SkeletalTrs left_child;
     SkeletalTrs left_parent;
-    left_parent.rotation = quarter;
+    left_parent.rotation = half_turn;
     SkeletalTrs right_child;
     SkeletalTrs right_parent;
     right_parent.rotation = antipodal;
@@ -2800,7 +2805,7 @@ void test_skeletal_trs_blend_matches_independent_semantic_reference() {
             });
         const Mat4 parent_local =
             prefixes[1]
-            * independent_quaternion_matrix(quarter)
+            * independent_quaternion_matrix(half_turn)
             * Mat4::scale({
                 blended_scale,
                 1.0F,
