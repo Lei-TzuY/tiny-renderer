@@ -11,6 +11,7 @@
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "tiny_renderer/skeletal_trs_timeline.hpp"
+#include "tiny_renderer/skeletal_trs_timeline.hpp"
 
 namespace tiny_renderer {
 
@@ -29,6 +30,7 @@ struct GltfSkinnedAsset {
     SkeletalRigPtr rig{};
     std::vector<Mat4> rest_local_transforms{};
     std::optional<std::array<std::size_t, 3>> normal_channels{};
+    std::shared_ptr<const SkeletalTrsClip> linear_animation{};
 };
 
 [[nodiscard]] GltfSkinnedAsset load_gltf_skinned_asset_file(
