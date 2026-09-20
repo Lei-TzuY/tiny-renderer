@@ -1332,6 +1332,12 @@ struct GltfAnimationSamplerInfo {
         || window.accessor->count > kMaxSkeletalTrsTrackKeys) {
         fail("animation input key count is outside bounded track limits");
     }
+    if (!window.accessor->min_values
+        || !window.accessor->max_values
+        || window.accessor->min_values->size() != 1U
+        || window.accessor->max_values->size() != 1U) {
+        fail("animation input accessor requires scalar min and max");
+    }
     std::vector<float> times;
     times.reserve(window.accessor->count);
     for (std::size_t index = 0U;
@@ -1340,10 +1346,17 @@ struct GltfAnimationSamplerInfo {
         const float time = read_f32(
             element_pointer(window, bytes, index),
             "animation input");
+        if (time < 0.0F) {
+            fail("animation input time must be non-negative");
+        }
         if (index > 0U && !(time > times.back())) {
             fail("animation input times must be strictly increasing");
         }
         times.push_back(time);
+    }
+    if (times.front() != (*window.accessor->min_values)[0]
+        || times.back() != (*window.accessor->max_values)[0]) {
+        fail("animation input min/max must match the first and last key times");
     }
     return times;
 }
