@@ -1820,6 +1820,41 @@ void test_skeletal_trs_validation_sampling_and_shortest_path() {
         },
         "semantic TRS default pose cardinality matches rig");
 
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)SkeletalTrsClip(
+                rig,
+                0.0F,
+                1.0F,
+                {SkeletalTrs{}},
+                {
+                    Mat4::identity(),
+                    Mat4::identity(),
+                },
+                {},
+                {},
+                {});
+        },
+        "semantic TRS local prefix cardinality matches rig");
+
+    {
+        Mat4 projective_prefix = Mat4::identity();
+        projective_prefix(3U, 0U) = 0.25F;
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)SkeletalTrsClip(
+                    rig,
+                    0.0F,
+                    1.0F,
+                    {SkeletalTrs{}},
+                    {projective_prefix},
+                    {},
+                    {},
+                    {});
+            },
+            "semantic TRS immutable local prefix must be affine");
+    }
+
     SkeletalTrs bad_default;
     bad_default.rotation = {0.0F, 0.0F, 0.0F, 2.0F};
     check_throws<std::invalid_argument>(

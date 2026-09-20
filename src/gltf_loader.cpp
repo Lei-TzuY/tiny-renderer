@@ -23,6 +23,7 @@
 
 #include "tiny_renderer/affine_timeline.hpp"
 #include "tiny_renderer/quaternion.hpp"
+#include "tiny_renderer/skeletal_trs_timeline.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -597,7 +598,12 @@ void reject_member(
     return result;
 }
 
-[[nodiscard]] Mat4 parse_node_local(
+struct ParsedNodeTransform {
+    Mat4 local{Mat4::identity()};
+    std::optional<SkeletalTrs> semantic_trs{};
+};
+
+[[nodiscard]] ParsedNodeTransform parse_node_transform(
     const std::map<std::string, JsonValue>& object) {
     const JsonValue* matrix_value = optional_member(object, "matrix");
     const bool has_trs =
@@ -620,29 +626,33 @@ void reject_member(
         validate_gltf_affine_matrix(
             matrix,
             "glTF node matrix");
-        return matrix;
+        return {matrix, std::nullopt};
     }
 
-    Vec3 translation{0.0F, 0.0F, 0.0F};
+    SkeletalTrs semantic;
     if (const JsonValue* value =
             optional_member(object, "translation")) {
         const auto values = number_array(
             *value, 3U, "node translation");
-        translation = {values[0], values[1], values[2]};
+        semantic.translation = {
+            values[0],
+            values[1],
+            values[2],
+        };
     }
-
-    Vec3 scale{1.0F, 1.0F, 1.0F};
     if (const JsonValue* value = optional_member(object, "scale")) {
         const auto values = number_array(*value, 3U, "node scale");
-        scale = {values[0], values[1], values[2]};
+        semantic.scale = {
+            values[0],
+            values[1],
+            values[2],
+        };
     }
-
-    Quaternion rotation{};
     if (const JsonValue* value =
             optional_member(object, "rotation")) {
         const auto values = number_array(
             *value, 4U, "node rotation");
-        rotation = {
+        semantic.rotation = {
             values[0],
             values[1],
             values[2],
@@ -650,22 +660,18 @@ void reject_member(
         };
     }
 
-    Mat4 rotation_matrix;
+    Mat4 local;
     try {
-        rotation_matrix =
-            quaternion_rotation_matrix(rotation);
+        local = detail::compose_skeletal_trs(
+            semantic,
+            "glTF node semantic TRS");
     } catch (const std::invalid_argument& error) {
         fail(error.what());
     }
-
-    const Mat4 local =
-        Mat4::translation(translation)
-        * rotation_matrix
-        * Mat4::scale(scale);
     validate_gltf_affine_matrix(
         local,
         "glTF node local transform");
-    return local;
+    return {local, semantic};
 }
 
 struct BufferViewInfo {
@@ -687,6 +693,7 @@ struct AccessorInfo {
 
 struct NodeInfo {
     Mat4 local{Mat4::identity()};
+    std::optional<SkeletalTrs> semantic_trs{};
     std::vector<std::size_t> children{};
     std::optional<std::size_t> mesh{};
     std::optional<std::size_t> skin{};
@@ -1206,7 +1213,10 @@ void require_accessor_shape(
         reject_member(object, "camera", "node");
 
         NodeInfo node;
-        node.local = parse_node_local(object);
+        const ParsedNodeTransform transform =
+            parse_node_transform(object);
+        node.local = transform.local;
+        node.semantic_trs = transform.semantic_trs;
         if (const JsonValue* children =
                 optional_member(object, "children")) {
             const auto& child_array =
@@ -1299,10 +1309,330 @@ validate_node_hierarchy(
     }
 }
 
-}  // namespace
 
-GltfSkinnedAsset load_gltf_skinned_asset_file(
-    const std::filesystem::path& path) {
+struct GltfAnimationSamplerInfo {
+    std::size_t input{};
+    std::size_t output{};
+};
+
+[[nodiscard]] std::vector<float> read_animation_times(
+    const AccessorWindow& window,
+    const std::vector<std::uint8_t>& bytes) {
+    const std::array<int, 1> float_type{5126};
+    require_accessor_shape(
+        window,
+        "SCALAR",
+        float_type,
+        "animation input",
+        true);
+    if (window.accessor->count == 0U
+        || window.accessor->count > kMaxSkeletalTrsTrackKeys) {
+        fail("animation input key count is outside bounded track limits");
+    }
+    std::vector<float> times;
+    times.reserve(window.accessor->count);
+    for (std::size_t index = 0U;
+         index < window.accessor->count;
+         ++index) {
+        const float time = read_f32(
+            element_pointer(window, bytes, index),
+            "animation input");
+        if (index > 0U && !(time > times.back())) {
+            fail("animation input times must be strictly increasing");
+        }
+        times.push_back(time);
+    }
+    return times;
+}
+
+[[nodiscard]] std::shared_ptr<const SkeletalTrsClip>
+parse_gltf_linear_animation(
+    const std::map<std::string, JsonValue>& root,
+    const std::vector<AccessorInfo>& accessors,
+    const std::vector<BufferViewInfo>& views,
+    const std::vector<std::uint8_t>& bytes,
+    const std::vector<NodeInfo>& nodes,
+    std::span<const std::optional<std::size_t>> joint_index_by_node,
+    SkeletalRigPtr rig,
+    const std::vector<SkeletalTrs>& default_pose,
+    const std::vector<Mat4>& local_prefixes) {
+    const auto& animations = as_array(
+        require_member(root, "animations", "root"),
+        "animations");
+    if (animations.size() != 1U) {
+        fail("bounded animated importer requires exactly one animation");
+    }
+    const auto& animation =
+        as_object(animations.front(), "animation");
+    reject_member(animation, "extensions", "animation");
+
+    const auto& sampler_values = as_array(
+        require_member(animation, "samplers", "animation"),
+        "animation samplers");
+    const auto& channel_values = as_array(
+        require_member(animation, "channels", "animation"),
+        "animation channels");
+    if (sampler_values.empty()
+        || sampler_values.size() > 256U) {
+        fail("animation sampler count is outside bounded limits");
+    }
+    if (channel_values.empty()
+        || channel_values.size() > 256U) {
+        fail("animation channel count is outside bounded limits");
+    }
+
+    std::vector<GltfAnimationSamplerInfo> samplers;
+    samplers.reserve(sampler_values.size());
+    for (const JsonValue& value : sampler_values) {
+        const auto& sampler =
+            as_object(value, "animation sampler");
+        reject_member(
+            sampler,
+            "extensions",
+            "animation sampler");
+        const std::size_t input = as_index(
+            require_member(
+                sampler,
+                "input",
+                "animation sampler"),
+            "animation sampler input");
+        const std::size_t output = as_index(
+            require_member(
+                sampler,
+                "output",
+                "animation sampler"),
+            "animation sampler output");
+        const std::string interpolation =
+            optional_member(sampler, "interpolation")
+            ? as_string(
+                  *optional_member(
+                      sampler,
+                      "interpolation"),
+                  "animation sampler interpolation")
+            : "LINEAR";
+        if (interpolation != "LINEAR") {
+            fail("bounded animated importer supports LINEAR interpolation only");
+        }
+        if (input >= accessors.size()
+            || output >= accessors.size()) {
+            fail("animation sampler accessor index is out of range");
+        }
+        samplers.push_back({input, output});
+    }
+
+    std::vector<SkeletalTranslationTrack> translations;
+    std::vector<SkeletalRotationTrack> rotations;
+    std::vector<SkeletalScaleTrack> scales;
+    std::vector<bool> translation_seen(
+        rig->parents().size(),
+        false);
+    std::vector<bool> rotation_seen(
+        rig->parents().size(),
+        false);
+    std::vector<bool> scale_seen(
+        rig->parents().size(),
+        false);
+    std::optional<float> clip_start;
+    std::optional<float> clip_end;
+    const std::array<int, 1> float_type{5126};
+
+    for (const JsonValue& value : channel_values) {
+        const auto& channel =
+            as_object(value, "animation channel");
+        reject_member(
+            channel,
+            "extensions",
+            "animation channel");
+        const std::size_t sampler_index = as_index(
+            require_member(
+                channel,
+                "sampler",
+                "animation channel"),
+            "animation channel sampler");
+        if (sampler_index >= samplers.size()) {
+            fail("animation channel sampler index is out of range");
+        }
+        const auto& target = as_object(
+            require_member(
+                channel,
+                "target",
+                "animation channel"),
+            "animation channel target");
+        reject_member(
+            target,
+            "extensions",
+            "animation channel target");
+        const std::size_t node = as_index(
+            require_member(
+                target,
+                "node",
+                "animation channel target"),
+            "animation target node");
+        if (node >= nodes.size()) {
+            fail("animation target node index is out of range");
+        }
+        if (node >= joint_index_by_node.size()
+            || !joint_index_by_node[node]) {
+            fail("animation channel must target an imported skin joint node");
+        }
+        if (!nodes[node].semantic_trs) {
+            fail("animated skin joint must use TRS node state rather than matrix");
+        }
+        const std::size_t joint =
+            *joint_index_by_node[node];
+        const std::string path = as_string(
+            require_member(
+                target,
+                "path",
+                "animation channel target"),
+            "animation target path");
+        if (path != "translation"
+            && path != "rotation"
+            && path != "scale") {
+            fail("animation target path is outside translation/rotation/scale");
+        }
+
+        const GltfAnimationSamplerInfo& sampler =
+            samplers[sampler_index];
+        const AccessorWindow input = accessor_window(
+            accessors,
+            views,
+            bytes,
+            sampler.input);
+        const AccessorWindow output = accessor_window(
+            accessors,
+            views,
+            bytes,
+            sampler.output);
+        const std::vector<float> times =
+            read_animation_times(input, bytes);
+        if (output.accessor->count != times.size()) {
+            fail("animation sampler input/output key counts must match");
+        }
+        clip_start = clip_start
+            ? std::min(*clip_start, times.front())
+            : times.front();
+        clip_end = clip_end
+            ? std::max(*clip_end, times.back())
+            : times.back();
+
+        if (path == "translation" || path == "scale") {
+            require_accessor_shape(
+                output,
+                "VEC3",
+                float_type,
+                path == "translation"
+                    ? "animation translation output"
+                    : "animation scale output",
+                true);
+            std::vector<SkeletalVec3Keyframe> keys;
+            keys.reserve(times.size());
+            for (std::size_t key = 0U;
+                 key < times.size();
+                 ++key) {
+                const auto value3 = read_vec3(
+                    output,
+                    bytes,
+                    key,
+                    path == "translation"
+                        ? "animation translation output"
+                        : "animation scale output");
+                keys.push_back({
+                    times[key],
+                    {
+                        value3[0],
+                        value3[1],
+                        value3[2],
+                    },
+                });
+            }
+            std::vector<bool>& seen =
+                path == "translation"
+                ? translation_seen
+                : scale_seen;
+            if (seen[joint]) {
+                fail("animation contains duplicate joint/property target ownership");
+            }
+            seen[joint] = true;
+            if (path == "translation") {
+                translations.push_back({
+                    joint,
+                    std::move(keys),
+                });
+            } else {
+                scales.push_back({
+                    joint,
+                    std::move(keys),
+                });
+            }
+        } else {
+            require_accessor_shape(
+                output,
+                "VEC4",
+                float_type,
+                "animation rotation output",
+                true);
+            if (rotation_seen[joint]) {
+                fail("animation contains duplicate joint/property target ownership");
+            }
+            rotation_seen[joint] = true;
+            std::vector<SkeletalQuaternionKeyframe> keys;
+            keys.reserve(times.size());
+            for (std::size_t key = 0U;
+                 key < times.size();
+                 ++key) {
+                const auto value4 = read_vec4_f32(
+                    output,
+                    bytes,
+                    key,
+                    "animation rotation output");
+                keys.push_back({
+                    times[key],
+                    {
+                        value4[0],
+                        value4[1],
+                        value4[2],
+                        value4[3],
+                    },
+                });
+            }
+            rotations.push_back({
+                joint,
+                std::move(keys),
+            });
+        }
+    }
+
+    if (!clip_start || !clip_end
+        || !(*clip_end > *clip_start)) {
+        fail("animation channels must span a finite increasing clip domain");
+    }
+
+    try {
+        return std::make_shared<const SkeletalTrsClip>(
+            std::move(rig),
+            *clip_start,
+            *clip_end,
+            default_pose,
+            local_prefixes,
+            std::move(translations),
+            std::move(rotations),
+            std::move(scales));
+    } catch (const std::invalid_argument& error) {
+        fail(error.what());
+    } catch (const std::out_of_range& error) {
+        fail(error.what());
+    }
+}
+
+struct GltfImportBundle {
+    GltfSkinnedAsset asset{};
+    std::shared_ptr<const SkeletalTrsClip> animation{};
+};
+
+[[nodiscard]] GltfImportBundle load_gltf_skinned_asset_impl(
+    const std::filesystem::path& path,
+    bool require_animation) {
     if (path.extension() != ".gltf") {
         fail("bounded importer requires a textual .gltf file");
     }
@@ -1315,7 +1645,9 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
     reject_member(root, "extensions", "root");
     reject_member(root, "extensionsUsed", "root");
     reject_member(root, "extensionsRequired", "root");
-    reject_member(root, "animations", "root");
+    if (!require_animation) {
+        reject_member(root, "animations", "root");
+    }
 
     const auto& asset = as_object(
         require_member(root, "asset", "root"),
@@ -1636,25 +1968,53 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
     std::vector<Mat4> rest_locals(
         joint_nodes.size(),
         Mat4::identity());
+    std::vector<SkeletalTrs> semantic_defaults(
+        joint_nodes.size(),
+        SkeletalTrs{});
+    std::vector<Mat4> local_prefixes(
+        joint_nodes.size(),
+        Mat4::identity());
     for (std::size_t joint = 0U;
          joint < joint_nodes.size();
          ++joint) {
-        std::size_t node = joint_nodes[joint];
-        Mat4 local = nodes[node].local;
-        std::optional<std::size_t> ancestor = node_parent[node];
+        const std::size_t joint_node = joint_nodes[joint];
+        std::size_t cursor = joint_node;
+        Mat4 prefix = Mat4::identity();
+        std::optional<std::size_t> ancestor =
+            node_parent[cursor];
         while (ancestor && !joint_index_by_node[*ancestor]) {
-            local = nodes[*ancestor].local * local;
-            node = *ancestor;
-            ancestor = node_parent[node];
+            prefix = nodes[*ancestor].local * prefix;
+            cursor = *ancestor;
+            ancestor = node_parent[cursor];
         }
         if (ancestor) {
             rig_parents[joint] =
                 *joint_index_by_node[*ancestor];
         }
+
+        Mat4 rest_local;
+        if (nodes[joint_node].semantic_trs) {
+            semantic_defaults[joint] =
+                *nodes[joint_node].semantic_trs;
+            local_prefixes[joint] = prefix;
+            rest_local =
+                prefix * nodes[joint_node].local;
+        } else {
+            // Matrix-backed joints are valid static joints. Their full own
+            // matrix becomes part of the immutable prefix; animation channels
+            // targeting such a joint are rejected by the animated importer.
+            local_prefixes[joint] =
+                prefix * nodes[joint_node].local;
+            rest_local = local_prefixes[joint];
+        }
+
         validate_gltf_affine_matrix(
-            local,
+            local_prefixes[joint],
+            "glTF joint immutable local prefix");
+        validate_gltf_affine_matrix(
+            rest_local,
             "glTF compressed joint local transform");
-        rest_locals[joint] = local;
+        rest_locals[joint] = rest_local;
     }
 
     std::vector<VertexSkinBinding> vertex_bindings;
@@ -1751,13 +2111,52 @@ GltfSkinnedAsset load_gltf_skinned_asset_file(
 
     GltfSkinnedAsset result;
     result.model = std::move(model);
-    result.rig = std::move(rig);
+    result.rig = rig;
     result.rest_local_transforms = std::move(rest_locals);
     if (normals) {
         result.normal_channels =
             std::array<std::size_t, 3>{0U, 1U, 2U};
     }
-    return result;
+
+    std::shared_ptr<const SkeletalTrsClip> animation;
+    if (require_animation) {
+        animation = parse_gltf_linear_animation(
+            root,
+            accessors,
+            views,
+            bytes,
+            nodes,
+            joint_index_by_node,
+            rig,
+            semantic_defaults,
+            local_prefixes);
+    }
+    return {
+        std::move(result),
+        std::move(animation),
+    };
+}
+
+}  // namespace
+
+GltfSkinnedAsset load_gltf_skinned_asset_file(
+    const std::filesystem::path& path) {
+    return load_gltf_skinned_asset_impl(
+        path,
+        false).asset;
+}
+
+GltfSkinnedAnimatedAsset
+load_gltf_skinned_animated_asset_file(
+    const std::filesystem::path& path) {
+    GltfImportBundle imported =
+        load_gltf_skinned_asset_impl(
+            path,
+            true);
+    return {
+        std::move(imported.asset),
+        std::move(imported.animation),
+    };
 }
 
 }  // namespace tiny_renderer

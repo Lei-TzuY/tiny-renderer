@@ -207,10 +207,30 @@ public:
         std::vector<SkeletalTranslationTrack> translation_tracks,
         std::vector<SkeletalRotationTrack> rotation_tracks,
         std::vector<SkeletalScaleTrack> scale_tracks)
+        : SkeletalTrsClip(
+              std::move(rig),
+              start_time,
+              end_time,
+              std::move(default_pose),
+              {},
+              std::move(translation_tracks),
+              std::move(rotation_tracks),
+              std::move(scale_tracks)) {}
+
+    SkeletalTrsClip(
+        SkeletalRigPtr rig,
+        float start_time,
+        float end_time,
+        std::vector<SkeletalTrs> default_pose,
+        std::vector<Mat4> local_prefixes,
+        std::vector<SkeletalTranslationTrack> translation_tracks,
+        std::vector<SkeletalRotationTrack> rotation_tracks,
+        std::vector<SkeletalScaleTrack> scale_tracks)
         : rig_(std::move(rig)),
           start_time_(start_time),
           end_time_(end_time),
           default_pose_(std::move(default_pose)),
+          local_prefixes_(std::move(local_prefixes)),
           translation_tracks_(std::move(translation_tracks)),
           rotation_tracks_(std::move(rotation_tracks)),
           scale_tracks_(std::move(scale_tracks)) {
@@ -230,14 +250,36 @@ public:
             throw std::invalid_argument(
                 "skeletal TRS default pose count must match rig joint count");
         }
+        if (local_prefixes_.empty()) {
+            local_prefixes_.assign(
+                joint_count,
+                Mat4::identity());
+        }
+        if (local_prefixes_.size() != joint_count) {
+            throw std::invalid_argument(
+                "skeletal TRS local prefix count must match rig joint count");
+        }
+        for (const Mat4& prefix : local_prefixes_) {
+            detail::validate_bounded_affine_matrix(
+                prefix,
+                "skeletal TRS immutable local prefix");
+        }
 
         std::vector<Mat4> default_locals;
         default_locals.reserve(joint_count);
-        for (const SkeletalTrs& state : default_pose_) {
-            default_locals.push_back(
+        for (std::size_t joint = 0U;
+             joint < default_pose_.size();
+             ++joint) {
+            const Mat4 semantic =
                 detail::compose_skeletal_trs(
-                    state,
-                    "skeletal TRS default local transform"));
+                    default_pose_[joint],
+                    "skeletal TRS default semantic local transform");
+            const Mat4 local =
+                local_prefixes_[joint] * semantic;
+            detail::validate_bounded_affine_matrix(
+                local,
+                "skeletal TRS prefixed default local transform");
+            default_locals.push_back(local);
         }
         (void)rig_->resolve_pose(default_locals);
 
@@ -297,6 +339,14 @@ public:
         return {
             default_pose_.data(),
             default_pose_.size(),
+        };
+    }
+
+    [[nodiscard]] std::span<const Mat4>
+    local_prefixes() const noexcept {
+        return {
+            local_prefixes_.data(),
+            local_prefixes_.size(),
         };
     }
 
@@ -390,11 +440,19 @@ public:
 
             std::vector<Mat4> locals;
             locals.reserve(semantic_pose.size());
-            for (const SkeletalTrs& state : semantic_pose) {
-                locals.push_back(
+            for (std::size_t joint = 0U;
+                 joint < semantic_pose.size();
+                 ++joint) {
+                const Mat4 semantic =
                     detail::compose_skeletal_trs(
-                        state,
-                        "skeletal TRS sampled local transform"));
+                        semantic_pose[joint],
+                        "skeletal TRS sampled semantic local transform");
+                const Mat4 local =
+                    local_prefixes_[joint] * semantic;
+                detail::validate_bounded_affine_matrix(
+                    local,
+                    "skeletal TRS prefixed sampled local transform");
+                locals.push_back(local);
             }
 
             auto pose =
@@ -414,6 +472,7 @@ private:
     float start_time_{};
     float end_time_{};
     std::vector<SkeletalTrs> default_pose_{};
+    std::vector<Mat4> local_prefixes_{};
     std::vector<SkeletalTranslationTrack> translation_tracks_{};
     std::vector<SkeletalRotationTrack> rotation_tracks_{};
     std::vector<SkeletalScaleTrack> scale_tracks_{};

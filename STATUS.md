@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 111 bounded semantic TRS skeletal animation
+## Architecture frontier: Milestone 112 strict glTF 2.0 LINEAR skeletal animation interoperability
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -395,19 +395,38 @@ M111 inserts the semantic animation layer required between static M110 glTF skin
 - Validation covers null rig, invalid clip domain, default-pose cardinality, non-finite semantic vectors, non-unit quaternions, duplicate property ownership, out-of-range joints, non-increasing/out-of-domain keys, per-track/aggregate key capacity, non-finite/out-of-domain sample requests, and sample-batch capacity.
 - M111 is programmatic and LINEAR-only. STEP/CUBICSPLINE, file/glTF animation samplers or channels, clip blending, retargeting, IK/constraints, dual-quaternion skinning, morph targets, GPU execution, and performance claims remain outside the slice.
 
-## Promotion after Milestone 111
+## Milestone 112 — strict glTF 2.0 LINEAR skeletal animation interoperability
 
-M111 closes the semantic mismatch that blocked animation interoperability. Milestone 112 should add a **strict file-driven glTF 2.0 LINEAR skeletal animation import** that projects supported animation samplers/channels onto the existing M110 asset ownership and M111 semantic TRS clip without creating a second animation evaluator.
+M112 connects the strict M110 textual glTF skin importer to the M111 semantic TRS evaluator without adding a second animation runtime.
 
-A Milestone 112 slice should require:
+- The static `load_gltf_skinned_asset_file` and animated `load_gltf_skinned_animated_asset_file` now share one JSON/buffer/accessor/node/skin projection pipeline. Static import continues to reject an `animations` member; animated import requires exactly one supported animation and returns the ordinary M110 asset plus one immutable M111 clip.
+- M111 gains an immutable per-joint affine local-prefix layer, identity by default for all existing callers. A semantic local now materializes as `prefix * T * R * S`, with prefix cardinality and affine validity checked at construction and the composed local checked again before M108 resolution.
+- The prefix closes a real M110/M111 integration gap: any static non-joint nodes between a joint and its nearest joint ancestor are folded into that joint's immutable prefix, while the joint node's own TRS remains semantic animation state. This preserves arbitrary affine static intermediary transforms without pretending they can be uniquely decomposed into animated TRS.
+- A matrix-backed joint remains valid when static: its own matrix is folded into its immutable prefix and its semantic state is identity. Animation channels targeting a matrix-backed joint fail closed because an arbitrary affine matrix has no unique translation/rotation/scale decomposition for this bounded contract.
+- Node declaration order and `skin.joints` order remain independent. The importer builds an exact node-index→M108-joint-index map before channel projection, so child-before-parent skin declarations do not affect animation ownership.
+- Animated import accepts exactly one animation with 1..256 samplers and 1..256 channels. Sampler input/output accessor references are range checked and reuse the M110 checked bufferView/accessor window path.
+- Sampler input is finite float SCALAR with 1..256 strictly increasing keys. Translation/scale output is finite float VEC3; rotation output is finite float VEC4 and is validated as unit quaternion by M111. Input/output counts must match exactly; normalized/sparse/unsupported component encodings remain rejected by the shared accessor contract.
+- Missing sampler interpolation defaults to `LINEAR`; explicit `LINEAR` is accepted. STEP and CUBICSPLINE are rejected rather than silently approximated.
+- Channels must target imported skin-joint nodes and exactly one of translation/rotation/scale. Non-joint targets, matrix-backed animated joints, unsupported target paths, bad sampler references, and duplicate joint/property ownership fail closed.
+- The clip domain is the minimum first key through maximum last key across accepted channels and must be strictly increasing. Different properties may retain independent narrower key domains; M111 endpoint-hold behavior applies outside each property's own keys.
+- Unanimated joint properties come from the imported node's glTF TRS defaults. Static non-joint ancestry stays in the immutable prefix, so animation changes only the target joint property and does not erase intermediary transforms.
+- The checked-in animated fixture owns a real 372-byte sibling binary buffer. It deliberately keeps `skin.joints` in child-before-parent order, inserts a static non-joint intermediary between those joints, omits interpolation on one sampler to exercise the LINEAR default, and uses independent translation, rotation, and scale key domains.
+- File-driven samples are exact-equivalent to a separately constructed programmatic M111 clip with the same M108 topology and static prefix across endpoint/interior/repeated/out-of-order requests. A midpoint fixed-light 4x framebuffer and directional-shadow depth are exact-equivalent to the independent programmatic reference.
+- Negative regressions reject STEP/CUBICSPLINE, out-of-range sampler references, non-joint targets, unsupported target paths, duplicate target ownership, sampler count mismatch, non-increasing times, non-unit quaternion outputs, and animation of matrix-backed joints.
+- A file-mutated two-joint animation makes both child and parent X scales reach `1e20` only at the later request. Loading remains valid, but sampling `{safe, overflow}` rejects the complete M111 batch during M108 hierarchy composition before the earlier pose can write framebuffer RGB/depth/stencil.
+- M112 is one bounded textual glTF animation interoperability slice, not a general glTF conformance claim. Multiple animations, STEP/CUBICSPLINE execution, morph-weight channels, clip blending/layers, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
 
-- extend the bounded textual glTF importer to accept exactly one supported animation object while preserving the established single external-buffer, checked bufferView/accessor arithmetic, duplicate-key rejection, path safety, and public `GltfLoadError` boundary;
-- animation sampler input must be a finite strictly increasing float SCALAR accessor; output must be float VEC3 for translation/scale or float VEC4 unit quaternions for rotation, with exact key-count ownership and no sparse/normalized encoding;
-- support `LINEAR` interpolation only. Missing interpolation defaults to LINEAR per glTF semantics; STEP and CUBICSPLINE must fail closed rather than silently degrade;
-- channel targets must refer to imported skin-joint nodes and one of translation/rotation/scale. Duplicate channels targeting the same joint/property, channels targeting the skinned mesh instance or non-joint nodes, unsupported target paths, and malformed sampler references must reject;
-- derive the clip domain from the minimum first-key and maximum last-key across all accepted channels, preserve the imported M110 rest/default TRS for unanimated properties, and project each channel into the corresponding M111 sparse property track;
-- keep node-index→skin-joint-index mapping exact even when `skin.joints` order differs from node hierarchy/declaration order; no animation result may depend on file declaration order accidentally matching M108 joint order;
-- an in-repo animated glTF fixture should deliberately use child-before-parent `skin.joints`, independent translation/rotation/scale channel times, and at least one narrower property domain to exercise M111 endpoint-hold semantics;
-- file-imported animation samples must be exact-equivalent to an independently constructed programmatic M111 clip for semantic local matrices, normal-aware fixed-light framebuffer output, and directional-shadow depth;
-- malformed later animation data/accessor range, non-unit rotation output, duplicate target ownership, unsupported interpolation/path, or sampled hierarchy overflow must fail before any partial imported animation batch reaches rendering;
-- M112 remains one bounded skeletal animation clip. Multiple animations, animation blending/layers, STEP/CUBICSPLINE execution, morph-weight channels, events, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the slice.
+## Promotion after Milestone 112
+
+With one real file-driven semantic clip available, the next architectural gap is composition between animation clips rather than another parser surface. Milestone 113 should add **bounded programmatic two-clip semantic TRS blending** while preserving M111 local-space semantics and M108 transactional resolution.
+
+A Milestone 113 slice should require:
+
+- blend two immutable semantic clips only when they own compatible M108 rig topology/bindings and identical immutable local-prefix state; incompatible ownership must reject before sampling;
+- each output request carries independent left source time, right source time, and a finite blend weight in `[0,1]`, allowing different clip durations/domains without time normalization hidden inside the API;
+- both source semantic states must be fully sampled for the entire requested batch before any blended pose is returned; a later invalid source time must reject the complete batch;
+- blend translation and scale component-wise in semantic local space and rotation with shortest-path quaternion slerp, then apply the common immutable prefix and compose `prefix * T * R * S`; never blend local matrices, world joints, or skin matrices;
+- exact weight 0/1 requests should preserve the corresponding sampled semantic endpoint without blend arithmetic after both source batches have validated;
+- regressions should include different source domains, repeated/out-of-order requests, endpoint/interior weights, antipodal quaternion source values, arbitrary-order parent topology, non-identity static prefixes, fixed-light normal-aware rendering, and shadow silhouettes against an independent semantic reference;
+- a later blended hierarchy overflow must reject the full output batch before any earlier valid blend can escape to rendering;
+- M113 remains two-source programmatic blending only. File selection among multiple glTF animations, per-joint masks/layers, additive animation, N-way graphs/state machines, retargeting, IK/constraints, STEP/CUBICSPLINE, GPU execution, and performance claims remain outside the slice.
