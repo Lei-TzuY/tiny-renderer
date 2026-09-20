@@ -24,11 +24,11 @@
     {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"},
     {"bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR"},
     {"bufferView": 5, "componentType": 5126, "count": 2, "type": "MAT4"},
-    {"bufferView": 6, "componentType": 5126, "count": 2, "type": "SCALAR"},
+    {"bufferView": 6, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [1.0]},
     {"bufferView": 7, "componentType": 5126, "count": 2, "type": "VEC4"},
-    {"bufferView": 8, "componentType": 5126, "count": 2, "type": "SCALAR"},
+    {"bufferView": 8, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.25], "max": [0.75]},
     {"bufferView": 9, "componentType": 5126, "count": 2, "type": "VEC3"},
-    {"bufferView": 10, "componentType": 5126, "count": 2, "type": "SCALAR"},
+    {"bufferView": 10, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.5], "max": [1.0]},
     {"bufferView": 11, "componentType": 5126, "count": 2, "type": "VEC3"}
   ],
   "meshes": [
