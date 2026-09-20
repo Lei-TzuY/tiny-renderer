@@ -227,6 +227,20 @@ int run_hierarchical_timeline_sequence_cli(
     return std::system(command.c_str());
 }
 
+int run_transform_graph_timeline_sequence_cli(
+    const std::filesystem::path& cli,
+    const std::filesystem::path& scene,
+    const std::filesystem::path& output,
+    const std::filesystem::path& timeline) {
+    const std::string command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(output)
+        + " 64 48 4 --transform-graph-timeline-sequence "
+        + quote_path(timeline);
+    return std::system(command.c_str());
+}
+
 void test_strict_bounded_camera_sequence_loader() {
     const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
     const std::vector<OfflineSceneCamera> cameras =
@@ -823,6 +837,453 @@ void test_strict_bounded_hierarchical_timeline_loader() {
                 root / "projective_local.trhtimeline", 1U);
         },
         "hierarchical sidecar rejects finite projective local matrices");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+
+void test_strict_bounded_transform_graph_timeline_loader() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const OfflineSceneTransformGraphTimelineFile timeline =
+        load_offline_transform_graph_timeline_sequence_file(
+            fixtures / "transform_graph_timeline_ab.trgtimeline",
+            3U);
+
+    const auto parents = timeline.graph.parents();
+    const auto bindings = timeline.graph.render_entry_nodes();
+    check(parents.size() == 4U,
+          "graph timeline owns four explicit graph nodes including one transform-only pivot");
+    check(bindings.size() == 3U,
+          "graph timeline owns exactly one render binding per prepared scene entry");
+    if (parents.size() == 4U) {
+        check(!parents[0]
+                  && parents[1] && *parents[1] == 0U
+                  && parents[2] && *parents[2] == 0U
+                  && !parents[3],
+              "graph timeline preserves arbitrary-order topology and transform-only parent ownership");
+    }
+    if (bindings.size() == 3U) {
+        check(bindings[0] == 1U
+                  && bindings[1] == 2U
+                  && bindings[2] == 3U,
+              "graph timeline reorders arbitrary bind records into prepared-entry ownership");
+    }
+    check(timeline.keyframes.size() == 2U,
+          "graph timeline loads exactly two bounded keyframes");
+    check(timeline.sample_times.size() == 4U,
+          "graph timeline preserves four caller-ordered samples");
+    if (timeline.keyframes.size() == 2U) {
+        check(timeline.keyframes[0].frame.local_transforms.size() == 4U
+                  && timeline.keyframes[1].frame.local_transforms.size() == 4U,
+              "each graph keyframe owns one local transform per graph node");
+        check(timeline.keyframes[0].frame.local_transforms[0](0U, 3U) == -0.45F
+                  && timeline.keyframes[0].frame.local_transforms[2](0U, 3U) == 0.30F,
+              "explicit local NODE records are reordered by graph node id rather than file order");
+    }
+    if (timeline.sample_times.size() == 4U) {
+        check(timeline.sample_times[0] == 0.0F
+                  && timeline.sample_times[1] == 1.0F
+                  && timeline.sample_times[2] == 0.0F
+                  && timeline.sample_times[3] == 2.0F,
+              "graph timeline preserves repeated and out-of-order sample requests exactly");
+    }
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                fixtures / "transform_graph_timeline_ab.trgtimeline",
+                detail::kMaxOfflineSceneEntries + 1U);
+        },
+        "graph timeline rejects expected scene ownership above the bounded entry limit");
+
+    const std::filesystem::path root =
+        std::filesystem::current_path()
+        / "tiny_renderer_transform_graph_timeline_parser_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::string camera =
+        "0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100";
+    const std::string identity =
+        "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1";
+
+    {
+        std::ofstream duplicate(root / "duplicate_node.trgtimeline");
+        duplicate
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "node 0 root\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "duplicate_node.trgtimeline", 1U);
+        },
+        "graph timeline rejects duplicate explicit node ownership");
+
+    {
+        std::ofstream missing(root / "missing_node.trgtimeline");
+        missing
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "node 2 root\n"
+            << "bind 0 0\n"
+            << "keyframe 0 " << camera << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "missing_node.trgtimeline", 1U);
+        },
+        "graph timeline rejects a missing node inside the explicit contiguous node range");
+
+    {
+        std::ofstream parent_missing(root / "parent_missing.trgtimeline");
+        parent_missing
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 1\n"
+            << "bind 0 0\n"
+            << "keyframe 0 " << camera << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "parent_missing.trgtimeline", 1U);
+        },
+        "graph timeline rejects a parent reference to an undeclared node");
+
+    {
+        std::ofstream cycle(root / "cycle.trgtimeline");
+        cycle
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 1 0\n"
+            << "node 0 1\n"
+            << "bind 0 1\n"
+            << "keyframe 0 " << camera << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "cycle.trgtimeline", 1U);
+        },
+        "graph timeline rejects cycles after complete arbitrary-order topology parsing");
+
+    {
+        std::ofstream duplicate_bind(root / "duplicate_bind.trgtimeline");
+        duplicate_bind
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "node 1 root\n"
+            << "bind 0 0\n"
+            << "bind 0 1\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "duplicate_bind.trgtimeline", 2U);
+        },
+        "graph timeline rejects duplicate prepared-entry bind ownership");
+
+    {
+        std::ofstream duplicate_target(root / "duplicate_bind_target.trgtimeline");
+        duplicate_target
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "node 1 root\n"
+            << "bind 0 0\n"
+            << "bind 1 0\n"
+            << "keyframe 0 " << camera << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "duplicate_bind_target.trgtimeline", 2U);
+        },
+        "graph timeline rejects multiple render entries bound to one graph node");
+
+    {
+        std::ofstream missing_bind(root / "missing_bind.trgtimeline");
+        missing_bind
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "node 1 root\n"
+            << "bind 0 0\n"
+            << "keyframe 0 " << camera << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "missing_bind.trgtimeline", 2U);
+        },
+        "graph timeline rejects missing prepared-entry bindings before dynamic state");
+
+    {
+        std::ofstream node_limit(root / "node_limit.trgtimeline");
+        node_limit
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node " << detail::kMaxOfflineTransformGraphNodes << " root\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "node_limit.trgtimeline", 0U);
+        },
+        "graph timeline rejects graph node ids outside the 512-node bound");
+
+    {
+        std::ofstream duplicate_local(root / "duplicate_local.trgtimeline");
+        duplicate_local
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "bind 0 0\n"
+            << "keyframe 0 " << camera << "\n"
+            << "local 0 " << identity << "\n"
+            << "local 0 " << identity << "\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "duplicate_local.trgtimeline", 1U);
+        },
+        "graph timeline rejects duplicate local state for one graph node");
+
+    {
+        std::ofstream missing_local(root / "missing_local.trgtimeline");
+        missing_local
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "node 1 root\n"
+            << "bind 0 0\n"
+            << "keyframe 0 " << camera << "\n"
+            << "local 0 " << identity << "\n"
+            << "end\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "missing_local.trgtimeline", 1U);
+        },
+        "graph timeline rejects keyframes missing transform-only node local state");
+
+    {
+        std::ofstream projective(root / "projective_local.trgtimeline");
+        projective
+            << "tiny-renderer-transform-graph-timeline-v1\n"
+            << "node 0 root\n"
+            << "bind 0 0\n"
+            << "keyframe 0 " << camera << "\n"
+            << "local 0 1 0 0 0 0 1 0 0 0 0 1 0 0.1 0 0 1\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_transform_graph_timeline_sequence_file(
+                root / "projective_local.trgtimeline", 1U);
+        },
+        "graph timeline rejects finite projective graph-local matrices");
+
+    std::filesystem::remove_all(root, ignored);
+}
+
+void test_file_driven_transform_graph_timeline_matches_programmatic_m100() {
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const OfflineSceneTransformGraphTimelineFile file_timeline =
+        load_offline_transform_graph_timeline_sequence_file(
+            fixtures / "transform_graph_timeline_ab.trgtimeline",
+            3U);
+
+    OfflineRenderSettings settings;
+    settings.width = 64U;
+    settings.height = 48U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.02F, 0.025F, 0.035F};
+
+    const ModelAsset coverage =
+        triangle_asset({0.85F, 0.15F, 0.10F}, 0.55F);
+    const ModelAsset green =
+        triangle_asset({0.10F, 0.75F, 0.20F}, 0.45F);
+    const ModelAsset blue =
+        triangle_asset({0.10F, 0.25F, 0.85F}, 0.55F);
+    const std::array<OfflineSceneEntry, 3> entries{{
+        OfflineSceneEntry{
+            &coverage,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::AlphaToCoverage},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+        OfflineSceneEntry{
+            &blue,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene prepared_scene =
+        prepare_offline_mixed_scene(entries, settings);
+
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+            std::nullopt,
+        },
+        {1U, 2U, 3U});
+    const OfflineSceneCamera camera = fixture_frame_camera();
+    const std::vector<Mat4> local_a{
+        fixture_hierarchy_local_transform(1.0F, -0.45F, 0.0F),
+        fixture_hierarchy_local_transform(1.0F, -0.30F, -0.10F),
+        fixture_hierarchy_local_transform(1.0F, 0.30F, -0.20F),
+        fixture_hierarchy_local_transform(1.0F, 0.45F, -0.05F),
+    };
+    const std::vector<Mat4> local_b{
+        fixture_hierarchy_local_transform(1.5F, 0.25F, 0.0F),
+        fixture_hierarchy_local_transform(1.0F, 0.20F, -0.10F),
+        fixture_hierarchy_local_transform(1.0F, -0.30F, -0.20F),
+        fixture_hierarchy_local_transform(1.0F, -0.45F, -0.15F),
+    };
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        programmatic_keyframes{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{camera, local_a}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{camera, local_b}},
+        }};
+    const std::array<float, 4> samples{{0.0F, 1.0F, 0.0F, 2.0F}};
+
+    const PreparedOfflineCameraSequence file_sequence =
+        prepare_offline_transform_graph_timeline_sequence(
+            prepared_scene,
+            file_timeline.graph,
+            file_timeline.keyframes,
+            file_timeline.sample_times);
+    const PreparedOfflineCameraSequence programmatic_sequence =
+        prepare_offline_transform_graph_timeline_sequence(
+            prepared_scene,
+            graph,
+            programmatic_keyframes,
+            samples);
+
+    check(file_sequence.frame_count() == 4U
+              && file_sequence.frame_count() == programmatic_sequence.frame_count(),
+          "file graph timeline and independent M100 state prepare the same sample count");
+    if (file_sequence.frame_count() != programmatic_sequence.frame_count()) {
+        return;
+    }
+
+    std::vector<Framebuffer> rendered;
+    rendered.reserve(file_sequence.frame_count());
+    for (std::size_t index = 0U; index < file_sequence.frame_count(); ++index) {
+        const Framebuffer file_frame =
+            render_prepared_camera_sequence_frame(file_sequence, index);
+        const Framebuffer programmatic_frame =
+            render_prepared_camera_sequence_frame(programmatic_sequence, index);
+        check(
+            exact_frame_equal(file_frame, programmatic_frame),
+            "file graph timeline sample is exact resolved/hash and 4x RGB/depth/stencil equivalent to independent M100 state");
+        rendered.push_back(file_frame);
+    }
+    if (rendered.size() == 4U) {
+        check(exact_frame_equal(rendered[0], rendered[2]),
+              "repeated file graph timeline sample is exactly deterministic");
+    }
+}
+
+void test_file_driven_transform_graph_timeline_cli_transaction(const char* argv0) {
+    const std::filesystem::path cli = render_cli_path(argv0);
+    check(std::filesystem::exists(cli),
+          "transform graph timeline integration locates tiny_renderer_render sibling executable");
+    if (!std::filesystem::exists(cli)) {
+        return;
+    }
+
+    const std::filesystem::path fixtures = source_dir() / "tests" / "fixtures";
+    const std::filesystem::path scene =
+        fixtures / "flat_scene_sequence_mixed.trscene";
+    const std::filesystem::path model =
+        fixtures / "opacity_texture_sequence.obj";
+    const std::filesystem::path timeline =
+        fixtures / "transform_graph_timeline_ab.trgtimeline";
+    const std::filesystem::path invalid =
+        fixtures / "transform_graph_timeline_invalid_later.trgtimeline";
+    const std::filesystem::path hierarchy =
+        fixtures / "hierarchy_timeline_ab.trhtimeline";
+
+    const std::filesystem::path root =
+        std::filesystem::current_path()
+        / "tiny_renderer_transform_graph_timeline_cli_fixture";
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    std::filesystem::create_directories(root);
+
+    const std::filesystem::path base = root / "graph_timeline.ppm";
+    check(
+        run_transform_graph_timeline_sequence_cli(
+            cli, scene, base, timeline) == 0,
+        "strict file-driven transform graph timeline renders through the shared M100 transaction");
+    const std::array<std::filesystem::path, 4> outputs{{
+        indexed_output(base, 0U),
+        indexed_output(base, 1U),
+        indexed_output(base, 2U),
+        indexed_output(base, 3U),
+    }};
+    for (const auto& output : outputs) {
+        check(std::filesystem::exists(output),
+              "transform graph timeline CLI creates every sampled indexed output");
+    }
+    check(!std::filesystem::exists(base),
+          "transform graph timeline CLI never writes an ambiguous unsuffixed output");
+    if (std::filesystem::exists(outputs[0])
+        && std::filesystem::exists(outputs[2])) {
+        check(read_binary_file(outputs[0]) == read_binary_file(outputs[2]),
+              "repeated transform graph CLI sample is byte-identical");
+    }
+
+    const std::filesystem::path invalid_base = root / "invalid.ppm";
+    check(
+        run_transform_graph_timeline_sequence_cli(
+            cli, scene, invalid_base, invalid) != 0,
+        "later interior graph composition overflow rejects the complete CLI transaction");
+    check(!std::filesystem::exists(invalid_base)
+              && !std::filesystem::exists(indexed_output(invalid_base, 0U))
+              && !std::filesystem::exists(indexed_output(invalid_base, 1U)),
+          "later graph timeline composition failure leaves zero earlier indexed outputs");
+
+    const std::filesystem::path conflict_base = root / "conflict.ppm";
+    const std::string conflict_command =
+        quote_path(cli)
+        + " " + quote_path(scene)
+        + " " + quote_path(conflict_base)
+        + " 64 48 4 --transform-graph-timeline-sequence " + quote_path(timeline)
+        + " --hierarchy-timeline-sequence " + quote_path(hierarchy);
+    check(std::system(conflict_command.c_str()) != 0,
+          "graph and hierarchical timeline modes are rejected as ambiguous together");
+    check(!std::filesystem::exists(conflict_base)
+              && !std::filesystem::exists(indexed_output(conflict_base, 0U)),
+          "graph timeline option conflict rejects before output");
+
+    const std::filesystem::path graph_obj_base = root / "graph_obj.ppm";
+    check(
+        run_transform_graph_timeline_sequence_cli(
+            cli, model, graph_obj_base, timeline) != 0,
+        "transform graph timeline mode explicitly rejects direct OBJ input");
+    check(!std::filesystem::exists(graph_obj_base)
+              && !std::filesystem::exists(indexed_output(graph_obj_base, 0U)),
+          "direct OBJ graph timeline rejection occurs before output");
+
+    const std::filesystem::path hierarchy_obj_base = root / "hierarchy_obj.ppm";
+    check(
+        run_hierarchical_timeline_sequence_cli(
+            cli, model, hierarchy_obj_base, hierarchy) != 0,
+        "hierarchical timeline mode explicitly rejects direct OBJ input");
+    check(!std::filesystem::exists(hierarchy_obj_base)
+              && !std::filesystem::exists(indexed_output(hierarchy_obj_base, 0U)),
+          "direct OBJ hierarchical timeline rejection occurs before output");
 
     std::filesystem::remove_all(root, ignored);
 }
@@ -1445,14 +1906,17 @@ int main(int argc, char** argv) {
     test_strict_bounded_frame_sequence_loader();
     test_strict_bounded_timeline_sequence_loader();
     test_strict_bounded_hierarchical_timeline_loader();
+    test_strict_bounded_transform_graph_timeline_loader();
     test_file_driven_frame_records_match_programmatic_equivalent();
     test_file_driven_timeline_matches_programmatic_m94();
     test_file_driven_hierarchical_timeline_matches_programmatic_m97();
+    test_file_driven_transform_graph_timeline_matches_programmatic_m100();
     if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
         test_file_driven_cli_sequence_transaction(argv[0]);
         test_file_driven_affine_frame_sequence_transaction(argv[0]);
         test_file_driven_timeline_cli_transaction(argv[0]);
         test_file_driven_hierarchical_timeline_cli_transaction(argv[0]);
+        test_file_driven_transform_graph_timeline_cli_transaction(argv[0]);
     } else {
         check(false, "camera sequence integration test executable path is available");
     }
