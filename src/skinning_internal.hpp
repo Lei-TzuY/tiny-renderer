@@ -6,7 +6,9 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
+#include "tiny_renderer/rasterizer.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "vertex_program_internal.hpp"
 
@@ -23,15 +25,45 @@ inline void validate_skinning_mesh_ownership(
     }
 }
 
+inline void validate_skinning_normal_binding(
+    const NormalBinding& binding,
+    const Mesh& mesh) {
+    for (const Vertex& vertex : mesh.vertices) {
+        const VaryingPack& pack = vertex.varyings;
+        if (binding.x >= pack.count
+            || binding.y >= pack.count
+            || binding.z >= pack.count) {
+            throw std::out_of_range(
+                "skinning normal binding references unavailable varying channel");
+        }
+        const Interpolation mode = pack.interpolation[binding.x];
+        if (pack.interpolation[binding.y] != mode
+            || pack.interpolation[binding.z] != mode) {
+            throw std::invalid_argument(
+                "skinning normal binding channels must use one interpolation qualifier");
+        }
+    }
+}
+
 [[nodiscard]] inline Mesh apply_linear_blend_skinning(
     const SkinningState& skinning,
-    const Mesh& mesh) {
+    const Mesh& mesh,
+    const NormalBinding* normal_binding = nullptr) {
     validate_skinning_mesh_ownership(skinning, mesh);
 
     Mesh result = mesh;
     const std::span<const VertexSkinBinding> bindings =
         skinning.vertex_bindings();
     const std::span<const Mat4> matrices = skinning.skin_matrices();
+
+    std::vector<Mat3> normal_matrices;
+    if (normal_binding != nullptr) {
+        validate_skinning_normal_binding(*normal_binding, mesh);
+        normal_matrices.reserve(matrices.size());
+        for (const Mat4& matrix : matrices) {
+            normal_matrices.push_back(normal_matrix(matrix));
+        }
+    }
 
     for (std::size_t vertex_index = 0U;
          vertex_index < mesh.vertices.size();
@@ -99,6 +131,80 @@ inline void validate_skinning_mesh_ownership(
             static_cast<float>(y),
             static_cast<float>(z),
         };
+
+        if (normal_binding != nullptr) {
+            const VaryingPack& source_pack =
+                mesh.vertices[vertex_index].varyings;
+            const Vec3 source_normal{
+                source_pack.values[normal_binding->x],
+                source_pack.values[normal_binding->y],
+                source_pack.values[normal_binding->z],
+            };
+            if (!std::isfinite(source_normal.x)
+                || !std::isfinite(source_normal.y)
+                || !std::isfinite(source_normal.z)
+                || length(source_normal) <= kEpsilon) {
+                throw std::invalid_argument(
+                    "skinning source normal must be finite and non-zero");
+            }
+
+            double accumulated_normal_x = 0.0;
+            double accumulated_normal_y = 0.0;
+            double accumulated_normal_z = 0.0;
+            for (const SkinInfluence influence :
+                 bindings[vertex_index].influences()) {
+                const Vec3 transformed_normal =
+                    normal_matrices[influence.joint] * source_normal;
+                if (!std::isfinite(transformed_normal.x)
+                    || !std::isfinite(transformed_normal.y)
+                    || !std::isfinite(transformed_normal.z)) {
+                    throw std::invalid_argument(
+                        "skinning normal transform produced a non-finite direction");
+                }
+                const double weight =
+                    static_cast<double>(influence.weight);
+                accumulated_normal_x +=
+                    weight * static_cast<double>(transformed_normal.x);
+                accumulated_normal_y +=
+                    weight * static_cast<double>(transformed_normal.y);
+                accumulated_normal_z +=
+                    weight * static_cast<double>(transformed_normal.z);
+            }
+
+            const double normal_length_squared =
+                accumulated_normal_x * accumulated_normal_x
+                + accumulated_normal_y * accumulated_normal_y
+                + accumulated_normal_z * accumulated_normal_z;
+            if (!std::isfinite(normal_length_squared)
+                || normal_length_squared
+                    <= static_cast<double>(kEpsilon)
+                        * static_cast<double>(kEpsilon)) {
+                throw std::invalid_argument(
+                    "skinning weighted normal is numerically unstable");
+            }
+            const double inverse_normal_length =
+                1.0 / std::sqrt(normal_length_squared);
+            const Vec3 normalized{
+                static_cast<float>(
+                    accumulated_normal_x * inverse_normal_length),
+                static_cast<float>(
+                    accumulated_normal_y * inverse_normal_length),
+                static_cast<float>(
+                    accumulated_normal_z * inverse_normal_length),
+            };
+            if (!std::isfinite(normalized.x)
+                || !std::isfinite(normalized.y)
+                || !std::isfinite(normalized.z)) {
+                throw std::invalid_argument(
+                    "skinning normalized normal must remain finite");
+            }
+
+            VaryingPack& output_pack =
+                result.vertices[vertex_index].varyings;
+            output_pack.values[normal_binding->x] = normalized.x;
+            output_pack.values[normal_binding->y] = normalized.y;
+            output_pack.values[normal_binding->z] = normalized.z;
+        }
     }
     return result;
 }
@@ -124,7 +230,8 @@ struct PreparedObjectSpaceMesh {
 [[nodiscard]] inline PreparedObjectSpaceMesh prepare_object_space_mesh(
     const SkinningStatePtr& skinning,
     const VertexProgramPtr& vertex_program,
-    const Mesh& mesh) {
+    const Mesh& mesh,
+    const NormalBinding* skinning_normal_binding = nullptr) {
     validate_vertex_program_static(
         vertex_program,
         vertex_program_varying_count(mesh));
@@ -134,7 +241,10 @@ struct PreparedObjectSpaceMesh {
     }
 
     Mesh transformed = skinning
-        ? apply_linear_blend_skinning(*skinning, mesh)
+        ? apply_linear_blend_skinning(
+            *skinning,
+            mesh,
+            skinning_normal_binding)
         : mesh;
     if (vertex_program) {
         transformed = apply_vertex_program(vertex_program, transformed);
