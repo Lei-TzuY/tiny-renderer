@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 112 strict glTF 2.0 LINEAR skeletal animation interoperability
+## Architecture frontier: Milestone 113 bounded two-clip semantic TRS blending
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -416,17 +416,37 @@ M112 connects the strict M110 textual glTF skin importer to the M111 semantic TR
 - A file-mutated two-joint animation makes both child and parent X scales reach `1e20` only at the later request. Loading remains valid, but sampling `{safe, overflow}` rejects the complete M111 batch during M108 hierarchy composition before the earlier pose can write framebuffer RGB/depth/stencil.
 - M112 is one bounded textual glTF animation interoperability slice, not a general glTF conformance claim. Multiple animations, STEP/CUBICSPLINE execution, morph-weight channels, clip blending/layers, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
 
-## Promotion after Milestone 112
+## Milestone 113 — bounded programmatic two-clip semantic TRS blending
 
-With one real file-driven semantic clip available, the next architectural gap is composition between animation clips rather than another parser surface. Milestone 113 should add **bounded programmatic two-clip semantic TRS blending** while preserving M111 local-space semantics and M108 transactional resolution.
+M113 adds clip composition above M111/M112 without introducing matrix-space animation blending or a second skeletal execution path.
 
-A Milestone 113 slice should require:
+- `SkeletalTrsClip::sample_states` now exposes one complete sampled semantic TRS state together with its already-resolved M108 pose. Existing `sample()` remains source-compatible and simply projects those complete states back to the established pose-only result.
+- Source sampling semantics are unchanged: defaults are copied first, sparse translation/rotation/scale tracks overlay semantic properties, immutable prefixes compose as `prefix * T * R * S`, and every sampled source pose is fully M108-resolved before it may participate in blending.
+- `SkeletalTrsBlendRequest` owns an independent left source time, right source time, and one finite weight in `[0,1]`. Different clip domains and durations are accepted directly; the API performs no hidden normalization or phase remapping.
+- Two clips must own exactly compatible M108 topology, inverse-bind matrices, and vertex skin bindings. Compatibility is structural rather than pointer-identity based, so separately constructed immutable rigs with byte/value-identical ownership are accepted.
+- The two clips must also own exactly identical immutable local-prefix matrices. Prefix mismatch rejects before sampling because semantic blending cannot safely combine states that materialize under different static affine ancestry.
+- The complete request list is validated first, then the entire left source-time batch and entire right source-time batch are sampled and M108-resolved before the first blended output is created. Even a request with weight exactly 0 or 1 cannot bypass validation of the unselected source batch.
+- Weight 0 and weight 1 return the already-resolved left/right source pose directly, preserving exact sampled endpoint state without translation/scale interpolation or quaternion normalization at the blend stage.
+- Interior translation and scale blend component-wise in semantic joint-local space. Rotation uses the existing shortest-path quaternion slerp, including antipodal sign canonicalization. Only after every joint's semantic T/R/S is blended is the common prefix applied and the result delegated through M108 hierarchy and skin-palette resolution.
+- Local matrices, world-joint transforms, and final skin matrices are never interpolated.
+- Regressions use left/right clips with different time domains, independent source times, repeated/out-of-order requests, 0/1/interior weights, separately allocated but structurally identical rigs, non-identity prefixes, arbitrary-order child-before-parent topology, and exactly antipodal half-turn quaternion source values.
+- Every blended local pose is exact-equivalent to an independently constructed semantic reference. A representative interior blend is exact-equivalent for 4x normal-aware fixed-light framebuffer RGB/depth/stencil and directional-shadow depth.
+- Validation regressions reject incompatible inverse binds, vertex binding ownership, local prefixes, non-finite/out-of-range weights, bounded request overflow, and later invalid source times on either side even when every request selects only the opposite endpoint.
+- A dedicated fail-closed regression uses two individually executable clips: one carries a very large parent scale and the other a very large child scale. The endpoint request is safe, while only the later 0.5 semantic blend overflows during M108 parent-child composition. The full blend call rejects before the earlier endpoint can escape for rendering, preserving sentinel RGB/depth/stencil.
+- M113 remains two-source programmatic semantic blending only. File selection among multiple glTF animations, per-joint masks/layers, additive animation, N-way graphs/state machines, retargeting, IK/constraints, STEP/CUBICSPLINE execution, GPU execution, and performance claims remain outside the slice.
 
-- blend two immutable semantic clips only when they own compatible M108 rig topology/bindings and identical immutable local-prefix state; incompatible ownership must reject before sampling;
-- each output request carries independent left source time, right source time, and a finite blend weight in `[0,1]`, allowing different clip durations/domains without time normalization hidden inside the API;
-- both source semantic states must be fully sampled for the entire requested batch before any blended pose is returned; a later invalid source time must reject the complete batch;
-- blend translation and scale component-wise in semantic local space and rotation with shortest-path quaternion slerp, then apply the common immutable prefix and compose `prefix * T * R * S`; never blend local matrices, world joints, or skin matrices;
-- exact weight 0/1 requests should preserve the corresponding sampled semantic endpoint without blend arithmetic after both source batches have validated;
-- regressions should include different source domains, repeated/out-of-order requests, endpoint/interior weights, antipodal quaternion source values, arbitrary-order parent topology, non-identity static prefixes, fixed-light normal-aware rendering, and shadow silhouettes against an independent semantic reference;
-- a later blended hierarchy overflow must reject the full output batch before any earlier valid blend can escape to rendering;
-- M113 remains two-source programmatic blending only. File selection among multiple glTF animations, per-joint masks/layers, additive animation, N-way graphs/state machines, retargeting, IK/constraints, STEP/CUBICSPLINE, GPU execution, and performance claims remain outside the slice.
+## Promotion after Milestone 113
+
+Programmatic two-clip composition is now available, but M112 still imports exactly one glTF animation. The highest-value integration gap is therefore real-file clip ownership rather than another in-memory blend variant. Milestone 114 should add a **bounded glTF animation collection with explicit clip selection** so multiple file-driven M111 clips sharing one imported rig can feed M113 directly.
+
+A Milestone 114 slice should require:
+
+- extend the strict textual glTF importer from exactly one animation to a bounded collection, for example 1..16 animations, while retaining the existing single external buffer, checked accessor arithmetic, duplicate-key rejection, path safety, and public `GltfLoadError` boundary;
+- each imported animation must independently satisfy the complete M112 LINEAR-only sampler/channel contract. A malformed later animation must reject the whole asset import rather than returning a partial collection;
+- all imported clips must share the exact M110/M108 rig, inverse-bind ownership, semantic default pose, and immutable local-prefix state derived once from the asset; per-animation parsing may add tracks but may not duplicate or mutate skeletal ownership;
+- preserve glTF animation array order deterministically and expose explicit index-based selection. Optional animation names, when present, should be retained as metadata but must not become an implicit uniqueness or lookup requirement in this first collection slice;
+- an asset with one animation must remain exact-equivalent to the existing M112 single-animation API. The compatibility wrapper may project the first/only clip but must fail closed rather than silently choose one from a multi-animation file;
+- a deterministic in-repo fixture should contain at least two LINEAR skeletal animations with different domains and different joint/property ownership, while keeping the existing child-before-parent joint order and non-identity static prefix;
+- independently imported clips should be feedable directly into M113 independent-time blend requests. A file-driven two-clip interior blend must be exact-equivalent to separately constructed programmatic M111 clips for semantic local matrices, fixed-light framebuffer output, and directional-shadow depth;
+- negative regressions must cover collection capacity, one valid plus one malformed animation, invalid later sampler/channel ownership, and attempts to use the legacy exactly-one-animation wrapper on a multi-animation asset;
+- M114 remains explicit clip collection/selection only. It adds no automatic blending policy, animation state machine, per-joint masks/layers, additive animation, N-way graphs, STEP/CUBICSPLINE execution, morph-weight channels, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, or performance claim.

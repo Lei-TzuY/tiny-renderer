@@ -193,6 +193,11 @@ inline void validate_trs_tracks(
 
 }  // namespace detail
 
+struct SkeletalTrsSampledState {
+    std::vector<SkeletalTrs> semantic_pose{};
+    SkeletalPoseStatePtr resolved_pose{};
+};
+
 // Sparse semantic joint-property animation over one immutable M108 rig.
 // Track domains may be narrower than the clip domain; outside a property's
 // first/last key the nearest semantic endpoint is held. Each requested batch is
@@ -326,6 +331,10 @@ public:
         return *rig_;
     }
 
+    [[nodiscard]] const SkeletalRigPtr& rig_ptr() const noexcept {
+        return rig_;
+    }
+
     [[nodiscard]] float start_time() const noexcept {
         return start_time_;
     }
@@ -350,7 +359,39 @@ public:
         };
     }
 
+    [[nodiscard]] std::vector<SkeletalTrsSampledState> sample_states(
+        std::span<const float> sample_times) const {
+        validate_sample_times(sample_times);
+
+        std::vector<SkeletalTrsSampledState> result;
+        result.reserve(sample_times.size());
+        for (const float sample_time : sample_times) {
+            std::vector<SkeletalTrs> semantic_pose =
+                sample_semantic_pose_at(sample_time);
+            SkeletalPoseStatePtr pose =
+                materialize_resolved_pose(semantic_pose);
+            result.push_back({
+                std::move(semantic_pose),
+                std::move(pose),
+            });
+        }
+        return result;
+    }
+
     [[nodiscard]] std::vector<SkeletalPoseStatePtr> sample(
+        std::span<const float> sample_times) const {
+        std::vector<SkeletalTrsSampledState> states =
+            sample_states(sample_times);
+        std::vector<SkeletalPoseStatePtr> result;
+        result.reserve(states.size());
+        for (SkeletalTrsSampledState& state : states) {
+            result.push_back(std::move(state.resolved_pose));
+        }
+        return result;
+    }
+
+private:
+    void validate_sample_times(
         std::span<const float> sample_times) const {
         if (sample_times.size() > kMaxSkeletalTrsSamples) {
             throw std::invalid_argument(
@@ -367,107 +408,109 @@ public:
                     "skeletal TRS sample time is outside clip domain");
             }
         }
-
-        std::vector<SkeletalPoseStatePtr> result;
-        result.reserve(sample_times.size());
-
-        for (const float sample_time : sample_times) {
-            std::vector<SkeletalTrs> semantic_pose =
-                default_pose_;
-
-            for (const SkeletalTranslationTrack& track
-                 : translation_tracks_) {
-                semantic_pose[track.joint].translation =
-                    detail::sample_held_track<
-                        SkeletalVec3Keyframe,
-                        Vec3>(
-                        track.keyframes,
-                        sample_time,
-                        "skeletal translation track",
-                        [](const SkeletalVec3Keyframe& keyframe) {
-                            return keyframe.value;
-                        },
-                        [](const Vec3& left,
-                           const Vec3& right,
-                           float t) {
-                            return detail::interpolate_vec3(
-                                left,
-                                right,
-                                t,
-                                "skeletal translation");
-                        });
-            }
-            for (const SkeletalRotationTrack& track
-                 : rotation_tracks_) {
-                semantic_pose[track.joint].rotation =
-                    detail::sample_held_track<
-                        SkeletalQuaternionKeyframe,
-                        Quaternion>(
-                        track.keyframes,
-                        sample_time,
-                        "skeletal rotation track",
-                        [](const SkeletalQuaternionKeyframe& keyframe) {
-                            return keyframe.value;
-                        },
-                        [](const Quaternion& left,
-                           const Quaternion& right,
-                           float t) {
-                            return slerp_shortest(left, right, t);
-                        });
-            }
-            for (const SkeletalScaleTrack& track
-                 : scale_tracks_) {
-                semantic_pose[track.joint].scale =
-                    detail::sample_held_track<
-                        SkeletalVec3Keyframe,
-                        Vec3>(
-                        track.keyframes,
-                        sample_time,
-                        "skeletal scale track",
-                        [](const SkeletalVec3Keyframe& keyframe) {
-                            return keyframe.value;
-                        },
-                        [](const Vec3& left,
-                           const Vec3& right,
-                           float t) {
-                            return detail::interpolate_vec3(
-                                left,
-                                right,
-                                t,
-                                "skeletal scale");
-                        });
-            }
-
-            std::vector<Mat4> locals;
-            locals.reserve(semantic_pose.size());
-            for (std::size_t joint = 0U;
-                 joint < semantic_pose.size();
-                 ++joint) {
-                const Mat4 semantic =
-                    detail::compose_skeletal_trs(
-                        semantic_pose[joint],
-                        "skeletal TRS sampled semantic local transform");
-                const Mat4 local =
-                    local_prefixes_[joint] * semantic;
-                detail::validate_bounded_affine_matrix(
-                    local,
-                    "skeletal TRS prefixed sampled local transform");
-                locals.push_back(local);
-            }
-
-            auto pose =
-                std::make_shared<const SkeletalPoseState>(
-                    rig_,
-                    std::move(locals));
-            // Transactional batch semantics: every sampled pose is fully
-            // resolved here; result remains local until the entire loop wins.
-            (void)pose->resolve();
-            result.push_back(std::move(pose));
-        }
-        return result;
     }
 
-private:
+    [[nodiscard]] std::vector<SkeletalTrs> sample_semantic_pose_at(
+        float sample_time) const {
+        std::vector<SkeletalTrs> semantic_pose =
+            default_pose_;
+
+        for (const SkeletalTranslationTrack& track
+             : translation_tracks_) {
+            semantic_pose[track.joint].translation =
+                detail::sample_held_track<
+                    SkeletalVec3Keyframe,
+                    Vec3>(
+                    track.keyframes,
+                    sample_time,
+                    "skeletal translation track",
+                    [](const SkeletalVec3Keyframe& keyframe) {
+                        return keyframe.value;
+                    },
+                    [](const Vec3& left,
+                       const Vec3& right,
+                       float t) {
+                        return detail::interpolate_vec3(
+                            left,
+                            right,
+                            t,
+                            "skeletal translation");
+                    });
+        }
+        for (const SkeletalRotationTrack& track
+             : rotation_tracks_) {
+            semantic_pose[track.joint].rotation =
+                detail::sample_held_track<
+                    SkeletalQuaternionKeyframe,
+                    Quaternion>(
+                    track.keyframes,
+                    sample_time,
+                    "skeletal rotation track",
+                    [](const SkeletalQuaternionKeyframe& keyframe) {
+                        return keyframe.value;
+                    },
+                    [](const Quaternion& left,
+                       const Quaternion& right,
+                       float t) {
+                        return slerp_shortest(left, right, t);
+                    });
+        }
+        for (const SkeletalScaleTrack& track
+             : scale_tracks_) {
+            semantic_pose[track.joint].scale =
+                detail::sample_held_track<
+                    SkeletalVec3Keyframe,
+                    Vec3>(
+                    track.keyframes,
+                    sample_time,
+                    "skeletal scale track",
+                    [](const SkeletalVec3Keyframe& keyframe) {
+                        return keyframe.value;
+                    },
+                    [](const Vec3& left,
+                       const Vec3& right,
+                       float t) {
+                        return detail::interpolate_vec3(
+                            left,
+                            right,
+                            t,
+                            "skeletal scale");
+                    });
+        }
+        return semantic_pose;
+    }
+
+    [[nodiscard]] SkeletalPoseStatePtr materialize_resolved_pose(
+        std::span<const SkeletalTrs> semantic_pose) const {
+        if (semantic_pose.size() != local_prefixes_.size()) {
+            throw std::logic_error(
+                "skeletal TRS semantic pose ownership changed after validation");
+        }
+        std::vector<Mat4> locals;
+        locals.reserve(semantic_pose.size());
+        for (std::size_t joint = 0U;
+             joint < semantic_pose.size();
+             ++joint) {
+            const Mat4 semantic =
+                detail::compose_skeletal_trs(
+                    semantic_pose[joint],
+                    "skeletal TRS sampled semantic local transform");
+            const Mat4 local =
+                local_prefixes_[joint] * semantic;
+            detail::validate_bounded_affine_matrix(
+                local,
+                "skeletal TRS prefixed sampled local transform");
+            locals.push_back(local);
+        }
+
+        auto pose =
+            std::make_shared<const SkeletalPoseState>(
+                rig_,
+                std::move(locals));
+        (void)pose->resolve();
+        return pose;
+    }
+
     SkeletalRigPtr rig_{};
     float start_time_{};
     float end_time_{};
@@ -475,7 +518,243 @@ private:
     std::vector<Mat4> local_prefixes_{};
     std::vector<SkeletalTranslationTrack> translation_tracks_{};
     std::vector<SkeletalRotationTrack> rotation_tracks_{};
+
     std::vector<SkeletalScaleTrack> scale_tracks_{};
 };
+
+struct SkeletalTrsBlendRequest {
+    float left_time{};
+    float right_time{};
+    float weight{};
+};
+
+namespace detail {
+
+[[nodiscard]] inline bool exact_affine_equal(
+    const Mat4& left,
+    const Mat4& right) noexcept {
+    for (std::size_t row = 0U; row < 4U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            if (left(row, column) != right(row, column)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool exact_skin_binding_equal(
+    const VertexSkinBinding& left,
+    const VertexSkinBinding& right) noexcept {
+    const auto left_influences = left.influences();
+    const auto right_influences = right.influences();
+    if (left_influences.size() != right_influences.size()) {
+        return false;
+    }
+    for (std::size_t index = 0U;
+         index < left_influences.size();
+         ++index) {
+        if (left_influences[index].joint
+                != right_influences[index].joint
+            || left_influences[index].weight
+                != right_influences[index].weight) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool exactly_compatible_rigs(
+    const SkeletalRig& left,
+    const SkeletalRig& right) noexcept {
+    const auto left_parents = left.parents();
+    const auto right_parents = right.parents();
+    if (left_parents.size() != right_parents.size()) {
+        return false;
+    }
+    for (std::size_t joint = 0U;
+         joint < left_parents.size();
+         ++joint) {
+        if (left_parents[joint] != right_parents[joint]) {
+            return false;
+        }
+    }
+
+    const auto left_inverse = left.inverse_bind_matrices();
+    const auto right_inverse = right.inverse_bind_matrices();
+    if (left_inverse.size() != right_inverse.size()) {
+        return false;
+    }
+    for (std::size_t joint = 0U;
+         joint < left_inverse.size();
+         ++joint) {
+        if (!exact_affine_equal(
+                left_inverse[joint],
+                right_inverse[joint])) {
+            return false;
+        }
+    }
+
+    const auto left_bindings = left.vertex_bindings();
+    const auto right_bindings = right.vertex_bindings();
+    if (left_bindings.size() != right_bindings.size()) {
+        return false;
+    }
+    for (std::size_t vertex = 0U;
+         vertex < left_bindings.size();
+         ++vertex) {
+        if (!exact_skin_binding_equal(
+                left_bindings[vertex],
+                right_bindings[vertex])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline void validate_semantic_blend_compatibility(
+    const SkeletalTrsClip& left,
+    const SkeletalTrsClip& right) {
+    if (!exactly_compatible_rigs(left.rig(), right.rig())) {
+        throw std::invalid_argument(
+            "skeletal TRS blend requires exactly compatible rig ownership");
+    }
+    const auto left_prefixes = left.local_prefixes();
+    const auto right_prefixes = right.local_prefixes();
+    if (left_prefixes.size() != right_prefixes.size()) {
+        throw std::invalid_argument(
+            "skeletal TRS blend requires identical local-prefix ownership");
+    }
+    for (std::size_t joint = 0U;
+         joint < left_prefixes.size();
+         ++joint) {
+        if (!exact_affine_equal(
+                left_prefixes[joint],
+                right_prefixes[joint])) {
+            throw std::invalid_argument(
+                "skeletal TRS blend requires identical immutable local prefixes");
+        }
+    }
+}
+
+[[nodiscard]] inline SkeletalPoseStatePtr materialize_blended_semantic_pose(
+    const SkeletalTrsClip& clip,
+    std::span<const SkeletalTrs> semantic_pose) {
+    const auto prefixes = clip.local_prefixes();
+    if (semantic_pose.size() != prefixes.size()) {
+        throw std::logic_error(
+            "skeletal TRS blended semantic ownership changed after validation");
+    }
+
+    std::vector<Mat4> locals;
+    locals.reserve(semantic_pose.size());
+    for (std::size_t joint = 0U;
+         joint < semantic_pose.size();
+         ++joint) {
+        const Mat4 semantic =
+            compose_skeletal_trs(
+                semantic_pose[joint],
+                "skeletal TRS blended semantic local transform");
+        const Mat4 local = prefixes[joint] * semantic;
+        validate_bounded_affine_matrix(
+            local,
+            "skeletal TRS prefixed blended local transform");
+        locals.push_back(local);
+    }
+    auto pose = std::make_shared<const SkeletalPoseState>(
+        clip.rig_ptr(),
+        std::move(locals));
+    (void)pose->resolve();
+    return pose;
+}
+
+}  // namespace detail
+
+[[nodiscard]] inline std::vector<SkeletalPoseStatePtr>
+blend_skeletal_trs_clips(
+    const SkeletalTrsClip& left,
+    const SkeletalTrsClip& right,
+    std::span<const SkeletalTrsBlendRequest> requests) {
+    if (requests.size() > kMaxSkeletalTrsSamples) {
+        throw std::invalid_argument(
+            "skeletal TRS blend request count exceeds bounded limit");
+    }
+    detail::validate_semantic_blend_compatibility(left, right);
+
+    std::vector<float> left_times;
+    std::vector<float> right_times;
+    left_times.reserve(requests.size());
+    right_times.reserve(requests.size());
+    for (const SkeletalTrsBlendRequest& request : requests) {
+        if (!std::isfinite(request.weight)
+            || request.weight < 0.0F
+            || request.weight > 1.0F) {
+            throw std::invalid_argument(
+                "skeletal TRS blend weight must be finite within [0, 1]");
+        }
+        left_times.push_back(request.left_time);
+        right_times.push_back(request.right_time);
+    }
+
+    // Both complete source batches are sampled and M108-resolved before any
+    // output blend exists, including exact endpoint-weight requests.
+    const std::vector<SkeletalTrsSampledState> left_states =
+        left.sample_states(left_times);
+    const std::vector<SkeletalTrsSampledState> right_states =
+        right.sample_states(right_times);
+
+    std::vector<SkeletalPoseStatePtr> result;
+    result.reserve(requests.size());
+    for (std::size_t index = 0U;
+         index < requests.size();
+         ++index) {
+        const float weight = requests[index].weight;
+        if (weight == 0.0F) {
+            result.push_back(left_states[index].resolved_pose);
+            continue;
+        }
+        if (weight == 1.0F) {
+            result.push_back(right_states[index].resolved_pose);
+            continue;
+        }
+
+        const auto& left_semantic =
+            left_states[index].semantic_pose;
+        const auto& right_semantic =
+            right_states[index].semantic_pose;
+        if (left_semantic.size() != right_semantic.size()) {
+            throw std::logic_error(
+                "skeletal TRS blend source ownership changed after compatibility validation");
+        }
+
+        std::vector<SkeletalTrs> blended;
+        blended.reserve(left_semantic.size());
+        for (std::size_t joint = 0U;
+             joint < left_semantic.size();
+             ++joint) {
+            SkeletalTrs state;
+            state.translation = detail::interpolate_vec3(
+                left_semantic[joint].translation,
+                right_semantic[joint].translation,
+                weight,
+                "skeletal TRS blend translation");
+            state.scale = detail::interpolate_vec3(
+                left_semantic[joint].scale,
+                right_semantic[joint].scale,
+                weight,
+                "skeletal TRS blend scale");
+            state.rotation = slerp_shortest(
+                left_semantic[joint].rotation,
+                right_semantic[joint].rotation,
+                weight);
+            blended.push_back(state);
+        }
+        result.push_back(
+            detail::materialize_blended_semantic_pose(
+                left,
+                blended));
+    }
+    return result;
+}
 
 }  // namespace tiny_renderer
