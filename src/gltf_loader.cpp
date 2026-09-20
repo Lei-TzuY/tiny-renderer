@@ -1968,25 +1968,53 @@ struct GltfImportBundle {
     std::vector<Mat4> rest_locals(
         joint_nodes.size(),
         Mat4::identity());
+    std::vector<SkeletalTrs> semantic_defaults(
+        joint_nodes.size(),
+        SkeletalTrs{});
+    std::vector<Mat4> local_prefixes(
+        joint_nodes.size(),
+        Mat4::identity());
     for (std::size_t joint = 0U;
          joint < joint_nodes.size();
          ++joint) {
-        std::size_t node = joint_nodes[joint];
-        Mat4 local = nodes[node].local;
-        std::optional<std::size_t> ancestor = node_parent[node];
+        const std::size_t joint_node = joint_nodes[joint];
+        std::size_t cursor = joint_node;
+        Mat4 prefix = Mat4::identity();
+        std::optional<std::size_t> ancestor =
+            node_parent[cursor];
         while (ancestor && !joint_index_by_node[*ancestor]) {
-            local = nodes[*ancestor].local * local;
-            node = *ancestor;
-            ancestor = node_parent[node];
+            prefix = nodes[*ancestor].local * prefix;
+            cursor = *ancestor;
+            ancestor = node_parent[cursor];
         }
         if (ancestor) {
             rig_parents[joint] =
                 *joint_index_by_node[*ancestor];
         }
+
+        Mat4 rest_local;
+        if (nodes[joint_node].semantic_trs) {
+            semantic_defaults[joint] =
+                *nodes[joint_node].semantic_trs;
+            local_prefixes[joint] = prefix;
+            rest_local =
+                prefix * nodes[joint_node].local;
+        } else {
+            // Matrix-backed joints are valid static joints. Their full own
+            // matrix becomes part of the immutable prefix; animation channels
+            // targeting such a joint are rejected by the animated importer.
+            local_prefixes[joint] =
+                prefix * nodes[joint_node].local;
+            rest_local = local_prefixes[joint];
+        }
+
         validate_gltf_affine_matrix(
-            local,
+            local_prefixes[joint],
+            "glTF joint immutable local prefix");
+        validate_gltf_affine_matrix(
+            rest_local,
             "glTF compressed joint local transform");
-        rest_locals[joint] = local;
+        rest_locals[joint] = rest_local;
     }
 
     std::vector<VertexSkinBinding> vertex_bindings;
