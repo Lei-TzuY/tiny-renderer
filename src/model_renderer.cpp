@@ -10,7 +10,7 @@
 
 #include "normal_mapping_internal.hpp"
 #include "rasterizer_validation.hpp"
-#include "vertex_program_internal.hpp"
+#include "skinning_internal.hpp"
 
 namespace tiny_renderer {
 namespace {
@@ -157,6 +157,11 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
     detail::validate_vertex_program_static(
         options.vertex_program,
         detail::vertex_program_varying_count(asset.mesh));
+    if (options.skinning_state) {
+        detail::validate_skinning_mesh_ownership(
+            *options.skinning_state,
+            asset.mesh);
+    }
     bool sampler_needed = false;
     bool normal_map_present = false;
     for (const MaterialDraw& draw : asset.draws) {
@@ -191,6 +196,14 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
             options.point_light,
             options.fixed_lights)) {
         throw std::invalid_argument("normal mapping requires an enabled fixed light");
+    }
+    if (options.skinning_state
+        && detail::fixed_lighting_enabled(
+            options.directional_light,
+            options.point_light,
+            options.fixed_lights)) {
+        throw std::invalid_argument(
+            "single-pose skinning does not yet support fixed-light normal deformation");
     }
     if (sampler_needed) {
         validate_sampler(options.sampler);
@@ -352,9 +365,10 @@ const MaterialDraw& prepared_draw_for(const PreparedDrawOrderEntry& entry) {
         "prepared draw execution model transform");
 
     const PreparedModelSubmission& prepared = entry.prepared->prepared();
-    if (prepared.options().vertex_program) {
+    if (prepared.options().vertex_program
+        || prepared.options().skinning_state) {
         throw std::invalid_argument(
-            "prepared draw execution does not support position-changing vertex programs");
+            "prepared draw execution does not support position-changing object-space deformation");
     }
     const auto metadata = entry.prepared->draws();
     const ModelAsset& asset = prepared.asset();
@@ -468,7 +482,7 @@ void draw_validated_model_impl(
     }
 }
 
-std::vector<detail::PreparedVertexMesh> prepare_and_preflight_prepared_model_list(
+std::vector<detail::PreparedObjectSpaceMesh> prepare_and_preflight_prepared_model_list(
     const Framebuffer& framebuffer,
     std::span<const PreparedModelListEntry> entries) {
     for (const PreparedModelListEntry& entry : entries) {
@@ -477,10 +491,11 @@ std::vector<detail::PreparedVertexMesh> prepare_and_preflight_prepared_model_lis
         }
     }
 
-    std::vector<detail::PreparedVertexMesh> meshes;
+    std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(entries.size());
     for (const PreparedModelListEntry& entry : entries) {
-        meshes.push_back(detail::prepare_vertex_program_mesh(
+        meshes.push_back(detail::prepare_object_space_mesh(
+            entry.prepared->options().skinning_state,
             entry.prepared->options().vertex_program,
             entry.prepared->asset().mesh));
     }
@@ -515,10 +530,11 @@ void draw_prepared_model_instances(
         return;
     }
 
-    std::vector<detail::PreparedVertexMesh> meshes;
+    std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(models.size());
     for (std::size_t i = 0U; i < models.size(); ++i) {
-        meshes.push_back(detail::prepare_vertex_program_mesh(
+        meshes.push_back(detail::prepare_object_space_mesh(
+            prepared.options().skinning_state,
             prepared.options().vertex_program,
             prepared.asset().mesh));
     }
@@ -550,10 +566,11 @@ void draw_prepared_model_instances(
         return;
     }
 
-    std::vector<detail::PreparedVertexMesh> meshes;
+    std::vector<detail::PreparedObjectSpaceMesh> meshes;
     meshes.reserve(mvps.size());
     for (std::size_t i = 0U; i < mvps.size(); ++i) {
-        meshes.push_back(detail::prepare_vertex_program_mesh(
+        meshes.push_back(detail::prepare_object_space_mesh(
+            prepared.options().skinning_state,
             prepared.options().vertex_program,
             prepared.asset().mesh));
     }
@@ -585,7 +602,7 @@ void draw_prepared_model_list(
         return;
     }
 
-    std::vector<detail::PreparedVertexMesh> meshes =
+    std::vector<detail::PreparedObjectSpaceMesh> meshes =
         prepare_and_preflight_prepared_model_list(framebuffer, entries);
 
     for (std::size_t i = 0U; i < entries.size(); ++i) {
@@ -666,8 +683,11 @@ void draw_model_asset(
     const Mat4& projection,
     ModelRenderOptions options) {
     validate_static_model_state(asset, options);
-    const detail::PreparedVertexMesh programmed =
-        detail::prepare_vertex_program_mesh(options.vertex_program, asset.mesh);
+    const detail::PreparedObjectSpaceMesh programmed =
+        detail::prepare_object_space_mesh(
+        options.skinning_state,
+        options.vertex_program,
+        asset.mesh);
     const Mesh& mesh = programmed.get();
 
     draw_validated_model_impl(
@@ -710,8 +730,11 @@ void draw_model_asset(
     const Mat4& mvp,
     ModelRenderOptions options) {
     validate_static_model_state(asset, options);
-    const detail::PreparedVertexMesh programmed =
-        detail::prepare_vertex_program_mesh(options.vertex_program, asset.mesh);
+    const detail::PreparedObjectSpaceMesh programmed =
+        detail::prepare_object_space_mesh(
+        options.skinning_state,
+        options.vertex_program,
+        asset.mesh);
     const Mesh& mesh = programmed.get();
 
     draw_validated_model_impl(
