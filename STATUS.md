@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 98 strict file-driven hierarchical timeline transaction
+## Architecture frontier: Milestone 99 bounded programmatic transform graph
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -172,16 +172,30 @@ M98 makes the M97 hierarchy/timeline transaction externally usable through one s
 - Strict regression coverage rejects duplicate/missing/out-of-range/self/cyclic topology, local-count mismatch, and projective local state. A later finite-local composition overflow rejects the complete CLI preparation before any earlier indexed output exists, preserving the no-partial-output transaction boundary.
 - M98 adds no topology interpolation, mutable topology, skeletal joints/skinning, easing/looping/extrapolation, asynchronous streaming, parallel execution, alternate raster path, or performance/animation-quality claim.
 
-## Promotion after Milestone 98
+## Milestone 99 — bounded programmatic transform graph
 
-The hierarchy/file phase is now coherent enough that the next promotion should remove a structural limitation rather than add more sidecar syntax. Milestone 99 should establish a **bounded programmatic transform graph with non-renderable group nodes**, decoupling transform topology from the current one-node-per-prepared-entry ownership model while still delegating final world transforms to M92.
+M99 removes the one-hierarchy-node-per-render-entry restriction without creating another renderer. Transform topology is now independently bounded and may include non-renderable group/pivot nodes; only the final mapped render-entry world transforms are delegated into the established M92 transaction.
 
-A Milestone 99 slice should require:
+- `OfflineSceneTransformGraph` owns up to 512 immutable topology nodes and a prepared-entry-ordered render binding table. Render binding count remains bounded by the existing 256 scene-entry contract.
+- Parent topology accepts arbitrary node order and rejects out-of-range references, self-parenting, cycles, render bindings outside graph ownership, and duplicate render-entry node bindings.
+- `OfflineSceneTransformGraphFrameState` carries one validated camera plus exactly one complete finite affine local transform per graph node.
+- Graph preparation resolves `parent_world * local` for **every** graph node, including transform-only nodes that are not directly mapped to rendering. Hidden invalid/projective state therefore cannot bypass validation merely because no draw references that node.
+- Only after the complete graph frame resolves successfully are world matrices extracted in prepared-scene entry order through the graph's render bindings. The complete resulting batch is then delegated to M92 `prepare_offline_frame_sequence`.
+- A 1:1 graph is exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent to M96 hierarchy execution.
+- A three-node graph with one non-renderable pivot and two render-bound children is exact-equivalent to independently composed M92 world matrices, and moving/scaling the pivot observably moves both render descendants.
+- Regression coverage locks render-binding cardinality, local-transform cardinality, bounded node/frame ownership, hidden transform-only projective rejection, and later finite transform-only ancestor composition overflow before any prepared sequence can execute.
+- Camera-dependent ordering, conservative visibility, reflection rebinding, target preflight, indexed execution, and raster ownership remain unchanged on M92. M99 adds no graph file syntax, mutable/reparenting topology, skeletal deformation, constraints/IK, animation blending, parallel execution, or performance claim.
 
-- one immutable bounded transform graph whose nodes may be renderable bindings or transform-only group/pivot nodes; every prepared scene entry maps to exactly one graph node, while additional graph nodes may exist solely to carry hierarchy;
-- arbitrary parent ordering with deterministic rejection of out-of-range parents, self-parenting, cycles, duplicate/missing render-entry bindings, and bounded node/entry ownership violations;
-- one complete finite affine local transform per graph node for each programmatic frame; world transforms resolve as `parent_world * local` for all nodes, after which mapped render-entry world transforms are extracted in prepared-scene entry order;
-- complete graph structure and complete frame-local state validate/resolve before any M92 prepared-frame transaction can execute, including fail-closed composed-world overflow in transform-only ancestors;
-- a 1:1 graph with no extra nodes is exact-equivalent to M96 hierarchy behavior, while a transform-only pivot/group regression must observably move multiple mapped render entries and match independently composed M92 world transforms;
-- camera-dependent ordering, visibility, reflection rebinding, target preflight, indexed execution, and raster ownership remain M92 responsibilities; M99 must not introduce another scene execution path;
-- M99 is programmatic first. It adds no graph file syntax, mutable/reparenting topology, skeletal deformation, constraints/IK, animation blending, parallel execution, or performance claim.
+## Promotion after Milestone 99
+
+The next highest-value cross-layer gap is time-domain execution over the decoupled graph rather than another static graph/file variant. Milestone 100 should establish a **bounded programmatic transform-graph timeline** that samples graph-local state first, resolves the complete graph second, and still delegates final render-entry worlds to M92.
+
+A Milestone 100 slice should require:
+
+- 2..256 finite strictly increasing keyframes whose camera plus local-transform records cover every graph node, with 0..256 caller-ordered finite sample requests;
+- exact keyframe requests preserve stored graph-local state without interpolation arithmetic, while interior samples reuse the established M94 camera and affine top-3x4 interpolation semantics;
+- interpolation occurs independently in graph-local space for all nodes before any parent composition. World-transform interpolation shortcuts are forbidden;
+- every sampled graph frame fully resolves and validates all transform-only and render-bound nodes before render-entry extraction or M92 preparation;
+- a 1:1 graph timeline is exact-equivalent to the existing M97 hierarchical timeline, while a transform-only animated pivot regression must differ observably from endpoint-world interpolation and match an independently constructed local-interpolate-then-compose M92 reference;
+- repeated and out-of-order sample requests remain deterministic, complete-batch bounds stay explicit, and a later invalid interpolated local/composed world leaves the entire preparation unexecutable;
+- M100 remains programmatic. It adds no file grammar, easing/looping/extrapolation, topology animation/reparenting, skeletal deformation, constraints/IK, blending layers, parallel execution, or performance claim.

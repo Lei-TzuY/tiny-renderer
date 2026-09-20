@@ -29,6 +29,7 @@ inline constexpr std::size_t kMaxOfflineSequenceResolvedPixels =
 inline constexpr std::size_t kMaxOfflineSequenceCameras = 256U;
 inline constexpr std::size_t kMaxOfflineTimelineKeyframes = 256U;
 inline constexpr std::size_t kMaxOfflineTimelineSamples = 256U;
+inline constexpr std::size_t kMaxOfflineTransformGraphNodes = 512U;
 inline constexpr std::string_view kOfflineCameraSequenceHeader =
     "tiny-renderer-camera-sequence-v1";
 inline constexpr std::string_view kOfflineFrameSequenceHeader =
@@ -297,10 +298,104 @@ private:
     std::vector<std::optional<std::size_t>> parents_;
 };
 
+// Immutable transform graph whose topology is independent from prepared render
+// entry ownership. Nodes may be transform-only groups/pivots. render_entry_nodes
+// is aligned by prepared-scene entry index and binds each render entry to one
+// unique graph node; all remaining nodes are non-renderable transform nodes.
+class OfflineSceneTransformGraph {
+public:
+    OfflineSceneTransformGraph(
+        std::vector<std::optional<std::size_t>> parents,
+        std::vector<std::size_t> render_entry_nodes)
+        : parents_(std::move(parents)),
+          render_entry_nodes_(std::move(render_entry_nodes)) {
+        if (parents_.size() > detail::kMaxOfflineTransformGraphNodes) {
+            throw std::invalid_argument(
+                "offline transform graph node count exceeds bounded graph limit");
+        }
+        if (render_entry_nodes_.size() > detail::kMaxOfflineSceneEntries) {
+            throw std::invalid_argument(
+                "offline transform graph render binding count exceeds bounded scene entry limit");
+        }
+        if (render_entry_nodes_.size() > parents_.size()) {
+            throw std::invalid_argument(
+                "offline transform graph cannot bind more render entries than graph nodes");
+        }
+
+        for (std::size_t index = 0U; index < parents_.size(); ++index) {
+            if (!parents_[index]) {
+                continue;
+            }
+            if (*parents_[index] >= parents_.size()) {
+                throw std::out_of_range(
+                    "offline transform graph parent index exceeds graph node count");
+            }
+            if (*parents_[index] == index) {
+                throw std::invalid_argument(
+                    "offline transform graph node cannot parent itself");
+            }
+        }
+
+        std::vector<unsigned char> state(parents_.size(), 0U);
+        const auto visit = [&](auto&& self, std::size_t index) -> void {
+            if (state[index] == 2U) {
+                return;
+            }
+            if (state[index] == 1U) {
+                throw std::invalid_argument(
+                    "offline transform graph contains a parent cycle");
+            }
+            state[index] = 1U;
+            if (parents_[index]) {
+                self(self, *parents_[index]);
+            }
+            state[index] = 2U;
+        };
+        for (std::size_t index = 0U; index < parents_.size(); ++index) {
+            visit(visit, index);
+        }
+
+        std::vector<unsigned char> bound(parents_.size(), 0U);
+        for (const std::size_t node : render_entry_nodes_) {
+            if (node >= parents_.size()) {
+                throw std::out_of_range(
+                    "offline transform graph render binding index exceeds graph node count");
+            }
+            if (bound[node] != 0U) {
+                throw std::invalid_argument(
+                    "offline transform graph render entries must bind unique graph nodes");
+            }
+            bound[node] = 1U;
+        }
+    }
+
+    [[nodiscard]] std::span<const std::optional<std::size_t>>
+    parents() const noexcept {
+        return {parents_.data(), parents_.size()};
+    }
+
+    [[nodiscard]] std::span<const std::size_t>
+    render_entry_nodes() const noexcept {
+        return {render_entry_nodes_.data(), render_entry_nodes_.size()};
+    }
+
+private:
+    std::vector<std::optional<std::size_t>> parents_;
+    std::vector<std::size_t> render_entry_nodes_;
+};
+
 // Dynamic hierarchical frame state owns local transforms only. The hierarchy
 // remains fixed across a prepared sequence; resolved world transforms are
 // temporary preparation data delegated into the established M92 transaction.
 struct OfflineSceneHierarchicalFrameState {
+    OfflineSceneCamera camera{};
+    std::vector<Mat4> local_transforms{};
+};
+
+// One programmatic transform-graph frame owns one complete local affine matrix
+// per graph node. Render-entry world transforms are derived transactionally
+// from the immutable graph rather than stored redundantly in the frame.
+struct OfflineSceneTransformGraphFrameState {
     OfflineSceneCamera camera{};
     std::vector<Mat4> local_transforms{};
 };
@@ -363,6 +458,56 @@ resolve_offline_hierarchy_world_transforms(
         (void)resolve(resolve, index);
     }
     return world;
+}
+
+[[nodiscard]] inline std::vector<Mat4>
+resolve_offline_transform_graph_render_world_transforms(
+    const OfflineSceneTransformGraph& graph,
+    std::span<const Mat4> local_transforms) {
+    const std::span<const std::optional<std::size_t>> parents =
+        graph.parents();
+    if (local_transforms.size() != parents.size()) {
+        throw std::invalid_argument(
+            "offline transform graph local transform count must match graph node count");
+    }
+
+    for (const Mat4& local : local_transforms) {
+        validate_spatial_affine_matrix(
+            local,
+            "offline transform graph local transform");
+    }
+
+    std::vector<Mat4> world(
+        local_transforms.size(),
+        Mat4::identity());
+    std::vector<unsigned char> resolved(local_transforms.size(), 0U);
+
+    const auto resolve = [&](auto&& self, std::size_t index) -> const Mat4& {
+        if (resolved[index] != 0U) {
+            return world[index];
+        }
+        world[index] = parents[index]
+            ? self(self, *parents[index]) * local_transforms[index]
+            : local_transforms[index];
+        validate_spatial_affine_matrix(
+            world[index],
+            "offline transform graph composed world transform");
+        resolved[index] = 1U;
+        return world[index];
+    };
+
+    // Resolve every node, including transform-only nodes that are not mapped
+    // to render entries. Invalid hidden graph state must fail the transaction.
+    for (std::size_t index = 0U; index < local_transforms.size(); ++index) {
+        (void)resolve(resolve, index);
+    }
+
+    std::vector<Mat4> render_world;
+    render_world.reserve(graph.render_entry_nodes().size());
+    for (const std::size_t node : graph.render_entry_nodes()) {
+        render_world.push_back(world[node]);
+    }
+    return render_world;
 }
 
 [[nodiscard]] inline float offline_timeline_lerp(float a, float b, float t) {
@@ -1815,6 +1960,38 @@ prepare_offline_hierarchy_sequence(
             frame.camera,
             detail::resolve_offline_hierarchy_world_transforms(
                 hierarchy,
+                frame.local_transforms),
+        });
+    }
+
+    return prepare_offline_frame_sequence(scene, world_frames);
+}
+
+// Programmatic M99 path: resolves every transform-graph node first, including
+// non-renderable groups/pivots, then extracts one world matrix per prepared
+// render entry in prepared-entry order and delegates the complete batch to M92.
+// No graph-specific ordering, visibility, material, or raster path exists.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_transform_graph_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneTransformGraph& graph,
+    std::span<const OfflineSceneTransformGraphFrameState> frames) {
+    if (graph.render_entry_nodes().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline transform graph render binding count must match prepared scene entry count");
+    }
+    if (frames.size() > detail::kMaxOfflineSequenceCameras) {
+        throw std::invalid_argument(
+            "offline transform graph frame sequence exceeds bounded frame limit");
+    }
+
+    std::vector<OfflineSceneFrameState> world_frames;
+    world_frames.reserve(frames.size());
+    for (const OfflineSceneTransformGraphFrameState& frame : frames) {
+        world_frames.push_back(OfflineSceneFrameState{
+            frame.camera,
+            detail::resolve_offline_transform_graph_render_world_transforms(
+                graph,
                 frame.local_transforms),
         });
     }
