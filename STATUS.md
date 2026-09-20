@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 101 strict file-driven transform-graph timeline transaction
+## Architecture frontier: Milestone 102 bounded programmatic sparse transform-graph animation clip
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -216,17 +216,34 @@ M101 exposes the complete M100/M99 graph-time semantics through one strict bound
 - A file whose endpoint graph-local state is finite but whose requested interior parent/child composition overflows is rejected during complete M100/M99 preparation before any earlier indexed output exists.
 - M101 adds no interpolation policy, mutable/reparenting topology, skeletal deformation, constraints/IK, easing/looping/extrapolation, asynchronous/parallel execution, alternate renderer path, or performance/conformance claim.
 
-## Promotion after Milestone 101
+## Milestone 102 — bounded programmatic sparse transform-graph animation clip
 
-Dense graph timelines are now coherent from programmatic state through strict file-driven execution. The next architectural limitation is that every dense keyframe must repeat camera plus one local transform for **every** graph node even when most nodes are static. Milestone 102 should establish a **bounded programmatic sparse transform-graph animation clip** with independent per-node tracks while retaining M100's interpolation and M99/M92 execution semantics.
+M102 removes the dense-timeline requirement that every keyframe repeat camera plus every graph-node local transform. One immutable validated clip now owns a bounded global time domain, default graph-local state, an optional camera track, and independent transform tracks only for nodes that actually animate.
 
-A Milestone 102 slice should require:
+- `OfflineSceneSparseTransformGraphClip` validates its complete intrinsic ownership at construction: finite increasing clip domain, validated default camera, one finite affine default local per graph node, at most one transform track per node, and all track state before sampling can begin.
+- Camera and transform tracks each require 2..256 finite strictly increasing keys and must cover the complete clip domain exactly. Sparse clips additionally cap aggregate animated key ownership at 4096 records; this is an in-memory resource bound, not a performance claim.
+- Untracked graph nodes never acquire synthetic keys. Their default local matrices are copied bit-exact into every sampled complete graph-local frame.
+- The M94/M97/M100 time-bracketing core is factored down to `sample_offline_keyframe_value`. Dense timeline sampling and sparse camera/transform tracks therefore share exact-keyframe passthrough, domain checking, bracketing, and interpolation-parameter semantics.
+- Sparse camera tracks reuse the established camera interpolation primitive; transform tracks reuse the established affine top-3x4 interpolation with exact affine bottom-row semantics. M102 introduces no second interpolation formula.
+- `sample_offline_sparse_transform_graph_clip` accepts at most 256 caller-ordered finite sample times. Every request materializes one **complete** graph-local frame by copying defaults first and overlaying only animated tracks.
+- `prepare_offline_sparse_transform_graph_clip_sequence` validates clip/graph/prepared-entry ownership, materializes the complete requested sparse batch, then delegates only to M99 `prepare_offline_transform_graph_sequence`; graph composition, render-entry extraction, M92 ordering/visibility/preflight, and raster execution remain unchanged.
+- A fully tracked sparse clip aligned to an equivalent dense M100 timeline is exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent across endpoint, interior, repeated, and out-of-order requests.
+- A clip with only one animated non-renderable pivot keeps both render-bound descendant local matrices bit-exact while observably moving both rendered descendants; it is exact-equivalent to independently materialized M99 graph-local frames.
+- Validation regressions cover invalid domains/default state, underspecified or incomplete camera tracks, duplicate/out-of-range transform-track ownership, non-increasing/incomplete/projective transform tracks, aggregate key and sample bounds, graph-node ownership mismatch, and valid empty sample requests.
+- A sparse clip whose endpoint locals are individually valid but whose requested interior transform-only parent/child composition overflows rejects the complete batch before any earlier requested sample can execute fragments.
+- M102 adds no sparse-clip file syntax, easing curves, looping/extrapolation, topology animation/reparenting, skeletal skinning, animation blending/layers, parallel execution, alternate raster path, or performance claim.
 
-- one immutable clip owns a finite global time domain, one validated default/bind local affine transform per graph node, an optional bounded camera track, and zero or one bounded transform track per graph node;
-- each animated node track owns its own strictly increasing finite key times and affine local values; static nodes need no repeated keys and preserve their validated default local transform exactly;
-- track sampling reuses the established exact-keyframe and affine interpolation primitives rather than introducing easing or a second interpolation formula;
-- every requested clip sample materializes one **complete** graph-local frame before M99 resolution. Missing track coverage, malformed track ownership, duplicate node tracks, non-finite/projective values, or invalid camera state reject the complete requested batch before M92 preparation;
-- a sparse clip whose tracks are aligned to an equivalent dense M100 timeline must be exact resolved/hash and 4x per-sample RGB/depth/stencil equivalent across endpoint/interior/repeated/out-of-order requests;
-- a clip with one animated transform-only pivot and static render descendants must observably move multiple entries while static graph nodes remain bit-exact at every sample;
-- complete bounded sample/key/track ownership must be explicit and fail closed, including later interpolated/composed overflow before any earlier frame can execute;
-- M102 is programmatic first. It adds no sparse-clip file syntax, easing curves, looping/extrapolation, topology animation/reparenting, skeletal skinning, animation blending/layers, parallel execution, alternate raster path, or performance claim.
+## Promotion after Milestone 102
+
+Sparse per-node animation removes redundant dense key ownership. The next architectural capability gap is combining independently authored motions without converting them into another dense timeline. Milestone 103 should establish **bounded two-clip local-space blending** over the same immutable transform graph.
+
+A Milestone 103 slice should require:
+
+- two validated M102 clips whose default graph-local ownership matches the same immutable graph, plus a finite blend weight in `[0,1]` and caller-ordered bounded sample requests that are valid in both clip domains;
+- each clip is sampled independently through M102 first; only complete graph-local frames may enter blending, so sparse/static ownership remains resolved before combination;
+- weight `0` and `1` are exact passthrough paths with no blend arithmetic. Interior weights reuse the established camera and affine interpolation primitives per complete graph-local frame;
+- blending occurs in **local space before M99 graph composition**. World-transform blending shortcuts are forbidden;
+- both clips must materialize the same graph-node count. Camera/local interpolation failure, domain mismatch, non-finite/out-of-range weight, or later composed-world overflow rejects the complete batch before M92 preparation;
+- endpoint-weight results must be exact-equivalent to executing the corresponding source clip directly, while an interior-weight transform-only pivot case must match an independently constructed local-blend-then-compose M99 reference;
+- repeated/out-of-order requested times remain deterministic and existing M92 ordering, visibility, reflection rebinding, preflight, and raster ownership remain authoritative;
+- M103 remains programmatic and two-source only. It adds no file syntax, additive blending, per-node masks/weights, N-way animation layers, easing/looping/extrapolation, topology animation, skeletal skinning, parallel execution, alternate renderer path, or performance claim.

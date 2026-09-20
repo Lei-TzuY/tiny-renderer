@@ -31,6 +31,9 @@ inline constexpr std::size_t kMaxOfflineSequenceCameras = 256U;
 inline constexpr std::size_t kMaxOfflineTimelineKeyframes = 256U;
 inline constexpr std::size_t kMaxOfflineTimelineSamples = 256U;
 inline constexpr std::size_t kMaxOfflineTransformGraphNodes = 512U;
+// Sparse clips bound aggregate animated key ownership independently from node
+// count. This is an in-memory resource contract, not a performance claim.
+inline constexpr std::size_t kMaxOfflineSparseClipTrackKeys = 4096U;
 inline constexpr std::string_view kOfflineCameraSequenceHeader =
     "tiny-renderer-camera-sequence-v1";
 inline constexpr std::string_view kOfflineFrameSequenceHeader =
@@ -418,6 +421,23 @@ struct OfflineSceneTransformGraphTimelineKeyframe {
     OfflineSceneTransformGraphFrameState frame{};
 };
 
+// M102 sparse animation primitives. Each animated track owns its own finite
+// key times while untracked graph nodes retain the clip's default local state.
+struct OfflineSceneSparseCameraKeyframe {
+    float time{};
+    OfflineSceneCamera camera{};
+};
+
+struct OfflineSceneSparseTransformKeyframe {
+    float time{};
+    Mat4 local_transform{};
+};
+
+struct OfflineSceneSparseTransformTrack {
+    std::size_t node{};
+    std::vector<OfflineSceneSparseTransformKeyframe> keyframes{};
+};
+
 // Strict file-facing M98 state. The sidecar owns one fixed validated hierarchy
 // plus hierarchy-local keyframes and caller-ordered sample requests. Parsing
 // does not interpolate local transforms or resolve world transforms.
@@ -434,6 +454,158 @@ struct OfflineSceneTransformGraphTimelineFile {
     OfflineSceneTransformGraph graph;
     std::vector<OfflineSceneTransformGraphTimelineKeyframe> keyframes{};
     std::vector<float> sample_times{};
+};
+
+// Immutable bounded sparse clip. Intrinsic clip validation is performed once
+// at construction so sampling cannot discover malformed track ownership after
+// earlier requested times have already been materialized.
+class OfflineSceneSparseTransformGraphClip {
+public:
+    OfflineSceneSparseTransformGraphClip(
+        float start_time,
+        float end_time,
+        OfflineSceneCamera default_camera,
+        std::vector<Mat4> default_local_transforms,
+        std::optional<std::vector<OfflineSceneSparseCameraKeyframe>> camera_track,
+        std::vector<OfflineSceneSparseTransformTrack> transform_tracks)
+        : start_time_(start_time),
+          end_time_(end_time),
+          default_camera_(default_camera),
+          default_local_transforms_(std::move(default_local_transforms)),
+          camera_track_(std::move(camera_track)),
+          transform_tracks_(std::move(transform_tracks)) {
+        if (!std::isfinite(start_time_) || !std::isfinite(end_time_)
+            || !(end_time_ > start_time_)) {
+            throw std::invalid_argument(
+                "offline sparse clip requires a finite increasing time domain");
+        }
+        if (default_local_transforms_.size()
+            > detail::kMaxOfflineTransformGraphNodes) {
+            throw std::invalid_argument(
+                "offline sparse clip default local count exceeds bounded graph limit");
+        }
+
+        validate_offline_scene_camera(default_camera_);
+        for (const Mat4& local : default_local_transforms_) {
+            detail::validate_spatial_affine_matrix(
+                local,
+                "offline sparse clip default local transform");
+        }
+
+        std::size_t total_track_keys = 0U;
+        if (camera_track_) {
+            if (camera_track_->size() < 2U) {
+                throw std::invalid_argument(
+                    "offline sparse clip camera track requires at least two keyframes");
+            }
+            if (camera_track_->size() > detail::kMaxOfflineTimelineKeyframes) {
+                throw std::invalid_argument(
+                    "offline sparse clip camera track key count exceeds bounded limit");
+            }
+            if (camera_track_->front().time != start_time_
+                || camera_track_->back().time != end_time_) {
+                throw std::invalid_argument(
+                    "offline sparse clip camera track must cover the complete clip time domain");
+            }
+            for (std::size_t index = 0U; index < camera_track_->size(); ++index) {
+                const OfflineSceneSparseCameraKeyframe& key =
+                    (*camera_track_)[index];
+                if (!std::isfinite(key.time)) {
+                    throw std::invalid_argument(
+                        "offline sparse clip camera key time must be finite");
+                }
+                if (index > 0U
+                    && !(key.time > (*camera_track_)[index - 1U].time)) {
+                    throw std::invalid_argument(
+                        "offline sparse clip camera key times must be strictly increasing");
+                }
+                validate_offline_scene_camera(key.camera);
+            }
+            total_track_keys = camera_track_->size();
+        }
+
+        if (transform_tracks_.size() > default_local_transforms_.size()) {
+            throw std::invalid_argument(
+                "offline sparse clip cannot own more transform tracks than graph nodes");
+        }
+        std::vector<unsigned char> tracked(
+            default_local_transforms_.size(), 0U);
+        for (const OfflineSceneSparseTransformTrack& track : transform_tracks_) {
+            if (track.node >= default_local_transforms_.size()) {
+                throw std::out_of_range(
+                    "offline sparse clip transform track node exceeds default graph-local ownership");
+            }
+            if (tracked[track.node] != 0U) {
+                throw std::invalid_argument(
+                    "offline sparse clip permits at most one transform track per graph node");
+            }
+            tracked[track.node] = 1U;
+
+            if (track.keyframes.size() < 2U) {
+                throw std::invalid_argument(
+                    "offline sparse clip transform track requires at least two keyframes");
+            }
+            if (track.keyframes.size() > detail::kMaxOfflineTimelineKeyframes) {
+                throw std::invalid_argument(
+                    "offline sparse clip transform track key count exceeds bounded limit");
+            }
+            if (track.keyframes.front().time != start_time_
+                || track.keyframes.back().time != end_time_) {
+                throw std::invalid_argument(
+                    "offline sparse clip transform track must cover the complete clip time domain");
+            }
+            if (track.keyframes.size()
+                > detail::kMaxOfflineSparseClipTrackKeys - total_track_keys) {
+                throw std::invalid_argument(
+                    "offline sparse clip aggregate track key count exceeds bounded limit");
+            }
+            total_track_keys += track.keyframes.size();
+
+            for (std::size_t index = 0U; index < track.keyframes.size(); ++index) {
+                const OfflineSceneSparseTransformKeyframe& key =
+                    track.keyframes[index];
+                if (!std::isfinite(key.time)) {
+                    throw std::invalid_argument(
+                        "offline sparse clip transform key time must be finite");
+                }
+                if (index > 0U
+                    && !(key.time > track.keyframes[index - 1U].time)) {
+                    throw std::invalid_argument(
+                        "offline sparse clip transform key times must be strictly increasing");
+                }
+                detail::validate_spatial_affine_matrix(
+                    key.local_transform,
+                    "offline sparse clip transform key local transform");
+            }
+        }
+    }
+
+    [[nodiscard]] float start_time() const noexcept { return start_time_; }
+    [[nodiscard]] float end_time() const noexcept { return end_time_; }
+    [[nodiscard]] const OfflineSceneCamera& default_camera() const noexcept {
+        return default_camera_;
+    }
+    [[nodiscard]] std::span<const Mat4> default_local_transforms() const noexcept {
+        return {
+            default_local_transforms_.data(),
+            default_local_transforms_.size()};
+    }
+    [[nodiscard]] const std::optional<std::vector<OfflineSceneSparseCameraKeyframe>>&
+    camera_track() const noexcept {
+        return camera_track_;
+    }
+    [[nodiscard]] std::span<const OfflineSceneSparseTransformTrack>
+    transform_tracks() const noexcept {
+        return {transform_tracks_.data(), transform_tracks_.size()};
+    }
+
+private:
+    float start_time_{};
+    float end_time_{};
+    OfflineSceneCamera default_camera_{};
+    std::vector<Mat4> default_local_transforms_{};
+    std::optional<std::vector<OfflineSceneSparseCameraKeyframe>> camera_track_{};
+    std::vector<OfflineSceneSparseTransformTrack> transform_tracks_{};
 };
 
 namespace detail {
@@ -707,6 +879,59 @@ validate_offline_transform_graph_timeline_keyframes(
     return result;
 }
 
+template <
+    typename Keyframe,
+    typename Value,
+    typename ValueAccessor,
+    typename InterpolateValue>
+[[nodiscard]] inline Value sample_offline_keyframe_value(
+    std::span<const Keyframe> keyframes,
+    float sample_time,
+    std::string_view timeline_label,
+    ValueAccessor value_of,
+    InterpolateValue interpolate_value) {
+    if (!std::isfinite(sample_time)) {
+        throw std::invalid_argument(
+            std::string(timeline_label) + " sample time must be finite");
+    }
+    if (sample_time < keyframes.front().time
+        || sample_time > keyframes.back().time) {
+        throw std::out_of_range(
+            std::string(timeline_label)
+            + " sample time is outside the keyframe domain");
+    }
+
+    if (sample_time == keyframes.front().time) {
+        return value_of(keyframes.front());
+    }
+
+    std::size_t upper = 1U;
+    while (upper < keyframes.size()
+           && keyframes[upper].time < sample_time) {
+        ++upper;
+    }
+    if (upper < keyframes.size()
+        && sample_time == keyframes[upper].time) {
+        return value_of(keyframes[upper]);
+    }
+    if (upper >= keyframes.size()) {
+        throw std::logic_error(
+            std::string(timeline_label)
+            + " failed to bracket an in-domain sample");
+    }
+
+    const Keyframe& left = keyframes[upper - 1U];
+    const Keyframe& right = keyframes[upper];
+    const float denominator = right.time - left.time;
+    const float t = (sample_time - left.time) / denominator;
+    if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
+        throw std::logic_error(
+            std::string(timeline_label)
+            + " produced an invalid interpolation parameter");
+    }
+    return interpolate_value(value_of(left), value_of(right), t);
+}
+
 template <typename Keyframe, typename Frame, typename InterpolateFrame>
 [[nodiscard]] inline std::vector<Frame> sample_offline_timeline_states(
     std::span<const Keyframe> keyframes,
@@ -721,48 +946,14 @@ template <typename Keyframe, typename Frame, typename InterpolateFrame>
     std::vector<Frame> frames;
     frames.reserve(sample_times.size());
     for (const float sample_time : sample_times) {
-        if (!std::isfinite(sample_time)) {
-            throw std::invalid_argument(
-                std::string(timeline_label) + " sample time must be finite");
-        }
-        if (sample_time < keyframes.front().time
-            || sample_time > keyframes.back().time) {
-            throw std::out_of_range(
-                std::string(timeline_label)
-                + " sample time is outside the keyframe domain");
-        }
-
-        if (sample_time == keyframes.front().time) {
-            frames.push_back(keyframes.front().frame);
-            continue;
-        }
-
-        std::size_t upper = 1U;
-        while (upper < keyframes.size()
-               && keyframes[upper].time < sample_time) {
-            ++upper;
-        }
-        if (upper < keyframes.size()
-            && sample_time == keyframes[upper].time) {
-            frames.push_back(keyframes[upper].frame);
-            continue;
-        }
-        if (upper >= keyframes.size()) {
-            throw std::logic_error(
-                std::string(timeline_label)
-                + " failed to bracket an in-domain sample");
-        }
-
-        const Keyframe& left = keyframes[upper - 1U];
-        const Keyframe& right = keyframes[upper];
-        const float denominator = right.time - left.time;
-        const float t = (sample_time - left.time) / denominator;
-        if (!std::isfinite(t) || !(t > 0.0F && t < 1.0F)) {
-            throw std::logic_error(
-                std::string(timeline_label)
-                + " produced an invalid interpolation parameter");
-        }
-        frames.push_back(interpolate_frame(left.frame, right.frame, t));
+        frames.push_back(sample_offline_keyframe_value<Keyframe, Frame>(
+            keyframes,
+            sample_time,
+            timeline_label,
+            [](const Keyframe& keyframe) -> const Frame& {
+                return keyframe.frame;
+            },
+            interpolate_frame));
     }
     return frames;
 }
@@ -1130,6 +1321,87 @@ sample_offline_transform_graph_timeline(
             }
             return frame;
         });
+}
+
+// M102 samples independent sparse tracks into complete graph-local frames.
+// Static nodes are copied bit-exact from clip defaults; animated tracks share
+// the exact-keyframe/bracketing core and established M94/M100 interpolation
+// primitives. No graph composition occurs during sparse sampling.
+[[nodiscard]] inline std::vector<OfflineSceneTransformGraphFrameState>
+sample_offline_sparse_transform_graph_clip(
+    const OfflineSceneSparseTransformGraphClip& clip,
+    std::span<const float> sample_times) {
+    if (sample_times.size() > detail::kMaxOfflineTimelineSamples) {
+        throw std::invalid_argument(
+            "offline sparse clip sample count exceeds bounded limit");
+    }
+
+    std::vector<OfflineSceneTransformGraphFrameState> frames;
+    frames.reserve(sample_times.size());
+    for (const float sample_time : sample_times) {
+        if (!std::isfinite(sample_time)) {
+            throw std::invalid_argument(
+                "offline sparse clip sample time must be finite");
+        }
+        if (sample_time < clip.start_time()
+            || sample_time > clip.end_time()) {
+            throw std::out_of_range(
+                "offline sparse clip sample time is outside the clip domain");
+        }
+
+        OfflineSceneCamera camera = clip.default_camera();
+        if (clip.camera_track()) {
+            const std::span<const OfflineSceneSparseCameraKeyframe> keys{
+                clip.camera_track()->data(),
+                clip.camera_track()->size()};
+            camera = detail::sample_offline_keyframe_value<
+                OfflineSceneSparseCameraKeyframe,
+                OfflineSceneCamera>(
+                keys,
+                sample_time,
+                "offline sparse clip camera track",
+                [](const OfflineSceneSparseCameraKeyframe& key)
+                    -> const OfflineSceneCamera& {
+                    return key.camera;
+                },
+                [](const OfflineSceneCamera& left,
+                   const OfflineSceneCamera& right,
+                   float t) {
+                    return detail::interpolate_offline_timeline_camera(
+                        left, right, t);
+                });
+        }
+
+        const std::span<const Mat4> defaults =
+            clip.default_local_transforms();
+        std::vector<Mat4> locals(defaults.begin(), defaults.end());
+        for (const OfflineSceneSparseTransformTrack& track :
+             clip.transform_tracks()) {
+            const std::span<const OfflineSceneSparseTransformKeyframe> keys{
+                track.keyframes.data(),
+                track.keyframes.size()};
+            locals[track.node] = detail::sample_offline_keyframe_value<
+                OfflineSceneSparseTransformKeyframe,
+                Mat4>(
+                keys,
+                sample_time,
+                "offline sparse clip transform track",
+                [](const OfflineSceneSparseTransformKeyframe& key)
+                    -> const Mat4& {
+                    return key.local_transform;
+                },
+                [](const Mat4& left, const Mat4& right, float t) {
+                    return detail::interpolate_offline_timeline_affine(
+                        left, right, t);
+                });
+        }
+
+        frames.push_back(OfflineSceneTransformGraphFrameState{
+            camera,
+            std::move(locals),
+        });
+    }
+    return frames;
 }
 
 // Strict bounded sidecar for programmatic M94 timeline state:
@@ -2612,6 +2884,32 @@ prepare_offline_transform_graph_timeline_sequence(
             graph,
             keyframes,
             sample_times);
+    return prepare_offline_transform_graph_sequence(
+        scene,
+        graph,
+        sampled_frames);
+}
+
+// Programmatic M102 path: materializes each requested sparse clip time into
+// one complete graph-local frame, validates graph/clip ownership before
+// sampling, then delegates the complete batch to M99 and finally M92.
+[[nodiscard]] inline PreparedOfflineCameraSequence
+prepare_offline_sparse_transform_graph_clip_sequence(
+    const PreparedOfflineMixedScene& scene,
+    const OfflineSceneTransformGraph& graph,
+    const OfflineSceneSparseTransformGraphClip& clip,
+    std::span<const float> sample_times) {
+    if (graph.render_entry_nodes().size() != scene.plan().entries().size()) {
+        throw std::invalid_argument(
+            "offline sparse clip render binding count must match prepared scene entry count");
+    }
+    if (graph.parents().size() != clip.default_local_transforms().size()) {
+        throw std::invalid_argument(
+            "offline sparse clip default local ownership must match graph node count");
+    }
+
+    const std::vector<OfflineSceneTransformGraphFrameState> sampled_frames =
+        sample_offline_sparse_transform_graph_clip(clip, sample_times);
     return prepare_offline_transform_graph_sequence(
         scene,
         graph,
