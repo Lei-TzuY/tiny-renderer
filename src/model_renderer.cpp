@@ -158,10 +158,20 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
     detail::validate_vertex_program_static(
         options.vertex_program,
         detail::vertex_program_varying_count(asset.mesh));
+    if (options.skinning_state && options.skeletal_pose_state) {
+        throw std::invalid_argument(
+            "model submission cannot bind direct skinning and a skeletal pose simultaneously");
+    }
     if (options.skinning_state) {
         detail::validate_skinning_mesh_ownership(
             *options.skinning_state,
             asset.mesh);
+    }
+    if (options.skeletal_pose_state
+        && options.skeletal_pose_state->rig().vertex_bindings().size()
+            != asset.mesh.vertices.size()) {
+        throw std::invalid_argument(
+            "skeletal rig vertex binding count must match canonical mesh vertex count");
     }
     bool sampler_needed = false;
     bool normal_map_present = false;
@@ -215,7 +225,7 @@ bool same_normal_binding(
 skinning_normal_binding_for(
     const ModelAsset& asset,
     const ModelRenderOptions& options) {
-    if (!options.skinning_state
+    if ((!options.skinning_state && !options.skeletal_pose_state)
         || !detail::fixed_lighting_enabled(
             options.directional_light,
             options.point_light,
@@ -251,6 +261,7 @@ prepare_model_object_space_mesh(
         skinning_normal_binding_for(asset, options);
     return detail::prepare_object_space_mesh(
         options.skinning_state,
+        options.skeletal_pose_state,
         options.vertex_program,
         asset.mesh,
         normal_binding ? &*normal_binding : nullptr);
