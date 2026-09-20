@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 116 semantic CUBICSPLINE skeletal animation
+## Architecture frontier: Milestone 117 bounded programmatic morph-target deformation
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -496,19 +496,39 @@ M116 completes glTF's three core skeletal sampler modes in the existing semantic
 - File regressions reject malformed 3× output cardinality and non-finite cubic tangent data. A cubic-only mutated file drives parent/child scale only through tangent-induced interior growth; endpoints load successfully while the later midpoint overflows during M108 hierarchy composition before earlier framebuffer ownership.
 - M116 remains semantic TRS CUBICSPLINE interoperability only. Morph-weight animation, morph target deformation, controllers/state machines, masks/layers, additive/N-way graphs, retargeting, IK/constraints, GLB/extensions/compression, GPU execution, and performance claims remain outside the milestone.
 
-## Promotion after Milestone 116
+## Milestone 117 — bounded programmatic morph-target deformation
 
-All three glTF skeletal interpolation modes now land on one semantic TRS/M108 execution stack. Continuing with controller shells would add less architectural depth than closing the next deformation-layer gap. The next frontier is **Milestone 117 bounded programmatic morph-target deformation**, establishing the renderer-side capability required before glTF morph targets or `weights` animation can be imported honestly.
+M117 adds the renderer-side morph deformation capability needed before glTF morph targets or weight animation can be imported honestly. It extends the existing object-space transaction rather than adding a morph-specific renderer.
 
-A Milestone 117 slice should require:
+- `MorphTargetSet` owns one to eight immutable targets aligned to one canonical vertex array. Every target owns exactly one finite position delta per vertex; an optional normal-delta array, when present, must be complete and equally aligned.
+- `MorphState` owns exactly one finite semantic coefficient per target. Weights may be negative and are not probabilities, so no unit-sum rule is imposed.
+- A state with all-zero weights is semantically inactive. It preserves the canonical zero-copy object-space path when no other deformation/program is active and remains eligible for canonical painter/spatial planning.
+- The single shared object-space gateway now executes the exact order **canonical mesh → active morph accumulation → M106/M107 skinning → M35 VertexProgram**. Model direct/prepared/instance/list execution and every shadow capture continue through this one gateway.
+- Position deltas accumulate from the canonical source in double precision and convert to float only after the complete weighted sum. Non-finite or unsafe results outside the established `1e20` object-space envelope fail closed.
+- Fixed-light execution derives the already-existing shared `NormalBinding` whenever either active morphing or skinning needs it. Active lit targets must each own normal deltas; source normal plus weighted deltas is accumulated in double precision, required to remain finite/non-zero, normalized, and only then passed into skinning's inverse-transpose normal path.
+- Shadow preparation deliberately supplies no normal binding, so an otherwise valid position-only morph may still contribute the correct shadow silhouette without pretending to own lit normal semantics.
+- Morphing preserves triangle topology, material ownership, skin bindings, non-normal varyings, interpolation qualifiers, and every untouched varying value.
+- Constructor/prepared validation covers bounded target count, canonical vertex ownership, complete normal ownership, finite position/normal deltas, target/weight cardinality, null target ownership, finite weights, and model/morph vertex alignment.
+- Zero-weight fixed-light direct/prepared rendering is exact resolved RGB and per-sample depth/stencil equivalent to canonical rendering, remains exact after caller morph handles are released, and produces exact canonical directional-shadow depth.
+- One-hot and signed multi-target states are exact-equivalent to independently hand-morphed position+normal meshes for direct and prepared fixed-light execution.
+- A combined differential applies active morphing plus a non-trivial M108 skeletal pose and an M35 vertex program; exact framebuffer and directional-shadow equivalence against an independently pre-morphed mesh proves morph-before-skin-before-M35 ordering.
+- Lit execution with an active position target that lacks normal deltas rejects before framebuffer mutation, while the same prepared state remains valid for shadow capture and matches an independently morphed position-only silhouette.
+- Heterogeneous prepared-list preparation keeps its transaction semantics: a later finite target/weight combination whose resulting position exceeds the safe envelope rejects the complete list before an earlier valid entry owns RGB/depth/stencil.
+- Canonical painter sorting and prepared spatial planning reject active morph state because canonical bounds are stale; zero-weight morph state is not falsely classified as position-changing.
+- M117 remains programmatic single-state morph deformation only. It adds no glTF primitive `targets`, mesh/node default weights, animated `weights` channels, sparse morph accessors, tangent morphing, GPU execution, parallel path, or performance claim.
 
-- one immutable bounded morph target set aligned to one canonical mesh, with 1..8 targets and exactly one position delta per canonical vertex; an optional normal-delta channel may be owned per target only when it is complete and aligned with the renderer's existing normal binding;
-- one immutable morph state owns exactly one finite weight per target. Zero weights must preserve the canonical mesh path exactly; weights are semantic coefficients rather than probabilities and therefore need not sum to one;
-- the canonical object-space deformation order must become **canonical mesh → morph accumulation → M106/M107 skinning → M35 VertexProgram**. Camera, prepared/list, and all shadow paths must consume this one shared ordering rather than a morph-specific renderer;
-- position deltas accumulate deterministically in bounded precision before conversion back to finite safe float positions. Any non-finite delta/weight/result or unsafe final position must fail closed before downstream skinning/raster ownership;
-- when a fixed-light normal binding is active, targets with normal deltas must deform the source geometric normal in object space before skinning's joint inverse-transpose transform, then require a finite non-zero normalized result. A morph submission lacking complete normal semantics must reject lit execution rather than claim stale-normal correctness;
-- topology, UVs, non-normal varyings, interpolation qualifiers, indices, material ownership, and skin bindings must remain unchanged by morphing;
-- zero-weight morphing must be exact-equivalent to canonical direct/prepared/shadow rendering; one-hot and multi-target weighted states must be exact-equivalent to independently pre-deformed manual meshes, including morph-before-skin ordering under a non-trivial M108 pose;
-- heterogeneous prepared-list preparation must materialize every complete morphed/skinned/programmed mesh before the first draw, so a later invalid morph result rejects before earlier RGB/depth/stencil mutation;
-- canonical prepared sorting/spatial planning must reject active position-changing morph state until bounds are made deformation-aware;
-- M117 remains programmatic single-state morph deformation only. glTF primitive `targets`, mesh/node default weights, animated `weights` channels, sparse morph accessors, tangent morphing, GPU execution, parallel paths, and performance claims remain outside the milestone.
+## Promotion after Milestone 117
+
+Programmatic morph deformation now exists on the same canonical object-space execution chain as skinning and M35. The next highest-value gap is real-file ownership. Milestone 118 should add **strict bounded glTF static morph-target interoperability** by projecting glTF primitive targets and default weights onto M117 without introducing importer-only deformation semantics.
+
+A Milestone 118 slice should require:
+
+- extend the existing bounded one-primitive textual glTF importer with one to eight primitive `targets`; every target must contain float VEC3 `POSITION` deltas and may contain float VEC3 `NORMAL` deltas, while unsupported target attributes such as `TANGENT`, sparse accessors, normalized/component variants, extensions, or count mismatches fail closed;
+- target accessors must use the existing checked bufferView/accessor range and alignment machinery before typed reads; all delta floats must be finite, and every target must align exactly with canonical POSITION vertex count;
+- imported targets must become one ordinary `MorphTargetSet`; no glTF-specific deformation evaluator may exist;
+- support bounded default morph weights from mesh `weights` and the instantiating node `weights`, with node weights overriding mesh weights per glTF ownership. Missing defaults mean zero. Weight count must exactly match target count and every weight must be finite;
+- the imported result should expose/own the resulting default `MorphState` alongside the existing `ModelAsset`/rig state so callers can render immediately through M117's canonical morph→skin→M35 gateway;
+- static M110/M112/M114 animation loaders must preserve the same morph target/default-weight ownership rather than silently dropping it; animation `target.path = "weights"` remains rejected until a later milestone;
+- a deterministic fixture with at least two morph targets, child-before-root skeletal ordering, and a non-zero default morph state must render exact 4× fixed-light RGB/depth/stencil and directional-shadow depth against an independently constructed programmatic `ModelAsset + MorphTargetSet + MorphState + SkeletalRig` reference;
+- regressions must cover mesh defaults, node override precedence, zero defaults, target count/canonical count mismatch, unsupported target attributes, missing POSITION target data, non-finite deltas/weights, wrong weight cardinality, unsafe accessors, and lit targets whose active default state lacks complete NORMAL deltas;
+- canonical imported topology/material/skin ownership must stay unchanged; M118 adds no morph animation channel, tangent morphing, sparse target accessors, multiple primitives/skins, GLB/extensions/compression, GPU execution, or performance claim.

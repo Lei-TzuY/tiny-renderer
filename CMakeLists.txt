@@ -488,6 +488,10 @@ if(BUILD_TESTING)
     target_link_libraries(tiny_renderer_skinning_tests PRIVATE tiny_renderer)
     add_test(NAME tiny_renderer_skinning_tests COMMAND tiny_renderer_skinning_tests)
 
+    add_executable(tiny_renderer_morph_tests tests/test_morph.cpp)
+    target_link_libraries(tiny_renderer_morph_tests PRIVATE tiny_renderer)
+    add_test(NAME tiny_renderer_morph_tests COMMAND tiny_renderer_morph_tests)
+
     add_executable(tiny_renderer_gltf_loader_tests tests/test_gltf_loader.cpp)
     target_link_libraries(tiny_renderer_gltf_loader_tests PRIVATE tiny_renderer)
     target_compile_definitions(tiny_renderer_gltf_loader_tests PRIVATE

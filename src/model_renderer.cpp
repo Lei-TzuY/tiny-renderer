@@ -158,6 +158,11 @@ void validate_static_model_state(const ModelAsset& asset, const ModelRenderOptio
     detail::validate_vertex_program_static(
         options.vertex_program,
         detail::vertex_program_varying_count(asset.mesh));
+    if (options.morph_state) {
+        detail::validate_morph_mesh_ownership(
+            *options.morph_state,
+            asset.mesh);
+    }
     if (options.skinning_state && options.skeletal_pose_state) {
         throw std::invalid_argument(
             "model submission cannot bind direct skinning and a skeletal pose simultaneously");
@@ -222,10 +227,15 @@ bool same_normal_binding(
 }
 
 [[nodiscard]] std::optional<NormalBinding>
-skinning_normal_binding_for(
+deformation_normal_binding_for(
     const ModelAsset& asset,
     const ModelRenderOptions& options) {
-    if ((!options.skinning_state && !options.skeletal_pose_state)
+    const bool morph_active =
+        options.morph_state
+        && options.morph_state->has_active_weights();
+    if ((!morph_active
+         && !options.skinning_state
+         && !options.skeletal_pose_state)
         || !detail::fixed_lighting_enabled(
             options.directional_light,
             options.point_light,
@@ -258,8 +268,9 @@ prepare_model_object_space_mesh(
     const ModelAsset& asset,
     const ModelRenderOptions& options) {
     const std::optional<NormalBinding> normal_binding =
-        skinning_normal_binding_for(asset, options);
+        deformation_normal_binding_for(asset, options);
     return detail::prepare_object_space_mesh(
+        options.morph_state,
         options.skinning_state,
         options.skeletal_pose_state,
         options.vertex_program,

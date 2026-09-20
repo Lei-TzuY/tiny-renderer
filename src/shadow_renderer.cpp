@@ -124,6 +124,7 @@ std::vector<detail::PreparedObjectSpaceMesh> prepare_shadow_meshes(
     meshes.reserve(entries.size());
     for (const PreparedModelListEntry& entry : entries) {
         meshes.push_back(detail::prepare_object_space_mesh(
+            entry.prepared->options().morph_state,
             entry.prepared->options().skinning_state,
             entry.prepared->options().skeletal_pose_state,
             entry.prepared->options().vertex_program,
