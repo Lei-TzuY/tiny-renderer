@@ -106,6 +106,17 @@ OfflineSceneCamera camera_at(const Vec3& eye) {
     return camera;
 }
 
+bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
+    for (std::size_t row = 0U; row < 4U; ++row) {
+        for (std::size_t column = 0U; column < 4U; ++column) {
+            if (left(row, column) != right(row, column)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool exact_frame_equal(const Framebuffer& left, const Framebuffer& right) {
     if (left.width() != right.width()
         || left.height() != right.height()
@@ -1596,6 +1607,575 @@ void test_programmatic_transform_graph_validation_contract() {
 }
 
 
+
+void test_programmatic_sparse_transform_graph_clip_matches_dense_m100() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+
+    const OfflineSceneCamera camera_a =
+        camera_at({0.0F, 0.0F, 3.0F});
+    OfflineSceneCamera camera_b =
+        camera_at({0.45F, 0.15F, 3.0F});
+    camera_b.target = {0.10F, 0.0F, -0.10F};
+
+    const Mat4 pivot_a =
+        Mat4::translation({-0.20F, 0.0F, -0.30F})
+        * Mat4::scale({1.0F, 1.0F, 1.0F});
+    const Mat4 pivot_b =
+        Mat4::translation({0.20F, 0.0F, -0.30F})
+        * Mat4::scale({1.5F, 1.0F, 1.0F});
+    const Mat4 red_a = Mat4::translation({-0.25F, 0.0F, 0.0F});
+    const Mat4 red_b = Mat4::translation({0.15F, 0.0F, -0.05F});
+    const Mat4 green_a = Mat4::translation({0.30F, 0.0F, -0.10F});
+    const Mat4 green_b = Mat4::translation({-0.20F, 0.0F, -0.15F});
+
+    const std::array<OfflineSceneTransformGraphTimelineKeyframe, 2>
+        dense_keyframes{{
+            OfflineSceneTransformGraphTimelineKeyframe{
+                0.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera_a,
+                    {pivot_a, red_a, green_a}}},
+            OfflineSceneTransformGraphTimelineKeyframe{
+                2.0F,
+                OfflineSceneTransformGraphFrameState{
+                    camera_b,
+                    {pivot_b, red_b, green_b}}},
+        }};
+
+    std::optional<std::vector<OfflineSceneSparseCameraKeyframe>>
+        camera_track{std::vector<OfflineSceneSparseCameraKeyframe>{
+            {0.0F, camera_a},
+            {2.0F, camera_b},
+        }};
+    std::vector<OfflineSceneSparseTransformTrack> tracks{
+        OfflineSceneSparseTransformTrack{
+            0U,
+            {
+                {0.0F, pivot_a},
+                {2.0F, pivot_b},
+            }},
+        OfflineSceneSparseTransformTrack{
+            1U,
+            {
+                {0.0F, red_a},
+                {2.0F, red_b},
+            }},
+        OfflineSceneSparseTransformTrack{
+            2U,
+            {
+                {0.0F, green_a},
+                {2.0F, green_b},
+            }},
+    };
+    const OfflineSceneSparseTransformGraphClip sparse_clip(
+        0.0F,
+        2.0F,
+        camera_a,
+        {pivot_a, red_a, green_a},
+        std::move(camera_track),
+        std::move(tracks));
+
+    const std::array<float, 4> samples{{2.0F, 1.0F, 0.0F, 1.0F}};
+    const std::vector<OfflineSceneTransformGraphFrameState> sparse_frames =
+        sample_offline_sparse_transform_graph_clip(
+            sparse_clip,
+            samples);
+    check(
+        sparse_frames.size() == samples.size(),
+        "sparse clip preserves caller sample count and out-of-order request order");
+    if (sparse_frames.size() == samples.size()) {
+        check(
+            exact_matrix_equal(
+                sparse_frames[0].local_transforms[0],
+                pivot_b)
+                && exact_matrix_equal(
+                    sparse_frames[2].local_transforms[0],
+                    pivot_a),
+            "sparse clip exact endpoint requests preserve stored local state without interpolation arithmetic");
+        check(
+            exact_matrix_equal(
+                sparse_frames[1].local_transforms[0],
+                sparse_frames[3].local_transforms[0]),
+            "sparse clip repeated interior requests are deterministic");
+        check(
+            sparse_frames[0].camera.eye.x == camera_b.eye.x
+                && sparse_frames[2].camera.eye.x == camera_a.eye.x,
+            "sparse clip exact camera track endpoints preserve stored camera state");
+    }
+
+    const PreparedOfflineCameraSequence sparse_sequence =
+        prepare_offline_sparse_transform_graph_clip_sequence(
+            reusable,
+            graph,
+            sparse_clip,
+            samples);
+    const PreparedOfflineCameraSequence dense_sequence =
+        prepare_offline_transform_graph_timeline_sequence(
+            reusable,
+            graph,
+            dense_keyframes,
+            samples);
+
+    check(
+        sparse_sequence.frame_count() == dense_sequence.frame_count()
+            && sparse_sequence.frame_count() == samples.size(),
+        "aligned sparse and dense graph timelines prepare identical bounded sample ownership");
+    for (std::size_t index = 0U;
+         index < sparse_sequence.frame_count()
+             && index < dense_sequence.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(sparse_sequence, index),
+                render_prepared_camera_sequence_frame(dense_sequence, index)),
+            "aligned sparse clip is exact resolved/hash and 4x per-sample equivalent to dense M100");
+    }
+
+    // Only the transform-only pivot animates here. Render-bound descendants
+    // have no tracks and therefore must remain bit-exact in local space.
+    const Mat4 static_red = Mat4::translation({-0.30F, 0.0F, 0.0F});
+    const Mat4 static_green = Mat4::translation({0.30F, 0.0F, -0.15F});
+    const Mat4 moving_pivot_a =
+        Mat4::translation({-0.30F, 0.0F, -0.35F});
+    const Mat4 moving_pivot_b =
+        Mat4::translation({0.30F, 0.0F, -0.35F});
+    const OfflineSceneSparseTransformGraphClip pivot_only_clip(
+        0.0F,
+        2.0F,
+        camera_a,
+        {moving_pivot_a, static_red, static_green},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, moving_pivot_a},
+                    {2.0F, moving_pivot_b},
+                }},
+        });
+    const std::array<float, 3> pivot_samples{{0.0F, 1.0F, 2.0F}};
+    const auto pivot_sparse_frames =
+        sample_offline_sparse_transform_graph_clip(
+            pivot_only_clip,
+            pivot_samples);
+    check(
+        pivot_sparse_frames.size() == pivot_samples.size(),
+        "pivot-only sparse clip materializes every requested complete graph-local frame");
+    for (const OfflineSceneTransformGraphFrameState& frame :
+         pivot_sparse_frames) {
+        check(
+            frame.local_transforms.size() == 3U
+                && exact_matrix_equal(frame.local_transforms[1], static_red)
+                && exact_matrix_equal(frame.local_transforms[2], static_green),
+            "untracked sparse clip graph nodes remain bit-exact at every sample");
+    }
+
+    const Mat4 moving_pivot_mid =
+        Mat4::translation({0.0F, 0.0F, -0.35F});
+    const std::array<OfflineSceneTransformGraphFrameState, 3>
+        explicit_graph_frames{{
+            OfflineSceneTransformGraphFrameState{
+                camera_a,
+                {moving_pivot_a, static_red, static_green}},
+            OfflineSceneTransformGraphFrameState{
+                camera_a,
+                {moving_pivot_mid, static_red, static_green}},
+            OfflineSceneTransformGraphFrameState{
+                camera_a,
+                {moving_pivot_b, static_red, static_green}},
+        }};
+    const PreparedOfflineCameraSequence pivot_sparse_sequence =
+        prepare_offline_sparse_transform_graph_clip_sequence(
+            reusable,
+            graph,
+            pivot_only_clip,
+            pivot_samples);
+    const PreparedOfflineCameraSequence explicit_graph_sequence =
+        prepare_offline_transform_graph_sequence(
+            reusable,
+            graph,
+            explicit_graph_frames);
+    for (std::size_t index = 0U;
+         index < pivot_sparse_sequence.frame_count()
+             && index < explicit_graph_sequence.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    pivot_sparse_sequence, index),
+                render_prepared_camera_sequence_frame(
+                    explicit_graph_sequence, index)),
+            "pivot-only sparse clip exactly matches independently materialized M99 graph-local frames");
+    }
+    if (pivot_sparse_sequence.frame_count() == 3U) {
+        check(
+            !exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    pivot_sparse_sequence, 0U),
+                render_prepared_camera_sequence_frame(
+                    pivot_sparse_sequence, 2U)),
+            "one animated transform-only sparse track observably moves multiple render descendants");
+    }
+}
+
+void test_programmatic_sparse_transform_graph_clip_validation_contract() {
+    const OfflineSceneCamera camera = camera_at({0.0F, 0.0F, 3.0F});
+    const Mat4 identity = Mat4::identity();
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseTransformGraphClip(
+                1.0F,
+                1.0F,
+                camera,
+                {identity},
+                std::nullopt,
+                {});
+        },
+        "sparse clip rejects a non-increasing global time domain");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {
+                    Mat4::perspective(
+                        radians(55.0F),
+                        1.0F,
+                        0.1F,
+                        20.0F),
+                },
+                std::nullopt,
+                {});
+        },
+        "sparse clip rejects projective default local graph state");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            std::optional<std::vector<OfflineSceneSparseCameraKeyframe>>
+                short_camera{std::vector<OfflineSceneSparseCameraKeyframe>{
+                    {0.0F, camera},
+                }};
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity},
+                std::move(short_camera),
+                {});
+        },
+        "sparse clip rejects underspecified camera tracks");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            std::optional<std::vector<OfflineSceneSparseCameraKeyframe>>
+                incomplete_camera{std::vector<OfflineSceneSparseCameraKeyframe>{
+                    {0.5F, camera},
+                    {2.0F, camera},
+                }};
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity},
+                std::move(incomplete_camera),
+                {});
+        },
+        "sparse clip camera tracks must cover the complete clip domain");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity, identity},
+                std::nullopt,
+                {
+                    OfflineSceneSparseTransformTrack{
+                        0U,
+                        {{0.0F, identity}, {2.0F, identity}}},
+                    OfflineSceneSparseTransformTrack{
+                        0U,
+                        {{0.0F, identity}, {2.0F, identity}}},
+                });
+        },
+        "sparse clip rejects duplicate transform-track node ownership");
+
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity},
+                std::nullopt,
+                {
+                    OfflineSceneSparseTransformTrack{
+                        1U,
+                        {{0.0F, identity}, {2.0F, identity}}},
+                });
+        },
+        "sparse clip rejects transform tracks outside default graph-local ownership");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity},
+                std::nullopt,
+                {
+                    OfflineSceneSparseTransformTrack{
+                        0U,
+                        {{0.0F, identity}, {0.0F, identity}}},
+                });
+        },
+        "sparse clip rejects non-increasing transform-track key times");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity},
+                std::nullopt,
+                {
+                    OfflineSceneSparseTransformTrack{
+                        0U,
+                        {{0.5F, identity}, {2.0F, identity}}},
+                });
+        },
+        "sparse clip transform tracks must cover the complete clip domain");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            const Mat4 projective = Mat4::perspective(
+                radians(55.0F),
+                1.0F,
+                0.1F,
+                20.0F);
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                {identity},
+                std::nullopt,
+                {
+                    OfflineSceneSparseTransformTrack{
+                        0U,
+                        {{0.0F, identity}, {2.0F, projective}}},
+                });
+        },
+        "sparse clip rejects projective animated local state");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            std::vector<Mat4> defaults(17U, identity);
+            std::vector<OfflineSceneSparseTransformTrack> tracks;
+            tracks.reserve(17U);
+            for (std::size_t node = 0U; node < 17U; ++node) {
+                std::vector<OfflineSceneSparseTransformKeyframe> keys;
+                keys.reserve(detail::kMaxOfflineTimelineKeyframes);
+                for (std::size_t key = 0U;
+                     key < detail::kMaxOfflineTimelineKeyframes;
+                     ++key) {
+                    const float time = key + 1U
+                            == detail::kMaxOfflineTimelineKeyframes
+                        ? 2.0F
+                        : 2.0F * static_cast<float>(key)
+                            / static_cast<float>(
+                                detail::kMaxOfflineTimelineKeyframes - 1U);
+                    keys.push_back({time, identity});
+                }
+                tracks.push_back(
+                    OfflineSceneSparseTransformTrack{
+                        node,
+                        std::move(keys),
+                    });
+            }
+            (void)OfflineSceneSparseTransformGraphClip(
+                0.0F,
+                2.0F,
+                camera,
+                std::move(defaults),
+                std::nullopt,
+                std::move(tracks));
+        },
+        "sparse clip aggregate animated key ownership is explicitly bounded");
+
+    const OfflineSceneSparseTransformGraphClip valid_clip(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, identity},
+                    {2.0F, Mat4::translation({0.2F, 0.0F, 0.0F})},
+                }},
+        });
+
+    const std::array<float, 1> outside{{3.0F}};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)sample_offline_sparse_transform_graph_clip(
+                valid_clip,
+                outside);
+        },
+        "sparse clip rejects requested samples outside its global domain");
+
+    std::vector<float> too_many_samples(
+        detail::kMaxOfflineTimelineSamples + 1U,
+        0.0F);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)sample_offline_sparse_transform_graph_clip(
+                valid_clip,
+                too_many_samples);
+        },
+        "sparse clip enforces the established bounded requested sample count");
+
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::nullopt,
+        },
+        {1U, 2U});
+
+    const OfflineSceneSparseTransformGraphClip wrong_node_count_clip(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity},
+        std::nullopt,
+        {});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_sequence(
+                reusable,
+                graph,
+                wrong_node_count_clip,
+                std::span<const float>{});
+        },
+        "sparse clip default graph-local ownership must match immutable graph node count");
+
+    const float large =
+        std::numeric_limits<float>::max() / 4.0F;
+    Mat4 large_scale = Mat4::identity();
+    large_scale(0U, 0U) = large;
+    const OfflineSceneSparseTransformGraphClip overflow_clip(
+        0.0F,
+        2.0F,
+        camera,
+        {large_scale, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, large_scale},
+                    {2.0F, identity},
+                }},
+            OfflineSceneSparseTransformTrack{
+                1U,
+                {
+                    {0.0F, identity},
+                    {2.0F, large_scale},
+                }},
+        });
+    const std::array<float, 2> exact_then_interior{{0.0F, 1.0F}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_sequence(
+                reusable,
+                graph,
+                overflow_clip,
+                exact_then_interior);
+        },
+        "later sparse clip midpoint whose transform-only parent composition overflows rejects the complete batch");
+    check(
+        shade_calls == 0U,
+        "later sparse clip graph-composition failure occurs before any earlier sample fragment execution");
+
+    const PreparedOfflineCameraSequence empty =
+        prepare_offline_sparse_transform_graph_clip_sequence(
+            reusable,
+            graph,
+            valid_clip,
+            std::span<const float>{});
+    check(
+        empty.frame_count() == 0U,
+        "valid sparse clip accepts an empty requested sample span after complete clip and graph validation");
+}
+
 void test_programmatic_transform_graph_timeline_matches_m97_and_local_reference() {
     OfflineRenderSettings settings;
     settings.width = 61U;
@@ -2603,6 +3183,8 @@ int main() {
     test_programmatic_hierarchy_validation_contract();
     test_programmatic_transform_graph_matches_hierarchy_and_group_reference();
     test_programmatic_transform_graph_validation_contract();
+    test_programmatic_sparse_transform_graph_clip_matches_dense_m100();
+    test_programmatic_sparse_transform_graph_clip_validation_contract();
     test_programmatic_transform_graph_timeline_matches_m97_and_local_reference();
     test_programmatic_transform_graph_timeline_validation_contract();
     test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
