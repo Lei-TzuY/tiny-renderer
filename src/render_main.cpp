@@ -176,6 +176,7 @@ struct ParsedArguments {
     std::optional<std::filesystem::path> camera_sequence_path{};
     std::optional<std::filesystem::path> frame_sequence_path{};
     std::optional<std::filesystem::path> timeline_sequence_path{};
+    std::optional<std::filesystem::path> hierarchical_timeline_sequence_path{};
     std::optional<std::filesystem::path> environment_path{};
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
@@ -202,6 +203,7 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_camera_sequence = false;
     bool saw_frame_sequence = false;
     bool saw_timeline_sequence = false;
+    bool saw_hierarchical_timeline_sequence = false;
     bool saw_environment = false;
     bool saw_intensity = false;
     bool saw_yaw = false;
@@ -284,6 +286,19 @@ ParsedArguments parse_arguments(int argc, char** argv) {
                 std::filesystem::path(require_value("--timeline-sequence"));
             if (parsed.timeline_sequence_path->empty()) {
                 throw std::invalid_argument("--timeline-sequence requires a non-empty path");
+            }
+        } else if (token == "--hierarchy-timeline-sequence") {
+            if (saw_hierarchical_timeline_sequence) {
+                throw std::invalid_argument(
+                    "--hierarchy-timeline-sequence may be specified at most once");
+            }
+            saw_hierarchical_timeline_sequence = true;
+            parsed.hierarchical_timeline_sequence_path =
+                std::filesystem::path(
+                    require_value("--hierarchy-timeline-sequence"));
+            if (parsed.hierarchical_timeline_sequence_path->empty()) {
+                throw std::invalid_argument(
+                    "--hierarchy-timeline-sequence requires a non-empty path");
             }
         } else if (token == "--environment") {
             if (saw_environment) {
@@ -423,10 +438,12 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     const unsigned sequence_mode_count =
         (parsed.camera_sequence_path ? 1U : 0U)
         + (parsed.frame_sequence_path ? 1U : 0U)
-        + (parsed.timeline_sequence_path ? 1U : 0U);
+        + (parsed.timeline_sequence_path ? 1U : 0U)
+        + (parsed.hierarchical_timeline_sequence_path ? 1U : 0U);
     if (sequence_mode_count > 1U) {
         throw std::invalid_argument(
-            "--camera-sequence, --frame-sequence, and --timeline-sequence are mutually exclusive");
+            "--camera-sequence, --frame-sequence, --timeline-sequence, and "
+            "--hierarchy-timeline-sequence are mutually exclusive");
     }
     if ((parsed.environment_intensity || parsed.environment_yaw || parsed.environment_mip)
         && !parsed.environment_path) {
@@ -500,6 +517,7 @@ void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.(obj|trscene) OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
            " [--camera-sequence FILE] [--frame-sequence FILE] [--timeline-sequence FILE]"
+           " [--hierarchy-timeline-sequence FILE]"
            " [--texture-mip base|nearest|linear] [--texture-anisotropy 1|2|4]"
            " [--display-exposure VALUE] [--output-transfer linear|srgb]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
@@ -757,7 +775,8 @@ int main(int argc, char** argv) {
 
             if (parsed.camera_sequence_path
                 || parsed.frame_sequence_path
-                || parsed.timeline_sequence_path) {
+                || parsed.timeline_sequence_path
+                || parsed.hierarchical_timeline_sequence_path) {
                 if (manifest.ordering != tiny_renderer::OfflineSceneOrdering::MixedTransparency) {
                     throw std::invalid_argument(
                         "sequence rendering requires .trscene ordering mixed-transparency");
@@ -771,6 +790,17 @@ int main(int argc, char** argv) {
                     tiny_renderer::prepare_offline_mixed_scene(
                         scene_entries, parsed.settings);
                 const tiny_renderer::PreparedOfflineCameraSequence sequence = [&] {
+                    if (parsed.hierarchical_timeline_sequence_path) {
+                        tiny_renderer::OfflineSceneHierarchicalTimelineFile timeline =
+                            tiny_renderer::load_offline_hierarchical_timeline_sequence_file(
+                                *parsed.hierarchical_timeline_sequence_path,
+                                scene_entries.size());
+                        return tiny_renderer::prepare_offline_hierarchy_timeline_sequence(
+                            prepared_scene,
+                            timeline.hierarchy,
+                            timeline.keyframes,
+                            timeline.sample_times);
+                    }
                     if (parsed.timeline_sequence_path) {
                         const tiny_renderer::OfflineSceneTimelineFile timeline =
                             tiny_renderer::load_offline_timeline_sequence_file(
@@ -821,7 +851,9 @@ int main(int argc, char** argv) {
                     << " samples=" << static_cast<unsigned>(parsed.settings.sample_count)
                     << " source=scene models=" << scene_entries.size()
                     << " ordering=mixed-transparency ";
-                if (parsed.timeline_sequence_path) {
+                if (parsed.hierarchical_timeline_sequence_path) {
+                    std::cout << "hierarchy-timeline-samples=";
+                } else if (parsed.timeline_sequence_path) {
                     std::cout << "timeline-samples=";
                 } else if (parsed.frame_sequence_path) {
                     std::cout << "frames=";
