@@ -750,6 +750,19 @@ void test_strict_bounded_hierarchical_timeline_loader() {
         "hierarchical sidecar rejects out-of-range parent references");
 
     {
+        std::ofstream signed_index(root / "signed_parent_index.trhtimeline");
+        signed_index
+            << "tiny-renderer-hierarchy-timeline-v1\n"
+            << "parent -1 root\n";
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)load_offline_hierarchical_timeline_sequence_file(
+                root / "signed_parent_index.trhtimeline", 3U);
+        },
+        "hierarchical sidecar index grammar rejects signed integer tokens");
+
+    {
         std::ofstream self_parent(root / "self_parent.trhtimeline");
         self_parent
             << "tiny-renderer-hierarchy-timeline-v1\n"
