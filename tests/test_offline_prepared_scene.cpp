@@ -2177,6 +2177,443 @@ void test_programmatic_sparse_transform_graph_clip_validation_contract() {
         "valid sparse clip accepts an empty requested sample span after complete clip and graph validation");
 }
 
+
+void test_programmatic_sparse_clip_blend_endpoints_and_local_reference() {
+    OfflineRenderSettings settings;
+    settings.width = 61U;
+    settings.height = 47U;
+    settings.sample_count = SampleCount::Four;
+    settings.clear_color = {0.01F, 0.015F, 0.02F};
+
+    const ModelAsset red = triangle_asset(
+        {0.85F, 0.15F, 0.10F},
+        {0.0F, 0.0F, 0.0F});
+    const ModelAsset green = triangle_asset(
+        {0.10F, 0.75F, 0.20F},
+        {0.0F, 0.0F, 0.0F});
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &red,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &green,
+            Mat4::identity(),
+            {},
+            OfflineSceneTransparencyMode::SourceAlpha},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::optional<std::size_t>{0U},
+        },
+        {1U, 2U});
+
+    OfflineSceneCamera left_camera =
+        camera_at({-0.30F, 0.0F, 3.0F});
+    OfflineSceneCamera right_camera =
+        camera_at({0.30F, 0.0F, 3.0F});
+
+    const Mat4 red_local =
+        Mat4::translation({-0.28F, 0.0F, 0.0F});
+    const Mat4 green_local =
+        Mat4::translation({0.28F, 0.0F, -0.12F});
+
+    const Mat4 left_pivot_0 =
+        Mat4::translation({-0.60F, 0.0F, -0.30F});
+    const Mat4 left_pivot_2 =
+        Mat4::translation({-0.20F, 0.0F, -0.30F});
+    const Mat4 right_pivot_0 =
+        Mat4::translation({0.20F, 0.0F, -0.30F});
+    const Mat4 right_pivot_2 =
+        Mat4::translation({0.60F, 0.0F, -0.30F});
+
+    const OfflineSceneSparseTransformGraphClip left_clip(
+        0.0F,
+        2.0F,
+        left_camera,
+        {left_pivot_0, red_local, green_local},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, left_pivot_0},
+                    {2.0F, left_pivot_2},
+                }},
+        });
+    const OfflineSceneSparseTransformGraphClip right_clip(
+        0.0F,
+        2.0F,
+        right_camera,
+        {right_pivot_0, red_local, green_local},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, right_pivot_0},
+                    {2.0F, right_pivot_2},
+                }},
+        });
+
+    const std::array<float, 4> samples{{2.0F, 1.0F, 0.0F, 1.0F}};
+
+    const PreparedOfflineCameraSequence left_direct =
+        prepare_offline_sparse_transform_graph_clip_sequence(
+            reusable,
+            graph,
+            left_clip,
+            samples);
+    const PreparedOfflineCameraSequence right_direct =
+        prepare_offline_sparse_transform_graph_clip_sequence(
+            reusable,
+            graph,
+            right_clip,
+            samples);
+    const PreparedOfflineCameraSequence weight_zero =
+        prepare_offline_sparse_transform_graph_clip_blend_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            samples,
+            0.0F);
+    const PreparedOfflineCameraSequence weight_one =
+        prepare_offline_sparse_transform_graph_clip_blend_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            samples,
+            1.0F);
+
+    check(
+        weight_zero.frame_count() == samples.size()
+            && weight_one.frame_count() == samples.size(),
+        "two-clip blend endpoint weights preserve caller sample ownership");
+    for (std::size_t index = 0U; index < samples.size(); ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(weight_zero, index),
+                render_prepared_camera_sequence_frame(left_direct, index)),
+            "two-clip weight zero is exact source-left passthrough");
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(weight_one, index),
+                render_prepared_camera_sequence_frame(right_direct, index)),
+            "two-clip weight one is exact source-right passthrough");
+    }
+
+    const float weight = 0.25F;
+    const std::vector<OfflineSceneTransformGraphFrameState> blended_frames =
+        blend_offline_sparse_transform_graph_clips(
+            left_clip,
+            right_clip,
+            samples,
+            weight);
+    check(
+        blended_frames.size() == samples.size(),
+        "two-clip interior blend preserves repeated and out-of-order sample count");
+    if (blended_frames.size() == samples.size()) {
+        const std::array<float, 4> expected_pivot_x{{
+            0.0F,
+            -0.20F,
+            -0.40F,
+            -0.20F,
+        }};
+        for (std::size_t index = 0U; index < samples.size(); ++index) {
+            check(
+                std::fabs(
+                    blended_frames[index].local_transforms[0](0U, 3U)
+                    - expected_pivot_x[index]) < 1.0e-6F,
+                "two-clip interior blend combines transform-only pivot in local space");
+            check(
+                exact_matrix_equal(
+                    blended_frames[index].local_transforms[1],
+                    red_local)
+                    && exact_matrix_equal(
+                        blended_frames[index].local_transforms[2],
+                        green_local),
+                "identical render-bound child locals remain exact through two-clip blend");
+        }
+        check(
+            exact_matrix_equal(
+                blended_frames[1].local_transforms[0],
+                blended_frames[3].local_transforms[0]),
+            "two-clip repeated interior sample is deterministic");
+    }
+
+    // Build an independent M99 reference from the two already-established M102
+    // source samplers plus the pre-M103 interpolation primitives. This preserves
+    // their actual float semantics while independently checking that M103
+    // blends complete local frames before graph composition.
+    const std::vector<OfflineSceneTransformGraphFrameState> left_sampled =
+        sample_offline_sparse_transform_graph_clip(left_clip, samples);
+    const std::vector<OfflineSceneTransformGraphFrameState> right_sampled =
+        sample_offline_sparse_transform_graph_clip(right_clip, samples);
+    std::vector<OfflineSceneTransformGraphFrameState> reference_frames;
+    reference_frames.reserve(samples.size());
+    for (std::size_t frame_index = 0U;
+         frame_index < samples.size();
+         ++frame_index) {
+        OfflineSceneTransformGraphFrameState reference;
+        reference.camera = detail::interpolate_offline_timeline_camera(
+            left_sampled[frame_index].camera,
+            right_sampled[frame_index].camera,
+            weight);
+        reference.local_transforms.reserve(3U);
+        for (std::size_t local_index = 0U; local_index < 3U; ++local_index) {
+            reference.local_transforms.push_back(
+                detail::interpolate_offline_timeline_affine(
+                    left_sampled[frame_index].local_transforms[local_index],
+                    right_sampled[frame_index].local_transforms[local_index],
+                    weight));
+        }
+        reference_frames.push_back(std::move(reference));
+    }
+
+    const PreparedOfflineCameraSequence blended_sequence =
+        prepare_offline_sparse_transform_graph_clip_blend_sequence(
+            reusable,
+            graph,
+            left_clip,
+            right_clip,
+            samples,
+            weight);
+    const PreparedOfflineCameraSequence reference_sequence =
+        prepare_offline_transform_graph_sequence(
+            reusable,
+            graph,
+            reference_frames);
+
+    check(
+        blended_sequence.frame_count() == reference_sequence.frame_count(),
+        "two-clip local blend and independent M99 reference prepare equal frame counts");
+    for (std::size_t index = 0U;
+         index < blended_sequence.frame_count()
+             && index < reference_sequence.frame_count();
+         ++index) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    blended_sequence,
+                    index),
+                render_prepared_camera_sequence_frame(
+                    reference_sequence,
+                    index)),
+            "two-clip interior blend is exact resolved/hash and 4x per-sample equivalent to local-blend-then-M99 reference");
+    }
+    if (blended_sequence.frame_count() == samples.size()) {
+        check(
+            exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    blended_sequence,
+                    1U),
+                render_prepared_camera_sequence_frame(
+                    blended_sequence,
+                    3U)),
+            "two-clip repeated interior request renders deterministically");
+        check(
+            !exact_frame_equal(
+                render_prepared_camera_sequence_frame(
+                    blended_sequence,
+                    0U),
+                render_prepared_camera_sequence_frame(
+                    blended_sequence,
+                    2U)),
+            "blended transform-only pivot observably moves multiple render descendants");
+    }
+}
+
+void test_programmatic_sparse_clip_blend_validation_contract() {
+    const OfflineSceneCamera camera =
+        camera_at({0.0F, 0.0F, 3.0F});
+    const Mat4 identity = Mat4::identity();
+
+    const OfflineSceneSparseTransformGraphClip clip_three_nodes(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {});
+    const OfflineSceneSparseTransformGraphClip clip_two_nodes(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity},
+        std::nullopt,
+        {});
+
+    const std::array<float, 1> sample_zero{{0.0F}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clips(
+                clip_three_nodes,
+                clip_three_nodes,
+                sample_zero,
+                std::numeric_limits<float>::quiet_NaN());
+        },
+        "two-clip blend rejects non-finite blend weights");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clips(
+                clip_three_nodes,
+                clip_three_nodes,
+                sample_zero,
+                -0.01F);
+        },
+        "two-clip blend rejects weights below zero");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clips(
+                clip_three_nodes,
+                clip_three_nodes,
+                sample_zero,
+                1.01F);
+        },
+        "two-clip blend rejects weights above one");
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clips(
+                clip_three_nodes,
+                clip_two_nodes,
+                std::span<const float>{},
+                0.5F);
+        },
+        "two-clip blend rejects unequal graph-local ownership even for empty requests");
+
+    const OfflineSceneSparseTransformGraphClip shifted_domain_clip(
+        1.0F,
+        3.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {});
+    const std::array<float, 1> left_only_time{{0.5F}};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)blend_offline_sparse_transform_graph_clips(
+                clip_three_nodes,
+                shifted_domain_clip,
+                left_only_time,
+                0.0F);
+        },
+        "two-clip endpoint passthrough still validates requested time against both clip domains");
+
+    OfflineRenderSettings settings;
+    settings.width = 31U;
+    settings.height = 31U;
+    settings.sample_count = SampleCount::Four;
+
+    std::size_t shade_calls = 0U;
+    const ModelAsset asset = triangle_asset(
+        {0.7F, 0.2F, 0.1F},
+        {0.0F, 0.0F, 0.0F});
+    ModelRenderOptions options;
+    options.fragment_program =
+        std::make_shared<CountingFragmentProgram>(&shade_calls);
+    const std::array<OfflineSceneEntry, 2> entries{{
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+        OfflineSceneEntry{
+            &asset,
+            Mat4::identity(),
+            options,
+            OfflineSceneTransparencyMode::Opaque},
+    }};
+    const PreparedOfflineMixedScene reusable =
+        prepare_offline_mixed_scene(entries, settings);
+    const OfflineSceneTransformGraph graph(
+        {
+            std::nullopt,
+            std::optional<std::size_t>{0U},
+            std::nullopt,
+        },
+        {1U, 2U});
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_sequence(
+                reusable,
+                graph,
+                clip_two_nodes,
+                clip_two_nodes,
+                std::span<const float>{},
+                0.5F);
+        },
+        "two-clip blend local ownership must match immutable graph node count");
+
+    const float large =
+        std::numeric_limits<float>::max() / 4.0F;
+    Mat4 large_scale = Mat4::identity();
+    large_scale(0U, 0U) = large;
+
+    const OfflineSceneSparseTransformGraphClip left_overflow_source(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                0U,
+                {
+                    {0.0F, identity},
+                    {2.0F, large_scale},
+                }},
+        });
+    const OfflineSceneSparseTransformGraphClip right_overflow_source(
+        0.0F,
+        2.0F,
+        camera,
+        {identity, identity, identity},
+        std::nullopt,
+        {
+            OfflineSceneSparseTransformTrack{
+                1U,
+                {
+                    {0.0F, identity},
+                    {2.0F, large_scale},
+                }},
+        });
+    const std::array<float, 2> safe_then_overflow{{0.0F, 2.0F}};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)prepare_offline_sparse_transform_graph_clip_blend_sequence(
+                reusable,
+                graph,
+                left_overflow_source,
+                right_overflow_source,
+                safe_then_overflow,
+                0.5F);
+        },
+        "later two-clip local blend whose parent-child composition overflows rejects the complete batch");
+    check(
+        shade_calls == 0U,
+        "later two-clip composition failure occurs before any earlier safe sample fragment execution");
+
+    const PreparedOfflineCameraSequence empty =
+        prepare_offline_sparse_transform_graph_clip_blend_sequence(
+            reusable,
+            graph,
+            clip_three_nodes,
+            clip_three_nodes,
+            std::span<const float>{},
+            0.5F);
+    check(
+        empty.frame_count() == 0U,
+        "valid two-clip blend accepts an empty requested sample span after complete ownership validation");
+}
+
 void test_programmatic_transform_graph_timeline_matches_m97_and_local_reference() {
     OfflineRenderSettings settings;
     settings.width = 61U;
@@ -3186,6 +3623,8 @@ int main() {
     test_programmatic_transform_graph_validation_contract();
     test_programmatic_sparse_transform_graph_clip_matches_dense_m100();
     test_programmatic_sparse_transform_graph_clip_validation_contract();
+    test_programmatic_sparse_clip_blend_endpoints_and_local_reference();
+    test_programmatic_sparse_clip_blend_validation_contract();
     test_programmatic_transform_graph_timeline_matches_m97_and_local_reference();
     test_programmatic_transform_graph_timeline_validation_contract();
     test_programmatic_hierarchical_timeline_matches_m94_and_local_space_reference();
