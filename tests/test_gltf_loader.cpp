@@ -567,6 +567,34 @@ void test_binary_range_joint_weight_and_inverse_bind_fail_closed() {
     }
 
     {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 4, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_case("accessor_overflow", json, valid_bytes));
+            },
+            "accessor element range beyond its bufferView is rejected before typed reads");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 0, \"byteOffset\": 2, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_case("accessor_alignment", json, valid_bytes));
+            },
+            "misaligned float accessor is rejected before typed reads");
+    }
+
+    {
         std::vector<std::uint8_t> bytes = valid_bytes;
         bytes[72U] = 7U;
         check_throws<GltfLoadError>(
