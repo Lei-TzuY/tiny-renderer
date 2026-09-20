@@ -2427,6 +2427,586 @@ void test_skeletal_trs_later_world_overflow_is_batch_fail_closed() {
     }
 }
 
+
+void test_skeletal_trs_blend_validation_contract() {
+    const auto make_rig = [](float inverse_offset, std::size_t binding_count) {
+        std::vector<VertexSkinBinding> bindings;
+        for (std::size_t index = 0U; index < binding_count; ++index) {
+            bindings.push_back(
+                binding({SkinInfluence{0U, 1.0F}}));
+        }
+        return std::make_shared<const SkeletalRig>(
+            std::vector<std::optional<std::size_t>>{
+                std::nullopt,
+            },
+            std::vector<Mat4>{
+                Mat4::translation({inverse_offset, 0.0F, 0.0F}),
+            },
+            std::move(bindings));
+    };
+
+    const auto left_rig = make_rig(0.0F, 1U);
+    const auto equivalent_rig = make_rig(0.0F, 1U);
+    const auto different_inverse_rig = make_rig(0.125F, 1U);
+    const auto different_binding_rig = make_rig(0.0F, 2U);
+
+    const std::vector<Mat4> prefix{
+        Mat4::translation({0.125F, 0.0F, 0.0F}),
+    };
+    const SkeletalTrsClip left(
+        left_rig,
+        0.0F,
+        2.0F,
+        {SkeletalTrs{}},
+        prefix,
+        {},
+        {},
+        {});
+    const SkeletalTrsClip right(
+        equivalent_rig,
+        10.0F,
+        14.0F,
+        {SkeletalTrs{}},
+        prefix,
+        {},
+        {},
+        {});
+
+    const std::array<SkeletalTrsBlendRequest, 1> valid{{
+        {0.0F, 10.0F, 0.5F},
+    }};
+    const auto valid_result =
+        blend_skeletal_trs_clips(left, right, valid);
+    check(
+        valid_result.size() == 1U,
+        "semantic TRS blend accepts structurally equivalent rigs held by different immutable objects");
+
+    {
+        const SkeletalTrsClip incompatible(
+            different_inverse_rig,
+            10.0F,
+            14.0F,
+            {SkeletalTrs{}},
+            prefix,
+            {},
+            {},
+            {});
+        const std::array<SkeletalTrsBlendRequest, 0> empty{};
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)blend_skeletal_trs_clips(
+                    left,
+                    incompatible,
+                    empty);
+            },
+            "semantic TRS blend rejects incompatible inverse-bind ownership even for an empty request batch");
+    }
+
+    {
+        const SkeletalTrsClip incompatible(
+            different_binding_rig,
+            10.0F,
+            14.0F,
+            {SkeletalTrs{}},
+            prefix,
+            {},
+            {},
+            {});
+        const std::array<SkeletalTrsBlendRequest, 0> empty{};
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)blend_skeletal_trs_clips(
+                    left,
+                    incompatible,
+                    empty);
+            },
+            "semantic TRS blend rejects incompatible vertex-binding ownership");
+    }
+
+    {
+        const SkeletalTrsClip incompatible(
+            equivalent_rig,
+            10.0F,
+            14.0F,
+            {SkeletalTrs{}},
+            {
+                Mat4::translation({0.25F, 0.0F, 0.0F}),
+            },
+            {},
+            {},
+            {});
+        const std::array<SkeletalTrsBlendRequest, 0> empty{};
+        check_throws<std::invalid_argument>(
+            [&] {
+                (void)blend_skeletal_trs_clips(
+                    left,
+                    incompatible,
+                    empty);
+            },
+            "semantic TRS blend rejects mismatched immutable local prefixes");
+    }
+
+    const std::array<SkeletalTrsBlendRequest, 1> negative_weight{{
+        {0.0F, 10.0F, -0.01F},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_skeletal_trs_clips(
+                left,
+                right,
+                negative_weight);
+        },
+        "semantic TRS blend rejects negative weight");
+
+    const std::array<SkeletalTrsBlendRequest, 1> excessive_weight{{
+        {0.0F, 10.0F, 1.01F},
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_skeletal_trs_clips(
+                left,
+                right,
+                excessive_weight);
+        },
+        "semantic TRS blend rejects weight above one");
+
+    const std::array<SkeletalTrsBlendRequest, 1> nonfinite_weight{{
+        {
+            0.0F,
+            10.0F,
+            std::numeric_limits<float>::quiet_NaN(),
+        },
+    }};
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_skeletal_trs_clips(
+                left,
+                right,
+                nonfinite_weight);
+        },
+        "semantic TRS blend rejects non-finite weight");
+
+    std::vector<SkeletalTrsBlendRequest> too_many(
+        kMaxSkeletalTrsSamples + 1U,
+        SkeletalTrsBlendRequest{0.0F, 10.0F, 0.5F});
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)blend_skeletal_trs_clips(
+                left,
+                right,
+                too_many);
+        },
+        "semantic TRS blend bounds output request count");
+
+    const std::array<SkeletalTrsBlendRequest, 2>
+        invalid_later_right_time{{
+            {0.0F, 10.0F, 0.0F},
+            {1.0F, 99.0F, 0.0F},
+        }};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)blend_skeletal_trs_clips(
+                left,
+                right,
+                invalid_later_right_time);
+        },
+        "semantic TRS blend validates complete right source batch even when every request selects the left endpoint");
+
+    const std::array<SkeletalTrsBlendRequest, 2>
+        invalid_later_left_time{{
+            {0.0F, 10.0F, 1.0F},
+            {-1.0F, 11.0F, 1.0F},
+        }};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)blend_skeletal_trs_clips(
+                left,
+                right,
+                invalid_later_left_time);
+        },
+        "semantic TRS blend validates complete left source batch even when every request selects the right endpoint");
+}
+
+void test_skeletal_trs_blend_matches_independent_semantic_reference() {
+    const ModelAsset source = model_from_mesh(lit_base_mesh());
+    const std::vector<std::optional<std::size_t>> parents{
+        1U,
+        std::nullopt,
+    };
+    const std::vector<Mat4> inverse_binds{
+        Mat4::identity(),
+        Mat4::identity(),
+    };
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
+        binding({SkinInfluence{0U, 1.0F}}),
+        binding({
+            SkinInfluence{0U, 0.5F},
+            SkinInfluence{1U, 0.5F},
+        }),
+    };
+    const auto left_rig =
+        std::make_shared<const SkeletalRig>(
+            parents,
+            inverse_binds,
+            bindings);
+    const auto right_rig =
+        std::make_shared<const SkeletalRig>(
+            parents,
+            inverse_binds,
+            bindings);
+
+    const std::vector<Mat4> prefixes{
+        Mat4::translation({0.05F, 0.0F, 0.0F}),
+        Mat4::translation({0.10F, 0.0F, 0.0F}),
+    };
+    const Quaternion quarter = quarter_turn_z_quaternion();
+    const Quaternion antipodal{
+        -quarter.x,
+        -quarter.y,
+        -quarter.z,
+        -quarter.w,
+    };
+
+    SkeletalTrs left_child;
+    SkeletalTrs left_parent;
+    left_parent.rotation = quarter;
+    SkeletalTrs right_child;
+    SkeletalTrs right_parent;
+    right_parent.rotation = antipodal;
+
+    const SkeletalTrsClip left(
+        left_rig,
+        0.0F,
+        2.0F,
+        {left_child, left_parent},
+        prefixes,
+        {
+            {
+                0U,
+                {
+                    {0.0F, {0.0F, 0.0F, 0.0F}},
+                    {2.0F, {0.4F, 0.0F, 0.0F}},
+                },
+            },
+        },
+        {},
+        {
+            {
+                1U,
+                {
+                    {0.0F, {1.0F, 1.0F, 1.0F}},
+                    {2.0F, {1.4F, 1.0F, 1.0F}},
+                },
+            },
+        });
+
+    const SkeletalTrsClip right(
+        right_rig,
+        10.0F,
+        14.0F,
+        {right_child, right_parent},
+        prefixes,
+        {
+            {
+                0U,
+                {
+                    {10.0F, {-0.2F, 0.0F, 0.0F}},
+                    {14.0F, {0.2F, 0.0F, 0.0F}},
+                },
+            },
+        },
+        {},
+        {
+            {
+                1U,
+                {
+                    {10.0F, {0.8F, 1.0F, 1.0F}},
+                    {14.0F, {1.2F, 1.0F, 1.0F}},
+                },
+            },
+        });
+
+    const std::array<SkeletalTrsBlendRequest, 5> requests{{
+        {0.0F, 10.0F, 0.0F},
+        {2.0F, 14.0F, 1.0F},
+        {1.0F, 12.0F, 0.5F},
+        {1.5F, 11.0F, 0.25F},
+        {1.0F, 12.0F, 0.5F},
+    }};
+    const auto blended =
+        blend_skeletal_trs_clips(left, right, requests);
+    check(
+        blended.size() == requests.size(),
+        "semantic TRS blend preserves caller request order and multiplicity");
+
+    const std::array<float, 1> left_endpoint_time{0.0F};
+    const std::array<float, 1> right_endpoint_time{14.0F};
+    const auto left_endpoint = left.sample(left_endpoint_time);
+    const auto right_endpoint = right.sample(right_endpoint_time);
+    check(
+        exact_pose_equal(
+            *blended[0],
+            *left_endpoint.front()),
+        "semantic TRS weight zero preserves exact sampled left pose without blend arithmetic");
+    check(
+        exact_pose_equal(
+            *blended[1],
+            *right_endpoint.front()),
+        "semantic TRS weight one preserves exact sampled right pose without blend arithmetic");
+    check(
+        exact_pose_equal(*blended[2], *blended[4]),
+        "repeated semantic TRS blend requests are deterministic");
+
+    std::vector<SkeletalPoseStatePtr> manual;
+    manual.reserve(requests.size());
+    for (const SkeletalTrsBlendRequest& request : requests) {
+        const float left_translation =
+            0.0F + (0.4F - 0.0F)
+                * (request.left_time / 2.0F);
+        const float right_translation =
+            -0.2F + (0.2F - (-0.2F))
+                * ((request.right_time - 10.0F) / 4.0F);
+        const float blended_translation =
+            request.weight == 0.0F
+                ? left_translation
+                : (request.weight == 1.0F
+                    ? right_translation
+                    : left_translation
+                        + (right_translation - left_translation)
+                            * request.weight);
+
+        const float left_scale =
+            1.0F + (1.4F - 1.0F)
+                * (request.left_time / 2.0F);
+        const float right_scale =
+            0.8F + (1.2F - 0.8F)
+                * ((request.right_time - 10.0F) / 4.0F);
+        const float blended_scale =
+            request.weight == 0.0F
+                ? left_scale
+                : (request.weight == 1.0F
+                    ? right_scale
+                    : left_scale
+                        + (right_scale - left_scale)
+                            * request.weight);
+
+        const Mat4 child_local =
+            prefixes[0]
+            * Mat4::translation({
+                blended_translation,
+                0.0F,
+                0.0F,
+            });
+        const Mat4 parent_local =
+            prefixes[1]
+            * independent_quaternion_matrix(quarter)
+            * Mat4::scale({
+                blended_scale,
+                1.0F,
+                1.0F,
+            });
+        manual.push_back(
+            std::make_shared<const SkeletalPoseState>(
+                left_rig,
+                std::vector<Mat4>{
+                    child_local,
+                    parent_local,
+                }));
+        (void)manual.back()->resolve();
+    }
+
+    for (std::size_t index = 0U;
+         index < blended.size();
+         ++index) {
+        check(
+            exact_pose_equal(
+                *blended[index],
+                *manual[index]),
+            "semantic TRS two-clip blend matches independent local T/S plus antipodal-shortest-path quaternion reference");
+    }
+
+    ModelRenderOptions blended_options;
+    blended_options.directional_light =
+        lit_directional_light(
+            normalize(Vec3{0.5F, 0.75F, 0.25F}));
+    blended_options.skeletal_pose_state = blended[2];
+
+    ModelRenderOptions manual_options =
+        blended_options;
+    manual_options.skeletal_pose_state = manual[2];
+
+    Framebuffer blended_fb(55U, 55U, SampleCount::Four);
+    Framebuffer manual_fb(55U, 55U, SampleCount::Four);
+    blended_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 4U);
+    manual_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 4U);
+    draw_model_asset(
+        blended_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        blended_options);
+    draw_model_asset(
+        manual_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        blended_fb,
+        manual_fb,
+        "semantic TRS blended pose matches independent normal-aware M108 fixed-light rendering");
+
+    const PreparedModelSubmission blended_prepared =
+        prepare_model_asset(source, blended_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(source, manual_options);
+    const std::array<PreparedModelListEntry, 1> blended_entry{{
+        {&blended_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto blended_shadow =
+        render_directional_shadow_map(
+            blended_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                43U,
+                43U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto manual_shadow =
+        render_directional_shadow_map(
+            manual_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                43U,
+                43U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < blended_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < blended_shadow->width();
+             ++x) {
+            check(
+                blended_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "semantic TRS blended shadow matches independent M108 reference");
+        }
+    }
+}
+
+void test_skeletal_trs_blend_later_hierarchy_overflow_is_fail_closed() {
+    const std::vector<std::optional<std::size_t>> parents{
+        std::nullopt,
+        0U,
+    };
+    const std::vector<Mat4> inverse_binds{
+        Mat4::identity(),
+        Mat4::identity(),
+    };
+    const std::vector<VertexSkinBinding> bindings{
+        binding({SkinInfluence{1U, 1.0F}}),
+    };
+    const auto left_rig =
+        std::make_shared<const SkeletalRig>(
+            parents,
+            inverse_binds,
+            bindings);
+    const auto right_rig =
+        std::make_shared<const SkeletalRig>(
+            parents,
+            inverse_binds,
+            bindings);
+
+    constexpr float magnitude = 4.0e19F;
+    SkeletalTrs left_parent;
+    left_parent.scale = {
+        magnitude,
+        1.0F,
+        1.0F,
+    };
+    SkeletalTrs left_child;
+    SkeletalTrs right_parent;
+    SkeletalTrs right_child;
+    right_child.scale = {
+        magnitude,
+        1.0F,
+        1.0F,
+    };
+
+    const SkeletalTrsClip left(
+        left_rig,
+        0.0F,
+        1.0F,
+        {left_parent, left_child},
+        {},
+        {},
+        {});
+    const SkeletalTrsClip right(
+        right_rig,
+        10.0F,
+        11.0F,
+        {right_parent, right_child},
+        {},
+        {},
+        {});
+
+    Framebuffer framebuffer(31U, 31U, SampleCount::Four);
+    framebuffer.clear(
+        {0.17F, 0.27F, 0.37F},
+        0.73F,
+        19U);
+    const auto before = framebuffer.rgb8();
+    const ModelAsset source = model_from_mesh(base_mesh());
+    const std::array<SkeletalTrsBlendRequest, 2> requests{{
+        {0.0F, 10.0F, 0.0F},
+        {0.0F, 10.0F, 0.5F},
+    }};
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto poses =
+                blend_skeletal_trs_clips(
+                    left,
+                    right,
+                    requests);
+            for (const SkeletalPoseStatePtr& pose : poses) {
+                ModelRenderOptions options;
+                options.skeletal_pose_state = pose;
+                draw_model_asset(
+                    framebuffer,
+                    source,
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later semantic TRS interior blend hierarchy overflow rejects the complete output batch");
+
+    check(
+        framebuffer.rgb8() == before,
+        "later semantic TRS blend failure occurs before any earlier valid endpoint owns framebuffer color");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(15U, 15U, sample)
+                == 0.73F,
+            "later semantic TRS blend failure occurs before framebuffer depth ownership");
+        check(
+            framebuffer.sample_stencil_at(15U, 15U, sample)
+                == 19U,
+            "later semantic TRS blend failure occurs before framebuffer stencil ownership");
+    }
+}
+
 void test_validation_and_lighting_contract() {
     check_throws<std::invalid_argument>(
         [] {
@@ -2715,6 +3295,9 @@ int main() {
     test_skeletal_trs_validation_sampling_and_shortest_path();
     test_skeletal_trs_local_before_world_matches_manual_render_and_shadow();
     test_skeletal_trs_later_world_overflow_is_batch_fail_closed();
+    test_skeletal_trs_blend_validation_contract();
+    test_skeletal_trs_blend_matches_independent_semantic_reference();
+    test_skeletal_trs_blend_later_hierarchy_overflow_is_fail_closed();
     test_validation_and_lighting_contract();
     test_prepared_list_fail_closed_on_later_unsafe_skin();
     test_camera_and_shadow_share_skinned_silhouette();
