@@ -1,0 +1,25 @@
+tiny-renderer-transform-graph-timeline-v1
+# Topology and render bindings deliberately appear out of index order.
+node 2 0
+bind 2 3
+node 0 root
+node 3 root
+bind 0 1
+node 1 0
+bind 1 2
+keyframe 0 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+local 2 1 0 0 0.30 0 1 0 0 0 0 1 -0.20 0 0 0 1
+local 0 1 0 0 -0.45 0 1 0 0 0 0 1 0 0 0 0 1
+local 3 1 0 0 0.45 0 1 0 0 0 0 1 -0.05 0 0 0 1
+local 1 1 0 0 -0.30 0 1 0 0 0 0 1 -0.10 0 0 0 1
+end
+keyframe 2 0 0 3 0 0 0 0 1 0 0.8726646259971648 0.1 100
+local 3 1 0 0 -0.45 0 1 0 0 0 0 1 -0.15 0 0 0 1
+local 1 1 0 0 0.20 0 1 0 0 0 0 1 -0.10 0 0 0 1
+local 0 1.5 0 0 0.25 0 1 0 0 0 0 1 0 0 0 0 1
+local 2 1 0 0 -0.30 0 1 0 0 0 0 1 -0.20 0 0 0 1
+end
+sample 0
+sample 1
+sample 0
+sample 2

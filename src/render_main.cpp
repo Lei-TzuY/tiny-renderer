@@ -177,6 +177,7 @@ struct ParsedArguments {
     std::optional<std::filesystem::path> frame_sequence_path{};
     std::optional<std::filesystem::path> timeline_sequence_path{};
     std::optional<std::filesystem::path> hierarchical_timeline_sequence_path{};
+    std::optional<std::filesystem::path> transform_graph_timeline_sequence_path{};
     std::optional<std::filesystem::path> environment_path{};
     std::optional<float> environment_intensity{};
     std::optional<float> environment_yaw{};
@@ -204,6 +205,7 @@ ParsedArguments parse_arguments(int argc, char** argv) {
     bool saw_frame_sequence = false;
     bool saw_timeline_sequence = false;
     bool saw_hierarchical_timeline_sequence = false;
+    bool saw_transform_graph_timeline_sequence = false;
     bool saw_environment = false;
     bool saw_intensity = false;
     bool saw_yaw = false;
@@ -299,6 +301,19 @@ ParsedArguments parse_arguments(int argc, char** argv) {
             if (parsed.hierarchical_timeline_sequence_path->empty()) {
                 throw std::invalid_argument(
                     "--hierarchy-timeline-sequence requires a non-empty path");
+            }
+        } else if (token == "--transform-graph-timeline-sequence") {
+            if (saw_transform_graph_timeline_sequence) {
+                throw std::invalid_argument(
+                    "--transform-graph-timeline-sequence may be specified at most once");
+            }
+            saw_transform_graph_timeline_sequence = true;
+            parsed.transform_graph_timeline_sequence_path =
+                std::filesystem::path(
+                    require_value("--transform-graph-timeline-sequence"));
+            if (parsed.transform_graph_timeline_sequence_path->empty()) {
+                throw std::invalid_argument(
+                    "--transform-graph-timeline-sequence requires a non-empty path");
             }
         } else if (token == "--environment") {
             if (saw_environment) {
@@ -439,11 +454,13 @@ ParsedArguments parse_arguments(int argc, char** argv) {
         (parsed.camera_sequence_path ? 1U : 0U)
         + (parsed.frame_sequence_path ? 1U : 0U)
         + (parsed.timeline_sequence_path ? 1U : 0U)
-        + (parsed.hierarchical_timeline_sequence_path ? 1U : 0U);
+        + (parsed.hierarchical_timeline_sequence_path ? 1U : 0U)
+        + (parsed.transform_graph_timeline_sequence_path ? 1U : 0U);
     if (sequence_mode_count > 1U) {
         throw std::invalid_argument(
-            "--camera-sequence, --frame-sequence, --timeline-sequence, and "
-            "--hierarchy-timeline-sequence are mutually exclusive");
+            "--camera-sequence, --frame-sequence, --timeline-sequence, "
+            "--hierarchy-timeline-sequence, and "
+            "--transform-graph-timeline-sequence are mutually exclusive");
     }
     if ((parsed.environment_intensity || parsed.environment_yaw || parsed.environment_mip)
         && !parsed.environment_path) {
@@ -517,7 +534,7 @@ void print_usage() {
     std::cerr
         << "usage: tiny_renderer_render INPUT.(obj|trscene) OUTPUT.(ppm|pfm) [WIDTH HEIGHT [SAMPLES]]"
            " [--camera-sequence FILE] [--frame-sequence FILE] [--timeline-sequence FILE]"
-           " [--hierarchy-timeline-sequence FILE]"
+           " [--hierarchy-timeline-sequence FILE] [--transform-graph-timeline-sequence FILE]"
            " [--texture-mip base|nearest|linear] [--texture-anisotropy 1|2|4]"
            " [--display-exposure VALUE] [--output-transfer linear|srgb]"
            " [--environment IMAGE] [--environment-intensity VALUE] [--environment-yaw RADIANS]"
@@ -539,7 +556,10 @@ void print_usage() {
         << "  --frame-sequence FILE has the same scene restrictions, is mutually exclusive with the other sequence modes,"
            " and uses tiny-renderer-frame-sequence-v1 frame/camera plus exact per-model affine matrices;\n"
         << "  --timeline-sequence FILE has the same scene restrictions and uses tiny-renderer-timeline-v1"
-           " keyframes plus explicit sample times; interpolation remains the programmatic M94 contract;"
+           " keyframes plus explicit sample times; interpolation remains the programmatic M94 contract;\n"
+        << "  --transform-graph-timeline-sequence FILE has the same scene restrictions and uses"
+           " tiny-renderer-transform-graph-timeline-v1 topology, render bindings, graph-local keyframes,"
+           " and sample times; interpolation/resolution remain the programmatic M100/M99 contracts;"
            " sequence outputs are named STEM_0000.EXT, STEM_0001.EXT, ...\n"
         << "  defaults: WIDTH=512 HEIGHT=512 SAMPLES=4 texture-mip=base texture-anisotropy=1"
            " display-exposure=1 output-transfer=srgb"
@@ -579,6 +599,16 @@ int main(int argc, char** argv) {
         }
         if (parsed.timeline_sequence_path && input_extension != ".trscene") {
             throw std::invalid_argument("--timeline-sequence requires .trscene input");
+        }
+        if (parsed.hierarchical_timeline_sequence_path
+            && input_extension != ".trscene") {
+            throw std::invalid_argument(
+                "--hierarchy-timeline-sequence requires .trscene input");
+        }
+        if (parsed.transform_graph_timeline_sequence_path
+            && input_extension != ".trscene") {
+            throw std::invalid_argument(
+                "--transform-graph-timeline-sequence requires .trscene input");
         }
         if (extension == ".pfm" && (parsed.display_exposure || parsed.output_transfer)) {
             throw std::invalid_argument("display output controls require .ppm output");
@@ -776,7 +806,8 @@ int main(int argc, char** argv) {
             if (parsed.camera_sequence_path
                 || parsed.frame_sequence_path
                 || parsed.timeline_sequence_path
-                || parsed.hierarchical_timeline_sequence_path) {
+                || parsed.hierarchical_timeline_sequence_path
+                || parsed.transform_graph_timeline_sequence_path) {
                 if (manifest.ordering != tiny_renderer::OfflineSceneOrdering::MixedTransparency) {
                     throw std::invalid_argument(
                         "sequence rendering requires .trscene ordering mixed-transparency");
@@ -790,6 +821,17 @@ int main(int argc, char** argv) {
                     tiny_renderer::prepare_offline_mixed_scene(
                         scene_entries, parsed.settings);
                 const tiny_renderer::PreparedOfflineCameraSequence sequence = [&] {
+                    if (parsed.transform_graph_timeline_sequence_path) {
+                        tiny_renderer::OfflineSceneTransformGraphTimelineFile timeline =
+                            tiny_renderer::load_offline_transform_graph_timeline_sequence_file(
+                                *parsed.transform_graph_timeline_sequence_path,
+                                scene_entries.size());
+                        return tiny_renderer::prepare_offline_transform_graph_timeline_sequence(
+                            prepared_scene,
+                            timeline.graph,
+                            timeline.keyframes,
+                            timeline.sample_times);
+                    }
                     if (parsed.hierarchical_timeline_sequence_path) {
                         tiny_renderer::OfflineSceneHierarchicalTimelineFile timeline =
                             tiny_renderer::load_offline_hierarchical_timeline_sequence_file(
@@ -851,7 +893,9 @@ int main(int argc, char** argv) {
                     << " samples=" << static_cast<unsigned>(parsed.settings.sample_count)
                     << " source=scene models=" << scene_entries.size()
                     << " ordering=mixed-transparency ";
-                if (parsed.hierarchical_timeline_sequence_path) {
+                if (parsed.transform_graph_timeline_sequence_path) {
+                    std::cout << "transform-graph-timeline-samples=";
+                } else if (parsed.hierarchical_timeline_sequence_path) {
                     std::cout << "hierarchy-timeline-samples=";
                 } else if (parsed.timeline_sequence_path) {
                     std::cout << "timeline-samples=";
