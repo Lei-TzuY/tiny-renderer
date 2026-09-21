@@ -9,6 +9,7 @@
 #include <iterator>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -946,7 +947,7 @@ void test_animated_import_preserves_static_morph_ownership() {
                     weights_path_json,
                     bytes));
         },
-        "glTF animation weights channels remain fail-closed until a later milestone");
+        "morph-weight animation channel targeting a skin joint instead of the unique mesh node is rejected");
 }
 
 void test_static_morph_import_validation_and_lit_contract() {
@@ -3324,6 +3325,35 @@ void test_gltf_morph_weight_animation_validation_contract() {
 
     {
         std::string json = base.json;
+        replace_once(
+            json,
+            "    \"weights\": [0.25, 0.0],\n",
+            "");
+        replace_once(
+            json,
+            "      \"mode\": 4,\n"
+            "      \"targets\": [\n"
+            "        {\"POSITION\": 6, \"NORMAL\": 7},\n"
+            "        {\"POSITION\": 8, \"NORMAL\": 9}\n"
+            "      ]\n",
+            "      \"mode\": 4\n");
+        replace_once(
+            json,
+            ", \"weights\": [0.5, -0.25]",
+            "");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_missing_targets",
+                        json,
+                        base.bytes));
+            },
+            "morph-weight animation requires imported M118 morph target ownership");
+    }
+
+    {
+        std::string json = base.json;
         const std::string channel =
             "{\"sampler\": 0, \"target\": {\"node\": 0, "
             "\"path\": \"weights\"}}";
@@ -3384,7 +3414,7 @@ void test_gltf_morph_weight_animation_validation_contract() {
         std::vector<std::uint8_t> bytes = base.bytes;
         set_f32(
             bytes,
-            420U,
+            bytes.size() - 16U,
             std::numeric_limits<float>::quiet_NaN());
         check_throws<GltfLoadError>(
             [&] {
