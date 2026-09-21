@@ -13,6 +13,7 @@
 #include "tiny_renderer/framebuffer.hpp"
 #include "tiny_renderer/model_renderer.hpp"
 #include "tiny_renderer/morph.hpp"
+#include "tiny_renderer/morph_timeline.hpp"
 #include "tiny_renderer/prepared_spatial.hpp"
 #include "tiny_renderer/shadow_renderer.hpp"
 #include "tiny_renderer/skinning.hpp"
@@ -803,6 +804,413 @@ void test_active_morph_rejected_by_canonical_spatial_paths() {
         "active morph rejects canonical prepared spatial planning");
 }
 
+
+void test_morph_weight_clip_validation_and_sampling() {
+    const MorphTargetSetPtr targets = make_targets();
+
+    check_throws<std::invalid_argument>(
+        [] {
+            (void)MorphWeightClip(
+                MorphTargetSetPtr{},
+                {},
+                {
+                    {0.0F, {}},
+                    {1.0F, {}},
+                });
+        },
+        "morph-weight clip requires immutable target ownership");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F},
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                    {1.0F, {1.0F, 1.0F}},
+                });
+        },
+        "morph-weight clip default vector must match target count");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {
+                    0.0F,
+                    std::numeric_limits<float>::infinity(),
+                },
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                    {1.0F, {1.0F, 1.0F}},
+                });
+        },
+        "morph-weight clip defaults must be finite");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                });
+        },
+        "morph-weight clip requires at least two keys");
+
+    std::vector<MorphWeightKeyframe> too_many_keys;
+    too_many_keys.reserve(kMaxMorphWeightClipKeys + 1U);
+    for (std::size_t index = 0U;
+         index <= kMaxMorphWeightClipKeys;
+         ++index) {
+        too_many_keys.push_back({
+            static_cast<float>(index),
+            {0.0F, 0.0F},
+        });
+    }
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                too_many_keys);
+        },
+        "morph-weight clip bounds key count");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {
+                        std::numeric_limits<float>::quiet_NaN(),
+                        {0.0F, 0.0F},
+                    },
+                    {1.0F, {1.0F, 1.0F}},
+                });
+        },
+        "morph-weight clip rejects non-finite key time");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                    {0.0F, {1.0F, 1.0F}},
+                });
+        },
+        "morph-weight clip requires strictly increasing key times");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {0.0F, {0.0F}},
+                    {1.0F, {1.0F, 1.0F}},
+                });
+        },
+        "morph-weight key vector must match target count");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                    {
+                        1.0F,
+                        {
+                            1.0F,
+                            std::numeric_limits<float>::infinity(),
+                        },
+                    },
+                });
+        },
+        "morph-weight keys reject non-finite coefficients");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                    {1.0F, {1.0F, 1.0F}},
+                },
+                SemanticInterpolationMode::CubicSpline);
+        },
+        "M119 morph-weight clip rejects CUBICSPLINE explicitly");
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)MorphWeightClip(
+                targets,
+                {0.0F, 0.0F},
+                {
+                    {0.0F, {0.0F, 0.0F}},
+                    {1.0F, {1.0F, 1.0F}},
+                },
+                static_cast<SemanticInterpolationMode>(99));
+        },
+        "morph-weight clip rejects unknown interpolation mode");
+
+    MorphWeightClip linear(
+        targets,
+        {0.25F, -0.5F},
+        {
+            {0.0F, {1.0F, -1.0F}},
+            {1.0F, {-1.0F, 3.0F}},
+        },
+        SemanticInterpolationMode::Linear);
+    check(
+        linear.start_time() == 0.0F
+            && linear.end_time() == 1.0F,
+        "morph-weight clip exposes exact key domain");
+    check(
+        linear.default_weights().size() == 2U
+            && linear.default_weights()[0] == 0.25F
+            && linear.default_weights()[1] == -0.5F,
+        "morph-weight clip retains signed default semantic coefficients");
+
+    const std::array<float, 4> sample_times{
+        1.0F,
+        0.5F,
+        0.0F,
+        0.5F,
+    };
+    const auto sampled = linear.sample(sample_times);
+    check(
+        sampled.size() == sample_times.size(),
+        "morph-weight clip preserves caller sample order and multiplicity");
+    check(
+        sampled[0]->weights()[0] == -1.0F
+            && sampled[0]->weights()[1] == 3.0F,
+        "exact final morph-weight key is copied bit-for-bit");
+    check(
+        sampled[2]->weights()[0] == 1.0F
+            && sampled[2]->weights()[1] == -1.0F,
+        "exact first morph-weight key is copied bit-for-bit");
+    check(
+        sampled[1]->weights()[0] == 0.0F
+            && sampled[1]->weights()[1] == 1.0F,
+        "LINEAR morph-weight midpoint interpolates every coefficient component-wise");
+    check(
+        sampled[1]->weights()[0] == sampled[3]->weights()[0]
+            && sampled[1]->weights()[1] == sampled[3]->weights()[1],
+        "repeated morph-weight samples are deterministic");
+
+    MorphWeightClip step(
+        targets,
+        {0.0F, 0.0F},
+        {
+            {0.0F, {0.5F, -0.25F}},
+            {1.0F, {2.0F, 1.5F}},
+        },
+        SemanticInterpolationMode::Step);
+    const std::array<float, 2> step_times{0.75F, 1.0F};
+    const auto step_samples = step.sample(step_times);
+    check(
+        step_samples[0]->weights()[0] == 0.5F
+            && step_samples[0]->weights()[1] == -0.25F,
+        "STEP morph-weight sampling holds the left key before exact right time");
+    check(
+        step_samples[1]->weights()[0] == 2.0F
+            && step_samples[1]->weights()[1] == 1.5F,
+        "STEP exact right-key request copies the right semantic vector");
+
+    std::vector<float> too_many_samples(
+        kMaxMorphWeightClipSamples + 1U,
+        0.5F);
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)linear.sample(too_many_samples);
+        },
+        "morph-weight clip bounds sample count");
+
+    const std::array<float, 1> nonfinite_time{
+        std::numeric_limits<float>::infinity(),
+    };
+    check_throws<std::invalid_argument>(
+        [&] {
+            (void)linear.sample(nonfinite_time);
+        },
+        "morph-weight clip rejects non-finite sample time");
+
+    const std::array<float, 1> before_domain{-0.25F};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)linear.sample(before_domain);
+        },
+        "morph-weight clip rejects sample before key domain");
+
+    const std::array<float, 1> after_domain{1.25F};
+    check_throws<std::out_of_range>(
+        [&] {
+            (void)linear.sample(after_domain);
+        },
+        "morph-weight clip rejects sample after key domain");
+}
+
+void test_morph_weight_clip_retains_targets_and_integrates_with_skinning() {
+    MorphTargetSetPtr targets = make_targets();
+    const ModelAsset source =
+        model_from_mesh(base_mesh());
+
+    auto clip = std::make_shared<const MorphWeightClip>(
+        targets,
+        std::vector<float>{0.0F, 0.0F},
+        std::vector<MorphWeightKeyframe>{
+            {0.0F, {0.0F, 0.0F}},
+            {1.0F, {1.0F, -0.5F}},
+        },
+        SemanticInterpolationMode::Linear);
+    targets.reset();
+
+    const std::array<float, 1> times{0.5F};
+    const auto states = clip->sample(times);
+    check(
+        states.size() == 1U
+            && states[0]->weights()[0] == 0.5F
+            && states[0]->weights()[1] == -0.25F,
+        "morph-weight clip retains target lifetime and returns complete M117 states");
+
+    const SkeletalPoseStatePtr pose =
+        nontrivial_pose(source.mesh.vertices.size());
+
+    ModelRenderOptions sampled_options;
+    sampled_options.directional_light = fixed_light();
+    sampled_options.morph_state = states[0];
+    sampled_options.skeletal_pose_state = pose;
+
+    const std::array<float, 2> expected_weights{
+        0.5F,
+        -0.25F,
+    };
+    const ModelAsset manual = model_from_mesh(
+        manually_morph(
+            source.mesh,
+            states[0]->target_set(),
+            expected_weights,
+            true));
+    ModelRenderOptions manual_options;
+    manual_options.directional_light = fixed_light();
+    manual_options.skeletal_pose_state = pose;
+
+    Framebuffer sampled_fb(57U, 57U, SampleCount::Four);
+    Framebuffer manual_fb(57U, 57U, SampleCount::Four);
+    sampled_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 6U);
+    manual_fb.clear({0.01F, 0.02F, 0.03F}, 1.0F, 6U);
+    draw_model_asset(
+        sampled_fb,
+        source,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        sampled_options);
+    draw_model_asset(
+        manual_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        sampled_fb,
+        manual_fb,
+        "sampled morph-weight state plus M108 skinning matches independently morphed fixed-light geometry");
+
+    const PreparedModelSubmission sampled_prepared =
+        prepare_model_asset(source, sampled_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(manual, manual_options);
+    const std::array<PreparedModelListEntry, 1> sampled_entry{{
+        {&sampled_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto sampled_shadow =
+        render_directional_shadow_map(
+            sampled_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto manual_shadow =
+        render_directional_shadow_map(
+            manual_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    check_same_shadow(
+        *sampled_shadow,
+        *manual_shadow,
+        "sampled morph-weight state preserves independent shadow silhouette through M117->M108");
+}
+
+void test_morph_weight_clip_batch_validation_prevents_partial_render() {
+    const MorphTargetSetPtr targets = make_targets();
+    const MorphWeightClip clip(
+        targets,
+        {0.0F, 0.0F},
+        {
+            {0.0F, {0.0F, 0.0F}},
+            {1.0F, {1.0F, -0.5F}},
+        },
+        SemanticInterpolationMode::Linear);
+
+    Framebuffer framebuffer(41U, 41U, SampleCount::Four);
+    framebuffer.clear({0.17F, 0.27F, 0.37F}, 0.73F, 19U);
+    const auto before = framebuffer.rgb8();
+    const std::array<float, 2> sample_times{
+        0.0F,
+        std::numeric_limits<float>::quiet_NaN(),
+    };
+
+    check_throws<std::invalid_argument>(
+        [&] {
+            const auto states = clip.sample(sample_times);
+            for (const MorphStatePtr& state : states) {
+                ModelRenderOptions options;
+                options.morph_state = state;
+                draw_model_asset(
+                    framebuffer,
+                    model_from_mesh(base_mesh()),
+                    Mat4::identity(),
+                    options);
+            }
+        },
+        "later invalid morph-weight sample rejects the complete requested batch");
+    check(
+        framebuffer.rgb8() == before,
+        "later invalid morph-weight sample rejects before earlier RGB ownership");
+    for (std::size_t sample = 0U;
+         sample < framebuffer.samples_per_pixel();
+         ++sample) {
+        check(
+            framebuffer.sample_depth_at(20U, 20U, sample)
+                == 0.73F,
+            "later invalid morph-weight sample rejects before earlier depth ownership");
+        check(
+            framebuffer.sample_stencil_at(20U, 20U, sample)
+                == 19U,
+            "later invalid morph-weight sample rejects before earlier stencil ownership");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -813,6 +1221,9 @@ int main() {
     test_lit_morph_requires_normal_semantics_but_shadow_does_not();
     test_later_invalid_morph_is_list_fail_closed();
     test_active_morph_rejected_by_canonical_spatial_paths();
+    test_morph_weight_clip_validation_and_sampling();
+    test_morph_weight_clip_retains_targets_and_integrates_with_skinning();
+    test_morph_weight_clip_batch_validation_prevents_partial_render();
 
     if (failures != 0) {
         std::cerr << failures << " morph test(s) failed\n";

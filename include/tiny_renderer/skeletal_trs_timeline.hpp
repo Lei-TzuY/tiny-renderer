@@ -14,6 +14,7 @@
 
 #include "tiny_renderer/affine_timeline.hpp"
 #include "tiny_renderer/quaternion.hpp"
+#include "tiny_renderer/semantic_interpolation.hpp"
 #include "tiny_renderer/skinning.hpp"
 
 namespace tiny_renderer {
@@ -52,11 +53,7 @@ struct SkeletalCubicQuaternionKeyframe {
     Vec4 out_tangent{};
 };
 
-enum class SkeletalInterpolationMode {
-    Linear,
-    Step,
-    CubicSpline,
-};
+using SkeletalInterpolationMode = SemanticInterpolationMode;
 
 struct SkeletalTranslationTrack {
     std::size_t joint{};
