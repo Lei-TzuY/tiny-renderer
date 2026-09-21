@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 117 bounded programmatic morph-target deformation
+## Architecture frontier: Milestone 118 bounded glTF static morph-target interoperability
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -517,18 +517,38 @@ M117 adds the renderer-side morph deformation capability needed before glTF morp
 - Canonical painter sorting and prepared spatial planning reject active morph state because canonical bounds are stale; zero-weight morph state is not falsely classified as position-changing.
 - M117 remains programmatic single-state morph deformation only. It adds no glTF primitive `targets`, mesh/node default weights, animated `weights` channels, sparse morph accessors, tangent morphing, GPU execution, parallel path, or performance claim.
 
-## Promotion after Milestone 117
+## Milestone 118 — bounded glTF static morph-target interoperability
 
-Programmatic morph deformation now exists on the same canonical object-space execution chain as skinning and M35. The next highest-value gap is real-file ownership. Milestone 118 should add **strict bounded glTF static morph-target interoperability** by projecting glTF primitive targets and default weights onto M117 without introducing importer-only deformation semantics.
+M118 projects strict glTF primitive morph ownership directly onto M117 without introducing importer-only deformation semantics.
 
-A Milestone 118 slice should require:
+- `GltfSkinnedAsset` now owns optional `MorphTargetSetPtr morph_targets` and `MorphStatePtr default_morph_state` alongside the existing model/rig/rest-pose/animation ownership. Files without primitive targets preserve null morph ownership exactly.
+- The one-primitive textual glTF subset accepts 1..8 primitive `targets`. Every target must contain one float VEC3 `POSITION` accessor aligned exactly to canonical POSITION vertex count; optional float VEC3 `NORMAL` deltas are accepted only when canonical NORMAL ownership exists.
+- Unsupported morph attributes such as `TANGENT`, normalized target accessors, unsupported component/type combinations, sparse accessors, unsafe bufferView/accessor windows, count mismatch, non-finite target floats, or missing POSITION target data fail closed through the established importer boundary.
+- Morph target reads reuse the exact M110 checked accessor-window, alignment, stride, and typed-read machinery before any delta becomes renderer state.
+- Imported target arrays construct one ordinary immutable M117 `MorphTargetSet`. The importer contains no morph evaluator and never bypasses M117's canonical object-space order.
+- Mesh `weights` provide bounded default semantic coefficients; the instantiating skinned node's `weights` override the mesh values. Both forms must exactly match target count and contain only finite floats. Missing defaults materialize the exact all-zero M117 state.
+- Node morph weights are accepted only on the unique skinned mesh instance in this bounded one-instance subset. Weights without primitive targets reject rather than being silently ignored.
+- Static, animation-collection, and exactly-one animated import APIs all return the same shared `GltfSkinnedAsset` ownership. M112/M114 animation parsing therefore preserves imported targets/default weights automatically; `target.path = "weights"` remains rejected.
+- The checked-in `skinned_morph_triangle.gltf/.bin` fixture owns two POSITION+NORMAL targets, child-before-root skeletal ordering, mesh defaults `[0.25, 0]`, and node override `[0.5, -0.25]`.
+- File-driven default morph + non-trivial M108 skeletal pose renders exact 4x fixed-light resolved RGB/per-sample depth/stencil and exact directional-shadow depth against an independently constructed `ModelAsset + MorphTargetSet + MorphState + SkeletalRig` reference.
+- Regressions prove node-over-mesh precedence, mesh fallback, missing-default all-zero state, animated-wrapper ownership preservation, continued rejection of glTF `weights` animation channels, unsupported target attributes, missing POSITION, normalized/count/range failures, non-finite deltas, wrong mesh/node weight cardinality, and active lit defaults whose target lacks NORMAL deltas.
+- The incomplete-normal regression imports successfully as static morph ownership, then proves M117 fixed-light execution rejects before RGB/depth/stencil ownership while the importer itself does not invent shading semantics.
+- Canonical mesh topology, material draws, skin bindings, rest-joint state, semantic skeletal animation, and all existing renderer execution paths remain unchanged.
+- M118 adds no morph-weight animation runtime, tangent morphing, sparse target accessors, multiple primitives/skins, GLB/extensions/compression, GPU execution, parallel path, or performance claim.
 
-- extend the existing bounded one-primitive textual glTF importer with one to eight primitive `targets`; every target must contain float VEC3 `POSITION` deltas and may contain float VEC3 `NORMAL` deltas, while unsupported target attributes such as `TANGENT`, sparse accessors, normalized/component variants, extensions, or count mismatches fail closed;
-- target accessors must use the existing checked bufferView/accessor range and alignment machinery before typed reads; all delta floats must be finite, and every target must align exactly with canonical POSITION vertex count;
-- imported targets must become one ordinary `MorphTargetSet`; no glTF-specific deformation evaluator may exist;
-- support bounded default morph weights from mesh `weights` and the instantiating node `weights`, with node weights overriding mesh weights per glTF ownership. Missing defaults mean zero. Weight count must exactly match target count and every weight must be finite;
-- the imported result should expose/own the resulting default `MorphState` alongside the existing `ModelAsset`/rig state so callers can render immediately through M117's canonical morph→skin→M35 gateway;
-- static M110/M112/M114 animation loaders must preserve the same morph target/default-weight ownership rather than silently dropping it; animation `target.path = "weights"` remains rejected until a later milestone;
-- a deterministic fixture with at least two morph targets, child-before-root skeletal ordering, and a non-zero default morph state must render exact 4× fixed-light RGB/depth/stencil and directional-shadow depth against an independently constructed programmatic `ModelAsset + MorphTargetSet + MorphState + SkeletalRig` reference;
-- regressions must cover mesh defaults, node override precedence, zero defaults, target count/canonical count mismatch, unsupported target attributes, missing POSITION target data, non-finite deltas/weights, wrong weight cardinality, unsafe accessors, and lit targets whose active default state lacks complete NORMAL deltas;
-- canonical imported topology/material/skin ownership must stay unchanged; M118 adds no morph animation channel, tangent morphing, sparse target accessors, multiple primitives/skins, GLB/extensions/compression, GPU execution, or performance claim.
+## Promotion after Milestone 118
+
+Static file ownership is now closed, but morph weights are still single-state coefficients. The next architectural gap is temporal morph state itself, not another importer branch. Milestone 119 should add a **bounded programmatic morph-weight animation clip** that samples complete M117 states before any file-driven `weights` channel is accepted.
+
+A Milestone 119 slice should require:
+
+- one immutable M117 `MorphTargetSet`, one finite default weight per target, and a bounded clip domain with 2..256 finite strictly increasing semantic keys;
+- each key owns exactly one complete finite weight vector aligned to target count. Weights remain signed semantic coefficients and never gain a probability/unit-sum rule;
+- explicit `LINEAR` and `STEP` interpolation must reuse the established semantic animation modes where applicable: STEP holds the left key until exact right-key time, while LINEAR interpolates every coefficient component-wise;
+- if CUBICSPLINE is included in the slice, it must use explicit per-key in/value/out tangents and the same Hermite `dt` scaling contract already proven by M116 rather than inventing a morph-only cubic rule;
+- exact key requests must copy stored semantic weights without interpolation arithmetic; repeated/out-of-order requests must remain deterministic;
+- every sampled vector must be materialized as an ordinary immutable `MorphState` over the shared target set. No animated-morph renderer or matrix/geometry interpolation path is permitted;
+- a rendering integration regression should combine a sampled morph state with a non-trivial M108 skeletal pose under fixed lighting and shadow capture, matching an independently constructed M117 state exactly;
+- full-batch sampling must validate/materialize all requested states before any caller can render an earlier valid sample, so a later non-finite/interpolation-overflow result rejects transactionally;
+- validation must cover target/default/key cardinality, finite domain/times/weights/tangents, key ordering, bounded key/sample counts, unsupported interpolation values, and target-set lifetime;
+- M119 remains programmatic morph-weight animation only. glTF `target.path = "weights"`, mesh/node animated weight ownership, clip blending/layers, sparse morph accessors, tangent morphing, GPU execution, and performance claims remain for later promotion.

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "tiny_renderer/model.hpp"
+#include "tiny_renderer/morph.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "tiny_renderer/skeletal_trs_timeline.hpp"
 
@@ -29,6 +30,8 @@ struct GltfSkinnedAsset {
     SkeletalRigPtr rig{};
     std::vector<Mat4> rest_local_transforms{};
     std::optional<std::array<std::size_t, 3>> normal_channels{};
+    MorphTargetSetPtr morph_targets{};
+    MorphStatePtr default_morph_state{};
     std::shared_ptr<const SkeletalTrsClip> linear_animation{};
 };
 

@@ -128,6 +128,16 @@ std::filesystem::path write_case(
     return root / "case.gltf";
 }
 
+std::filesystem::path write_morph_case(
+    const std::string& name,
+    const std::string& json,
+    const std::vector<std::uint8_t>& bytes) {
+    const std::filesystem::path root = case_root(name);
+    write_text(root / "case.gltf", json);
+    write_bytes(root / "skinned_morph_triangle.bin", bytes);
+    return root / "case.gltf";
+}
+
 void replace_once(
     std::string& text,
     const std::string& before,
@@ -191,6 +201,29 @@ void set_f32(
         static_cast<std::uint8_t>((bits >> 16U) & 0xFFU);
     bytes[offset + 3U] =
         static_cast<std::uint8_t>((bits >> 24U) & 0xFFU);
+}
+
+void append_f32(
+    std::vector<std::uint8_t>& bytes,
+    float value) {
+    const std::uint32_t bits =
+        std::bit_cast<std::uint32_t>(value);
+    bytes.push_back(
+        static_cast<std::uint8_t>(bits & 0xFFU));
+    bytes.push_back(
+        static_cast<std::uint8_t>((bits >> 8U) & 0xFFU));
+    bytes.push_back(
+        static_cast<std::uint8_t>((bits >> 16U) & 0xFFU));
+    bytes.push_back(
+        static_cast<std::uint8_t>((bits >> 24U) & 0xFFU));
+}
+
+void append_vec3(
+    std::vector<std::uint8_t>& bytes,
+    const Vec3& value) {
+    append_f32(bytes, value.x);
+    append_f32(bytes, value.y);
+    append_f32(bytes, value.z);
 }
 
 bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
@@ -280,6 +313,44 @@ SkeletalRigPtr manual_rig() {
         });
 }
 
+MorphTargetSetPtr manual_morph_targets() {
+    MorphTarget first;
+    first.position_deltas = {
+        {0.0F, 0.0F, 0.0F},
+        {0.25F, 0.0F, 0.0F},
+        {0.0F, 0.25F, 0.0F},
+    };
+    first.normal_deltas = std::vector<Vec3>{
+        {0.25F, 0.0F, 0.0F},
+        {0.25F, 0.0F, 0.0F},
+        {0.25F, 0.0F, 0.0F},
+    };
+
+    MorphTarget second;
+    second.position_deltas = {
+        {-0.25F, 0.0F, 0.0F},
+        {0.0F, -0.25F, 0.0F},
+        {0.0F, 0.0F, 0.0F},
+    };
+    second.normal_deltas = std::vector<Vec3>{
+        {0.0F, 0.25F, 0.0F},
+        {0.0F, 0.25F, 0.0F},
+        {0.0F, 0.25F, 0.0F},
+    };
+
+    return std::make_shared<const MorphTargetSet>(
+        std::vector<MorphTarget>{
+            std::move(first),
+            std::move(second),
+        });
+}
+
+MorphStatePtr manual_default_morph_state() {
+    return std::make_shared<const MorphState>(
+        manual_morph_targets(),
+        std::vector<float>{0.5F, -0.25F});
+}
+
 DirectionalLight test_light() {
     DirectionalLight light;
     light.enabled = true;
@@ -310,6 +381,10 @@ void test_valid_fixture_decodes_into_existing_ownership() {
           "glTF NORMAL is projected onto canonical smooth varying channels");
     check(imported.rest_local_transforms.size() == 2U,
           "glTF fixture owns one complete rest local transform per skin joint");
+    check(
+        !imported.morph_targets
+            && !imported.default_morph_state,
+        "legacy static glTF without targets preserves null morph ownership");
 
     if (imported.rig) {
         const auto parents = imported.rig->parents();
@@ -480,6 +555,480 @@ void test_external_buffer_is_not_retained_after_import() {
     check(
         !framebuffer.rgb8().empty(),
         "imported model and rig retain no source-file lifetime dependency");
+}
+
+
+void test_static_morph_fixture_projects_to_m117_and_renders() {
+    const GltfSkinnedAsset imported =
+        load_gltf_skinned_asset_file(
+            fixture_path("skinned_morph_triangle.gltf"));
+
+    check(imported.morph_targets != nullptr,
+          "glTF morph fixture owns an M117 MorphTargetSet");
+    check(imported.default_morph_state != nullptr,
+          "glTF morph fixture owns an M117 default MorphState");
+    if (imported.morph_targets) {
+        const auto targets = imported.morph_targets->targets();
+        check(targets.size() == 2U,
+              "glTF morph fixture imports exactly two targets");
+        if (targets.size() == 2U) {
+            check(
+                targets[0].position_deltas[1].x == 0.25F
+                    && targets[0].normal_deltas
+                    && (*targets[0].normal_deltas)[0].x == 0.25F
+                    && targets[1].position_deltas[0].x == -0.25F
+                    && targets[1].normal_deltas
+                    && (*targets[1].normal_deltas)[0].y == 0.25F,
+                "glTF morph POSITION/NORMAL deltas decode in target order");
+        }
+    }
+    if (imported.default_morph_state) {
+        const auto weights = imported.default_morph_state->weights();
+        check(
+            weights.size() == 2U
+                && weights[0] == 0.5F
+                && weights[1] == -0.25F,
+            "instantiating node morph weights override mesh defaults");
+    }
+
+    const ModelAsset manual = manual_model();
+    const SkeletalRigPtr manual_skin = manual_rig();
+    const std::vector<Mat4> posed_locals{
+        Mat4::translation({0.45F, 0.0F, 0.0F}),
+        Mat4::translation({0.1F, 0.0F, 0.0F})
+            * Mat4::scale({1.35F, 1.0F, 1.0F}),
+    };
+
+    ModelRenderOptions imported_options;
+    imported_options.directional_light = test_light();
+    imported_options.morph_state =
+        imported.default_morph_state;
+    imported_options.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            imported.rig,
+            posed_locals);
+
+    ModelRenderOptions manual_options;
+    manual_options.directional_light = test_light();
+    manual_options.morph_state =
+        manual_default_morph_state();
+    manual_options.skeletal_pose_state =
+        std::make_shared<const SkeletalPoseState>(
+            manual_skin,
+            posed_locals);
+
+    Framebuffer imported_fb(59U, 59U, SampleCount::Four);
+    Framebuffer manual_fb(59U, 59U, SampleCount::Four);
+    imported_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 5U);
+    manual_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 5U);
+    draw_model_asset(
+        imported_fb,
+        imported.model,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        imported_options);
+    draw_model_asset(
+        manual_fb,
+        manual,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        manual_options);
+    check_same_framebuffer(
+        imported_fb,
+        manual_fb,
+        "file-driven morph+skin fixed-light rendering is exact-equivalent to independent M117+M108 ownership");
+
+    const PreparedModelSubmission imported_prepared =
+        prepare_model_asset(
+            imported.model,
+            imported_options);
+    const PreparedModelSubmission manual_prepared =
+        prepare_model_asset(
+            manual,
+            manual_options);
+    const std::array<PreparedModelListEntry, 1> imported_entry{{
+        {&imported_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> manual_entry{{
+        {&manual_prepared, Mat4::identity()},
+    }};
+    const auto imported_shadow =
+        render_directional_shadow_map(
+            imported_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto manual_shadow =
+        render_directional_shadow_map(
+            manual_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < imported_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < imported_shadow->width();
+             ++x) {
+            check(
+                imported_shadow->depth_at(x, y)
+                    == manual_shadow->depth_at(x, y),
+                "file-driven morph+skin shadow matches independent M117+M108 reference");
+        }
+    }
+}
+
+void test_static_morph_default_weight_precedence() {
+    const std::string base_json =
+        read_text(fixture_path("skinned_morph_triangle.gltf"));
+    const std::vector<std::uint8_t> bytes =
+        read_bytes(fixture_path("skinned_morph_triangle.bin"));
+
+    {
+        std::string json = base_json;
+        replace_once(
+            json,
+            ", \"weights\": [0.5, -0.25]",
+            "");
+        const GltfSkinnedAsset imported =
+            load_gltf_skinned_asset_file(
+                write_morph_case(
+                    "morph_mesh_defaults",
+                    json,
+                    bytes));
+        const auto weights =
+            imported.default_morph_state->weights();
+        check(
+            weights.size() == 2U
+                && weights[0] == 0.25F
+                && weights[1] == 0.0F,
+            "mesh morph defaults apply when the instantiating node has no override");
+    }
+
+    {
+        std::string json = base_json;
+        replace_once(
+            json,
+            ", \"weights\": [0.5, -0.25]",
+            "");
+        replace_once(
+            json,
+            "    \"weights\": [0.25, 0.0],\n",
+            "");
+        const GltfSkinnedAsset imported =
+            load_gltf_skinned_asset_file(
+                write_morph_case(
+                    "morph_zero_defaults",
+                    json,
+                    bytes));
+        const auto weights =
+            imported.default_morph_state->weights();
+        check(
+            weights.size() == 2U
+                && weights[0] == 0.0F
+                && weights[1] == 0.0F
+                && !imported.default_morph_state->has_active_weights(),
+            "missing mesh and node morph defaults materialize the exact all-zero M117 state");
+    }
+}
+
+void test_animated_import_preserves_static_morph_ownership() {
+    std::string json =
+        read_text(fixture_path("skinned_morph_triangle.gltf"));
+    std::vector<std::uint8_t> bytes =
+        read_bytes(fixture_path("skinned_morph_triangle.bin"));
+
+    // Append one LINEAR child-translation animation without changing any
+    // imported morph data. This proves animated wrappers preserve the same
+    // root asset ownership instead of rebuilding a morph-less asset.
+    append_f32(bytes, 0.0F);
+    append_f32(bytes, 1.0F);
+    append_vec3(bytes, {0.25F, 0.0F, 0.0F});
+    append_vec3(bytes, {0.5F, 0.0F, 0.0F});
+
+    replace_once(
+        json,
+        "\"byteLength\": 412",
+        "\"byteLength\": 444");
+    replace_once(
+        json,
+        "    {\"buffer\": 0, \"byteOffset\": 376, \"byteLength\": 36}\n  ],",
+        "    {\"buffer\": 0, \"byteOffset\": 376, \"byteLength\": 36},\n"
+        "    {\"buffer\": 0, \"byteOffset\": 412, \"byteLength\": 8},\n"
+        "    {\"buffer\": 0, \"byteOffset\": 420, \"byteLength\": 24}\n  ],");
+    replace_once(
+        json,
+        "    {\"bufferView\": 9, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}\n  ],",
+        "    {\"bufferView\": 9, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"},\n"
+        "    {\"bufferView\": 10, \"componentType\": 5126, \"count\": 2, \"type\": \"SCALAR\", \"min\": [0.0], \"max\": [1.0]},\n"
+        "    {\"bufferView\": 11, \"componentType\": 5126, \"count\": 2, \"type\": \"VEC3\"}\n  ],");
+    replace_once(
+        json,
+        "  \"scenes\": [{\"nodes\": [0, 1]}],",
+        "  \"animations\": [{\n"
+        "    \"name\": \"MorphPreservation\",\n"
+        "    \"samplers\": [{\"input\": 10, \"output\": 11, \"interpolation\": \"LINEAR\"}],\n"
+        "    \"channels\": [{\"sampler\": 0, \"target\": {\"node\": 2, \"path\": \"translation\"}}]\n"
+        "  }],\n"
+        "  \"scenes\": [{\"nodes\": [0, 1]}],");
+
+    const std::filesystem::path path =
+        write_morph_case(
+            "animated_morph_ownership",
+            json,
+            bytes);
+    const GltfSkinnedAnimationCollection collection =
+        load_gltf_skinned_animation_collection_file(path);
+    check(
+        collection.animations.size() == 1U
+            && collection.asset.morph_targets
+            && collection.asset.default_morph_state,
+        "animation collection preserves imported M118 morph ownership");
+    if (collection.asset.default_morph_state) {
+        const auto weights =
+            collection.asset.default_morph_state->weights();
+        check(
+            weights.size() == 2U
+                && weights[0] == 0.5F
+                && weights[1] == -0.25F,
+            "animation collection preserves node-overridden default morph weights");
+    }
+
+    const GltfSkinnedAnimatedAsset single =
+        load_gltf_skinned_animated_asset_file(path);
+    check(
+        single.asset.morph_targets
+            && single.asset.default_morph_state
+            && single.animation,
+        "exactly-one animated wrapper preserves M118 morph ownership");
+
+    std::string weights_path_json = json;
+    replace_once(
+        weights_path_json,
+        "\"path\": \"translation\"",
+        "\"path\": \"weights\"");
+    check_throws<GltfLoadError>(
+        [&] {
+            (void)load_gltf_skinned_animation_collection_file(
+                write_morph_case(
+                    "animated_morph_weights_path",
+                    weights_path_json,
+                    bytes));
+        },
+        "glTF animation weights channels remain fail-closed until a later milestone");
+}
+
+void test_static_morph_import_validation_and_lit_contract() {
+    const std::string valid =
+        read_text(fixture_path("skinned_morph_triangle.gltf"));
+    const std::vector<std::uint8_t> valid_bytes =
+        read_bytes(fixture_path("skinned_morph_triangle.bin"));
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"POSITION\": 6, \"NORMAL\": 7}",
+            "{\"POSITION\": 6, \"NORMAL\": 7, \"TANGENT\": 7}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_tangent",
+                        json,
+                        valid_bytes));
+            },
+            "unsupported glTF morph TANGENT attribute is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"POSITION\": 8, \"NORMAL\": 9}",
+            "{\"NORMAL\": 9}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_missing_position",
+                        json,
+                        valid_bytes));
+            },
+            "every imported morph target requires POSITION delta ownership");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 2, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_count",
+                        json,
+                        valid_bytes));
+            },
+            "morph target accessor count must match canonical vertex count");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"}",
+            "{\"bufferView\": 6, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\", \"normalized\": true}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_normalized",
+                        json,
+                        valid_bytes));
+            },
+            "normalized morph target accessor mode is rejected");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"buffer\": 0, \"byteOffset\": 268, \"byteLength\": 36}",
+            "{\"buffer\": 0, \"byteOffset\": 268, \"byteLength\": 35}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_window",
+                        json,
+                        valid_bytes));
+            },
+            "unsafe morph target accessor range rejects before typed reads");
+    }
+
+    {
+        std::vector<std::uint8_t> bytes = valid_bytes;
+        set_f32(
+            bytes,
+            268U,
+            std::numeric_limits<float>::infinity());
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_target_nonfinite",
+                        valid,
+                        bytes));
+            },
+            "non-finite morph target delta is rejected at import");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "\"weights\": [0.5, -0.25]",
+            "\"weights\": [0.5]");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_node_weight_count",
+                        json,
+                        valid_bytes));
+            },
+            "node morph default count must match target count");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            ", \"weights\": [0.5, -0.25]",
+            "");
+        replace_once(
+            json,
+            "\"weights\": [0.25, 0.0]",
+            "\"weights\": [0.25]");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_asset_file(
+                    write_morph_case(
+                        "morph_mesh_weight_count",
+                        json,
+                        valid_bytes));
+            },
+            "mesh morph default count must match target count");
+    }
+
+    {
+        std::string json = valid;
+        replace_once(
+            json,
+            "{\"POSITION\": 8, \"NORMAL\": 9}",
+            "{\"POSITION\": 8}");
+        const GltfSkinnedAsset imported =
+            load_gltf_skinned_asset_file(
+                write_morph_case(
+                    "morph_missing_active_normal",
+                    json,
+                    valid_bytes));
+
+        ModelRenderOptions options;
+        options.directional_light = test_light();
+        options.morph_state =
+            imported.default_morph_state;
+        options.skeletal_pose_state =
+            std::make_shared<const SkeletalPoseState>(
+                imported.rig,
+                imported.rest_local_transforms);
+
+        Framebuffer framebuffer(41U, 41U, SampleCount::Four);
+        framebuffer.clear(
+            {0.12F, 0.23F, 0.34F},
+            0.81F,
+            17U);
+        const auto before = framebuffer.rgb8();
+        check_throws<std::invalid_argument>(
+            [&] {
+                draw_model_asset(
+                    framebuffer,
+                    imported.model,
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    Mat4::identity(),
+                    options);
+            },
+            "active imported lit morph target without NORMAL delta fails closed in M117");
+        check(
+            framebuffer.rgb8() == before,
+            "incomplete imported lit morph normals reject before framebuffer color ownership");
+        for (std::size_t sample = 0U;
+             sample < framebuffer.samples_per_pixel();
+             ++sample) {
+            check(
+                framebuffer.sample_depth_at(20U, 20U, sample)
+                    == 0.81F,
+                "incomplete imported lit morph normals reject before depth ownership");
+            check(
+                framebuffer.sample_stencil_at(20U, 20U, sample)
+                    == 17U,
+                "incomplete imported lit morph normals reject before stencil ownership");
+        }
+    }
 }
 
 void test_json_schema_and_path_fail_closed() {
@@ -2357,6 +2906,10 @@ int main() {
     test_valid_fixture_decodes_into_existing_ownership();
     test_imported_asset_matches_independent_programmatic_render_and_shadow();
     test_external_buffer_is_not_retained_after_import();
+    test_static_morph_fixture_projects_to_m117_and_renders();
+    test_static_morph_default_weight_precedence();
+    test_animated_import_preserves_static_morph_ownership();
+    test_static_morph_import_validation_and_lit_contract();
     test_json_schema_and_path_fail_closed();
     test_binary_range_joint_weight_and_inverse_bind_fail_closed();
     test_animated_fixture_projects_to_programmatic_m111();

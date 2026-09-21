@@ -599,6 +599,22 @@ void reject_member(
     return result;
 }
 
+[[nodiscard]] std::vector<float> bounded_float_array(
+    const JsonValue& value,
+    std::size_t maximum,
+    std::string_view label) {
+    const auto& array = as_array(value, label);
+    if (array.empty() || array.size() > maximum) {
+        fail(std::string(label) + " count is outside bounded limits");
+    }
+    std::vector<float> result;
+    result.reserve(array.size());
+    for (const JsonValue& element : array) {
+        result.push_back(as_float(element, label));
+    }
+    return result;
+}
+
 struct ParsedNodeTransform {
     Mat4 local{Mat4::identity()};
     std::optional<SkeletalTrs> semantic_trs{};
@@ -698,6 +714,7 @@ struct NodeInfo {
     std::vector<std::size_t> children{};
     std::optional<std::size_t> mesh{};
     std::optional<std::size_t> skin{};
+    std::optional<std::vector<float>> weights{};
 };
 
 [[nodiscard]] std::size_t component_size(int component_type) {
@@ -1210,7 +1227,6 @@ void require_accessor_shape(
     for (const JsonValue& value : array) {
         const auto& object = as_object(value, "node");
         reject_member(object, "extensions", "node");
-        reject_member(object, "weights", "node");
         reject_member(object, "camera", "node");
 
         NodeInfo node;
@@ -1239,6 +1255,13 @@ void require_accessor_shape(
         if (const JsonValue* skin =
                 optional_member(object, "skin")) {
             node.skin = as_index(*skin, "node skin");
+        }
+        if (const JsonValue* weights =
+                optional_member(object, "weights")) {
+            node.weights = bounded_float_array(
+                *weights,
+                kMaxMorphTargets,
+                "node morph weights");
         }
         nodes.push_back(std::move(node));
     }
@@ -1840,7 +1863,14 @@ struct GltfImportBundle {
     const auto& mesh_object =
         as_object(meshes.front(), "mesh");
     reject_member(mesh_object, "extensions", "mesh");
-    reject_member(mesh_object, "weights", "mesh");
+    std::optional<std::vector<float>> mesh_morph_weights;
+    if (const JsonValue* weights =
+            optional_member(mesh_object, "weights")) {
+        mesh_morph_weights = bounded_float_array(
+            *weights,
+            kMaxMorphTargets,
+            "mesh morph weights");
+    }
     const auto& primitives = as_array(
         require_member(mesh_object, "primitives", "mesh"),
         "mesh primitives");
@@ -1850,7 +1880,6 @@ struct GltfImportBundle {
     const auto& primitive =
         as_object(primitives.front(), "mesh primitive");
     reject_member(primitive, "extensions", "mesh primitive");
-    reject_member(primitive, "targets", "mesh primitive");
     reject_member(primitive, "material", "mesh primitive");
     const int mode =
         optional_member(primitive, "mode")
@@ -1925,6 +1954,116 @@ struct GltfImportBundle {
         }
     }
 
+    MorphTargetSetPtr imported_morph_targets;
+    if (const JsonValue* targets_value =
+            optional_member(primitive, "targets")) {
+        const auto& targets =
+            as_array(*targets_value, "mesh primitive targets");
+        if (targets.empty()
+            || targets.size() > kMaxMorphTargets) {
+            fail("mesh primitive morph target count is outside renderer limits");
+        }
+
+        std::vector<MorphTarget> decoded_targets;
+        decoded_targets.reserve(targets.size());
+        for (const JsonValue& target_value : targets) {
+            const auto& target =
+                as_object(target_value, "mesh primitive morph target");
+            for (const auto& [name, attribute] : target) {
+                (void)attribute;
+                if (name != "POSITION" && name != "NORMAL") {
+                    fail("morph target attribute '" + name
+                         + "' is outside the bounded importer subset");
+                }
+            }
+
+            const std::size_t target_position_accessor =
+                as_index(
+                    require_member(
+                        target,
+                        "POSITION",
+                        "mesh primitive morph target"),
+                    "morph POSITION accessor");
+            const AccessorWindow target_positions =
+                accessor_window(
+                    accessors,
+                    views,
+                    bytes,
+                    target_position_accessor);
+            require_accessor_shape(
+                target_positions,
+                "VEC3",
+                float_type,
+                "morph POSITION",
+                true);
+            if (target_positions.accessor->count != vertex_count) {
+                fail("morph POSITION count must match canonical POSITION count");
+            }
+
+            MorphTarget decoded;
+            decoded.position_deltas.reserve(vertex_count);
+            for (std::size_t vertex = 0U;
+                 vertex < vertex_count;
+                 ++vertex) {
+                const auto delta = read_vec3(
+                    target_positions,
+                    bytes,
+                    vertex,
+                    "morph POSITION");
+                decoded.position_deltas.push_back(
+                    {delta[0], delta[1], delta[2]});
+            }
+
+            if (const JsonValue* normal =
+                    optional_member(target, "NORMAL")) {
+                if (!normals) {
+                    fail("morph NORMAL requires canonical NORMAL ownership");
+                }
+                const std::size_t target_normal_accessor =
+                    as_index(*normal, "morph NORMAL accessor");
+                const AccessorWindow target_normals =
+                    accessor_window(
+                        accessors,
+                        views,
+                        bytes,
+                        target_normal_accessor);
+                require_accessor_shape(
+                    target_normals,
+                    "VEC3",
+                    float_type,
+                    "morph NORMAL",
+                    true);
+                if (target_normals.accessor->count != vertex_count) {
+                    fail("morph NORMAL count must match canonical POSITION count");
+                }
+                std::vector<Vec3> normal_deltas;
+                normal_deltas.reserve(vertex_count);
+                for (std::size_t vertex = 0U;
+                     vertex < vertex_count;
+                     ++vertex) {
+                    const auto delta = read_vec3(
+                        target_normals,
+                        bytes,
+                        vertex,
+                        "morph NORMAL");
+                    normal_deltas.push_back(
+                        {delta[0], delta[1], delta[2]});
+                }
+                decoded.normal_deltas =
+                    std::move(normal_deltas);
+            }
+            decoded_targets.push_back(std::move(decoded));
+        }
+
+        try {
+            imported_morph_targets =
+                std::make_shared<const MorphTargetSet>(
+                    std::move(decoded_targets));
+        } catch (const std::invalid_argument& error) {
+            fail(error.what());
+        }
+    }
+
     const AccessorWindow joints = accessor_window(
         accessors, views, bytes, joints_accessor);
     const std::array<int, 2> joint_types{5121, 5123};
@@ -1989,6 +2128,47 @@ struct GltfImportBundle {
     }
     if (!mesh_skin_node) {
         fail("bounded importer requires one node instantiating mesh zero with skin zero");
+    }
+
+    for (std::size_t node = 0U; node < nodes.size(); ++node) {
+        if (nodes[node].weights && node != *mesh_skin_node) {
+            fail("node morph weights are supported only on the skinned mesh instance");
+        }
+    }
+
+    MorphStatePtr imported_default_morph_state;
+    if (imported_morph_targets) {
+        const std::size_t target_count =
+            imported_morph_targets->targets().size();
+        std::vector<float> default_weights(
+            target_count,
+            0.0F);
+        if (mesh_morph_weights) {
+            if (mesh_morph_weights->size() != target_count) {
+                fail("mesh morph weight count must match primitive target count");
+            }
+            default_weights = *mesh_morph_weights;
+        }
+        if (nodes[*mesh_skin_node].weights) {
+            if (nodes[*mesh_skin_node].weights->size()
+                != target_count) {
+                fail("node morph weight count must match primitive target count");
+            }
+            default_weights =
+                *nodes[*mesh_skin_node].weights;
+        }
+        try {
+            imported_default_morph_state =
+                std::make_shared<const MorphState>(
+                    imported_morph_targets,
+                    std::move(default_weights));
+        } catch (const std::invalid_argument& error) {
+            fail(error.what());
+        }
+    } else if (
+        mesh_morph_weights
+        || nodes[*mesh_skin_node].weights) {
+        fail("morph weights require primitive morph targets");
     }
 
     const auto& skins = as_array(
@@ -2244,6 +2424,9 @@ struct GltfImportBundle {
     result.model = std::move(model);
     result.rig = rig;
     result.rest_local_transforms = std::move(rest_locals);
+    result.morph_targets = std::move(imported_morph_targets);
+    result.default_morph_state =
+        std::move(imported_default_morph_state);
     if (normals) {
         result.normal_channels =
             std::array<std::size_t, 3>{0U, 1U, 2U};
