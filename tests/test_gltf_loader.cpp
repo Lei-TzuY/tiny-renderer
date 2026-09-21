@@ -226,6 +226,127 @@ void append_vec3(
     append_f32(bytes, value.z);
 }
 
+
+struct MorphAnimationCase {
+    std::string json{};
+    std::vector<std::uint8_t> bytes{};
+};
+
+MorphAnimationCase make_morph_animation_case(
+    const std::string& interpolation,
+    bool mixed_skeletal) {
+    MorphAnimationCase result;
+    result.json =
+        read_text(fixture_path("skinned_morph_triangle.gltf"));
+    result.bytes =
+        read_bytes(fixture_path("skinned_morph_triangle.bin"));
+
+    const std::size_t weight_time_offset = result.bytes.size();
+    append_f32(result.bytes, 0.0F);
+    append_f32(result.bytes, 1.0F);
+    const std::size_t weight_output_offset = result.bytes.size();
+    append_f32(result.bytes, 0.5F);
+    append_f32(result.bytes, -0.25F);
+    append_f32(result.bytes, 1.0F);
+    append_f32(result.bytes, 0.5F);
+
+    std::optional<std::size_t> skeletal_time_offset;
+    std::optional<std::size_t> skeletal_output_offset;
+    if (mixed_skeletal) {
+        skeletal_time_offset = result.bytes.size();
+        append_f32(result.bytes, 0.25F);
+        append_f32(result.bytes, 0.75F);
+        skeletal_output_offset = result.bytes.size();
+        append_vec3(result.bytes, {0.25F, 0.0F, 0.0F});
+        append_vec3(result.bytes, {0.5F, 0.0F, 0.0F});
+    }
+
+    replace_once(
+        result.json,
+        "\"byteLength\": 412",
+        "\"byteLength\": "
+            + std::to_string(result.bytes.size()));
+
+    std::string extra_views =
+        ",\n    {\"buffer\": 0, \"byteOffset\": "
+        + std::to_string(weight_time_offset)
+        + ", \"byteLength\": 8},\n"
+        "    {\"buffer\": 0, \"byteOffset\": "
+        + std::to_string(weight_output_offset)
+        + ", \"byteLength\": 16}";
+    if (mixed_skeletal) {
+        extra_views +=
+            ",\n    {\"buffer\": 0, \"byteOffset\": "
+            + std::to_string(*skeletal_time_offset)
+            + ", \"byteLength\": 8},\n"
+            "    {\"buffer\": 0, \"byteOffset\": "
+            + std::to_string(*skeletal_output_offset)
+            + ", \"byteLength\": 24}";
+    }
+    replace_once(
+        result.json,
+        "    {\"buffer\": 0, \"byteOffset\": 376, \"byteLength\": 36}\n  ],",
+        "    {\"buffer\": 0, \"byteOffset\": 376, \"byteLength\": 36}"
+            + extra_views
+            + "\n  ],");
+
+    std::string extra_accessors =
+        ",\n    {\"bufferView\": 10, \"componentType\": 5126, "
+        "\"count\": 2, \"type\": \"SCALAR\", "
+        "\"min\": [0.0], \"max\": [1.0]},\n"
+        "    {\"bufferView\": 11, \"componentType\": 5126, "
+        "\"count\": 4, \"type\": \"SCALAR\"}";
+    if (mixed_skeletal) {
+        extra_accessors +=
+            ",\n    {\"bufferView\": 12, \"componentType\": 5126, "
+            "\"count\": 2, \"type\": \"SCALAR\", "
+            "\"min\": [0.25], \"max\": [0.75]},\n"
+            "    {\"bufferView\": 13, \"componentType\": 5126, "
+            "\"count\": 2, \"type\": \"VEC3\"}";
+    }
+    replace_once(
+        result.json,
+        "    {\"bufferView\": 9, \"componentType\": 5126, "
+        "\"count\": 3, \"type\": \"VEC3\"}\n  ],",
+        "    {\"bufferView\": 9, \"componentType\": 5126, "
+        "\"count\": 3, \"type\": \"VEC3\"}"
+            + extra_accessors
+            + "\n  ],");
+
+    std::string animation =
+        "  \"animations\": [{\n"
+        "    \"name\": \"MorphMotion\",\n"
+        "    \"samplers\": [\n"
+        "      {\"input\": 10, \"output\": 11, \"interpolation\": \""
+        + interpolation
+        + "\"}";
+    if (mixed_skeletal) {
+        animation +=
+            ",\n      {\"input\": 12, \"output\": 13, "
+            "\"interpolation\": \"LINEAR\"}";
+    }
+    animation +=
+        "\n    ],\n"
+        "    \"channels\": [\n"
+        "      {\"sampler\": 0, \"target\": {\"node\": 0, "
+        "\"path\": \"weights\"}}";
+    if (mixed_skeletal) {
+        animation +=
+            ",\n      {\"sampler\": 1, \"target\": {\"node\": 2, "
+            "\"path\": \"translation\"}}";
+    }
+    animation +=
+        "\n    ]\n"
+        "  }],\n";
+
+    replace_once(
+        result.json,
+        "  \"scenes\": [{\"nodes\": [0, 1]}],",
+        animation
+            + "  \"scenes\": [{\"nodes\": [0, 1]}],");
+    return result;
+}
+
 bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
     for (std::size_t row = 0U; row < 4U; ++row) {
         for (std::size_t column = 0U; column < 4U; ++column) {
