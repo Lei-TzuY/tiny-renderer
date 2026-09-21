@@ -10,6 +10,7 @@
 
 #include "tiny_renderer/model.hpp"
 #include "tiny_renderer/morph.hpp"
+#include "tiny_renderer/morph_timeline.hpp"
 #include "tiny_renderer/skinning.hpp"
 #include "tiny_renderer/skeletal_trs_timeline.hpp"
 
@@ -43,6 +44,12 @@ struct GltfSkinnedAsset {
 struct GltfImportedAnimation {
     std::optional<std::string> name{};
     std::shared_ptr<const SkeletalTrsClip> clip{};
+    std::shared_ptr<const MorphWeightClip> morph_weights{};
+
+    [[nodiscard]] bool has_semantic_clip() const noexcept {
+        return static_cast<bool>(clip)
+            || static_cast<bool>(morph_weights);
+    }
 };
 
 struct GltfSkinnedAnimationCollection {

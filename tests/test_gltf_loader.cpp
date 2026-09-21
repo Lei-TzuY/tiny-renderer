@@ -9,6 +9,7 @@
 #include <iterator>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -224,6 +225,127 @@ void append_vec3(
     append_f32(bytes, value.x);
     append_f32(bytes, value.y);
     append_f32(bytes, value.z);
+}
+
+
+struct MorphAnimationCase {
+    std::string json{};
+    std::vector<std::uint8_t> bytes{};
+};
+
+MorphAnimationCase make_morph_animation_case(
+    const std::string& interpolation,
+    bool mixed_skeletal) {
+    MorphAnimationCase result;
+    result.json =
+        read_text(fixture_path("skinned_morph_triangle.gltf"));
+    result.bytes =
+        read_bytes(fixture_path("skinned_morph_triangle.bin"));
+
+    const std::size_t weight_time_offset = result.bytes.size();
+    append_f32(result.bytes, 0.0F);
+    append_f32(result.bytes, 1.0F);
+    const std::size_t weight_output_offset = result.bytes.size();
+    append_f32(result.bytes, 0.5F);
+    append_f32(result.bytes, -0.25F);
+    append_f32(result.bytes, 1.0F);
+    append_f32(result.bytes, 0.5F);
+
+    std::optional<std::size_t> skeletal_time_offset;
+    std::optional<std::size_t> skeletal_output_offset;
+    if (mixed_skeletal) {
+        skeletal_time_offset = result.bytes.size();
+        append_f32(result.bytes, 0.25F);
+        append_f32(result.bytes, 0.75F);
+        skeletal_output_offset = result.bytes.size();
+        append_vec3(result.bytes, {0.25F, 0.0F, 0.0F});
+        append_vec3(result.bytes, {0.5F, 0.0F, 0.0F});
+    }
+
+    replace_once(
+        result.json,
+        "\"byteLength\": 412",
+        "\"byteLength\": "
+            + std::to_string(result.bytes.size()));
+
+    std::string extra_views =
+        ",\n    {\"buffer\": 0, \"byteOffset\": "
+        + std::to_string(weight_time_offset)
+        + ", \"byteLength\": 8},\n"
+        "    {\"buffer\": 0, \"byteOffset\": "
+        + std::to_string(weight_output_offset)
+        + ", \"byteLength\": 16}";
+    if (mixed_skeletal) {
+        extra_views +=
+            ",\n    {\"buffer\": 0, \"byteOffset\": "
+            + std::to_string(*skeletal_time_offset)
+            + ", \"byteLength\": 8},\n"
+            "    {\"buffer\": 0, \"byteOffset\": "
+            + std::to_string(*skeletal_output_offset)
+            + ", \"byteLength\": 24}";
+    }
+    replace_once(
+        result.json,
+        "    {\"buffer\": 0, \"byteOffset\": 376, \"byteLength\": 36}\n  ],",
+        "    {\"buffer\": 0, \"byteOffset\": 376, \"byteLength\": 36}"
+            + extra_views
+            + "\n  ],");
+
+    std::string extra_accessors =
+        ",\n    {\"bufferView\": 10, \"componentType\": 5126, "
+        "\"count\": 2, \"type\": \"SCALAR\", "
+        "\"min\": [0.0], \"max\": [1.0]},\n"
+        "    {\"bufferView\": 11, \"componentType\": 5126, "
+        "\"count\": 4, \"type\": \"SCALAR\"}";
+    if (mixed_skeletal) {
+        extra_accessors +=
+            ",\n    {\"bufferView\": 12, \"componentType\": 5126, "
+            "\"count\": 2, \"type\": \"SCALAR\", "
+            "\"min\": [0.25], \"max\": [0.75]},\n"
+            "    {\"bufferView\": 13, \"componentType\": 5126, "
+            "\"count\": 2, \"type\": \"VEC3\"}";
+    }
+    replace_once(
+        result.json,
+        "    {\"bufferView\": 9, \"componentType\": 5126, "
+        "\"count\": 3, \"type\": \"VEC3\"}\n  ],",
+        "    {\"bufferView\": 9, \"componentType\": 5126, "
+        "\"count\": 3, \"type\": \"VEC3\"}"
+            + extra_accessors
+            + "\n  ],");
+
+    std::string animation =
+        "  \"animations\": [{\n"
+        "    \"name\": \"MorphMotion\",\n"
+        "    \"samplers\": [\n"
+        "      {\"input\": 10, \"output\": 11, \"interpolation\": \""
+        + interpolation
+        + "\"}";
+    if (mixed_skeletal) {
+        animation +=
+            ",\n      {\"input\": 12, \"output\": 13, "
+            "\"interpolation\": \"LINEAR\"}";
+    }
+    animation +=
+        "\n    ],\n"
+        "    \"channels\": [\n"
+        "      {\"sampler\": 0, \"target\": {\"node\": 0, "
+        "\"path\": \"weights\"}}";
+    if (mixed_skeletal) {
+        animation +=
+            ",\n      {\"sampler\": 1, \"target\": {\"node\": 2, "
+            "\"path\": \"translation\"}}";
+    }
+    animation +=
+        "\n    ]\n"
+        "  }],\n";
+
+    replace_once(
+        result.json,
+        "  \"scenes\": [{\"nodes\": [0, 1]}],",
+        animation
+            + "  \"scenes\": [{\"nodes\": [0, 1]}],");
+    return result;
 }
 
 bool exact_matrix_equal(const Mat4& left, const Mat4& right) {
@@ -825,7 +947,7 @@ void test_animated_import_preserves_static_morph_ownership() {
                     weights_path_json,
                     bytes));
         },
-        "glTF animation weights channels remain fail-closed until a later milestone");
+        "morph-weight animation channel targeting a skin joint instead of the unique mesh node is rejected");
 }
 
 void test_static_morph_import_validation_and_lit_contract() {
@@ -2851,6 +2973,487 @@ void test_imported_animation_later_overflow_is_batch_fail_closed() {
     }
 }
 
+void check_same_morph_weights(
+    const MorphState& left,
+    const MorphState& right,
+    const std::string& message) {
+    const auto left_weights = left.weights();
+    const auto right_weights = right.weights();
+    check(
+        left_weights.size() == right_weights.size(),
+        message + " cardinality");
+    for (std::size_t index = 0U;
+         index < left_weights.size()
+             && index < right_weights.size();
+         ++index) {
+        check(
+            left_weights[index] == right_weights[index],
+            message + " coefficient");
+    }
+}
+
+MorphWeightClip manual_morph_weight_clip(
+    SemanticInterpolationMode interpolation) {
+    return MorphWeightClip(
+        manual_morph_targets(),
+        std::vector<float>{0.5F, -0.25F},
+        std::vector<MorphWeightKeyframe>{
+            {0.0F, {0.5F, -0.25F}},
+            {1.0F, {1.0F, 0.5F}},
+        },
+        interpolation);
+}
+
+SkeletalTrsClip manual_mixed_morph_skeletal_clip(
+    SkeletalRigPtr rig) {
+    return SkeletalTrsClip(
+        std::move(rig),
+        0.25F,
+        0.75F,
+        std::vector<SkeletalTrs>{
+            SkeletalTrs{
+                {0.25F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+            SkeletalTrs{
+                {0.1F, 0.0F, 0.0F},
+                Quaternion{},
+                {1.0F, 1.0F, 1.0F},
+            },
+        },
+        std::vector<SkeletalTranslationTrack>{
+            SkeletalTranslationTrack{
+                0U,
+                {
+                    {0.25F, {0.25F, 0.0F, 0.0F}},
+                    {0.75F, {0.5F, 0.0F, 0.0F}},
+                },
+                SkeletalInterpolationMode::Linear,
+            },
+        },
+        {},
+        {});
+}
+
+void test_gltf_morph_weight_linear_and_step_import() {
+    for (const auto& [name, interpolation, mode]
+         : std::array{
+             std::tuple{
+                 "linear",
+                 std::string{"LINEAR"},
+                 SemanticInterpolationMode::Linear},
+             std::tuple{
+                 "step",
+                 std::string{"STEP"},
+                 SemanticInterpolationMode::Step},
+         }) {
+        const MorphAnimationCase animation_case =
+            make_morph_animation_case(
+                interpolation,
+                false);
+        const GltfSkinnedAnimationCollection imported =
+            load_gltf_skinned_animation_collection_file(
+                write_morph_case(
+                    std::string{"morph_weights_"} + name,
+                    animation_case.json,
+                    animation_case.bytes));
+
+        check(
+            imported.animations.size() == 1U
+                && !imported.animations[0].clip
+                && imported.animations[0].morph_weights,
+            std::string{name}
+                + " weights-only animation owns morph semantics without a dummy skeletal clip");
+        if (imported.animations.size() != 1U
+            || !imported.animations[0].morph_weights) {
+            continue;
+        }
+        check(
+            imported.animations[0].has_semantic_clip(),
+            std::string{name}
+                + " weights-only animation reports supported semantic ownership");
+        check(
+            imported.animations[0].morph_weights->start_time() == 0.0F
+                && imported.animations[0].morph_weights->end_time() == 1.0F
+                && imported.animations[0].morph_weights->interpolation()
+                    == mode,
+            std::string{name}
+                + " morph-weight clip preserves file domain and interpolation mode");
+
+        const MorphWeightClip reference =
+            manual_morph_weight_clip(mode);
+        const std::array<float, 4> times{
+            0.0F,
+            0.5F,
+            1.0F,
+            0.5F,
+        };
+        const auto imported_states =
+            imported.animations[0].morph_weights->sample(times);
+        const auto reference_states =
+            reference.sample(times);
+        check(
+            imported_states.size() == reference_states.size(),
+            std::string{name}
+                + " file/programmatic morph samples preserve cardinality");
+        for (std::size_t sample = 0U;
+             sample < imported_states.size()
+                 && sample < reference_states.size();
+             ++sample) {
+            check_same_morph_weights(
+                *imported_states[sample],
+                *reference_states[sample],
+                std::string{name}
+                    + " file-driven morph weights match programmatic M119");
+        }
+
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animated_asset_file(
+                    write_morph_case(
+                        std::string{"morph_only_legacy_"} + name,
+                        animation_case.json,
+                        animation_case.bytes));
+            },
+            std::string{name}
+                + " morph-only animation remains invalid for the legacy skeletal wrapper");
+    }
+}
+
+void test_gltf_mixed_skeletal_and_morph_animation_matches_programmatic_reference() {
+    const MorphAnimationCase animation_case =
+        make_morph_animation_case(
+            "LINEAR",
+            true);
+    const GltfSkinnedAnimationCollection imported =
+        load_gltf_skinned_animation_collection_file(
+            write_morph_case(
+                "mixed_skeletal_morph_animation",
+                animation_case.json,
+                animation_case.bytes));
+
+    check(
+        imported.animations.size() == 1U
+            && imported.animations[0].clip
+            && imported.animations[0].morph_weights,
+        "mixed glTF animation owns both skeletal and morph semantic clips");
+    if (imported.animations.size() != 1U
+        || !imported.animations[0].clip
+        || !imported.animations[0].morph_weights) {
+        return;
+    }
+
+    check(
+        imported.animations[0].clip->start_time() == 0.25F
+            && imported.animations[0].clip->end_time() == 0.75F
+            && imported.animations[0].morph_weights->start_time() == 0.0F
+            && imported.animations[0].morph_weights->end_time() == 1.0F,
+        "mixed glTF animation preserves independent skeletal and morph source domains");
+
+    const SkeletalTrsClip reference_skeletal =
+        manual_mixed_morph_skeletal_clip(manual_rig());
+    const MorphWeightClip reference_morph =
+        manual_morph_weight_clip(
+            SemanticInterpolationMode::Linear);
+
+    const std::array<float, 1> time{0.5F};
+    const auto imported_pose =
+        imported.animations[0].clip->sample(time);
+    const auto reference_pose =
+        reference_skeletal.sample(time);
+    const auto imported_morph =
+        imported.animations[0].morph_weights->sample(time);
+    const auto reference_morph_states =
+        reference_morph.sample(time);
+
+    check(
+        imported_pose.size() == 1U
+            && reference_pose.size() == 1U
+            && imported_morph.size() == 1U
+            && reference_morph_states.size() == 1U,
+        "mixed glTF animation materializes complete skeletal and morph midpoint state");
+    if (imported_pose.empty()
+        || reference_pose.empty()
+        || imported_morph.empty()
+        || reference_morph_states.empty()) {
+        return;
+    }
+
+    const auto imported_locals =
+        imported_pose[0]->local_transforms();
+    const auto reference_locals =
+        reference_pose[0]->local_transforms();
+    check(
+        imported_locals.size() == reference_locals.size(),
+        "mixed glTF skeletal midpoint preserves joint cardinality");
+    for (std::size_t joint = 0U;
+         joint < imported_locals.size()
+             && joint < reference_locals.size();
+         ++joint) {
+        check(
+            exact_matrix_equal(
+                imported_locals[joint],
+                reference_locals[joint]),
+            "mixed glTF skeletal channel matches independent M111 reference");
+    }
+    check_same_morph_weights(
+        *imported_morph[0],
+        *reference_morph_states[0],
+        "mixed glTF morph channel matches independent M119 reference");
+
+    ModelRenderOptions imported_options;
+    imported_options.directional_light = test_light();
+    imported_options.morph_state = imported_morph[0];
+    imported_options.skeletal_pose_state = imported_pose[0];
+
+    ModelRenderOptions reference_options;
+    reference_options.directional_light = test_light();
+    reference_options.morph_state = reference_morph_states[0];
+    reference_options.skeletal_pose_state = reference_pose[0];
+
+    Framebuffer imported_fb(57U, 57U, SampleCount::Four);
+    Framebuffer reference_fb(57U, 57U, SampleCount::Four);
+    imported_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 23U);
+    reference_fb.clear({0.02F, 0.03F, 0.04F}, 1.0F, 23U);
+    draw_model_asset(
+        imported_fb,
+        imported.asset.model,
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        imported_options);
+    draw_model_asset(
+        reference_fb,
+        manual_model(),
+        Mat4::identity(),
+        Mat4::identity(),
+        Mat4::identity(),
+        reference_options);
+    check_same_framebuffer(
+        imported_fb,
+        reference_fb,
+        "mixed glTF skeletal+morph midpoint matches independent M117+M108 fixed-light reference");
+
+    const PreparedModelSubmission imported_prepared =
+        prepare_model_asset(
+            imported.asset.model,
+            imported_options);
+    const PreparedModelSubmission reference_prepared =
+        prepare_model_asset(
+            manual_model(),
+            reference_options);
+    const std::array<PreparedModelListEntry, 1> imported_entry{{
+        {&imported_prepared, Mat4::identity()},
+    }};
+    const std::array<PreparedModelListEntry, 1> reference_entry{{
+        {&reference_prepared, Mat4::identity()},
+    }};
+    const auto imported_shadow =
+        render_directional_shadow_map(
+            imported_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    const auto reference_shadow =
+        render_directional_shadow_map(
+            reference_entry,
+            Mat4::identity(),
+            DirectionalShadowMapOptions{
+                47U,
+                47U,
+                CullMode::None,
+                FrontFace::CounterClockwise,
+            });
+    for (std::size_t y = 0U;
+         y < imported_shadow->height();
+         ++y) {
+        for (std::size_t x = 0U;
+             x < imported_shadow->width();
+             ++x) {
+            check(
+                imported_shadow->depth_at(x, y)
+                    == reference_shadow->depth_at(x, y),
+                "mixed glTF skeletal+morph shadow matches independent reference");
+        }
+    }
+}
+
+void test_gltf_morph_weight_animation_validation_contract() {
+    const MorphAnimationCase base =
+        make_morph_animation_case(
+            "LINEAR",
+            false);
+
+    {
+        std::string json = base.json;
+        replace_once(
+            json,
+            "\"interpolation\": \"LINEAR\"",
+            "\"interpolation\": \"CUBICSPLINE\"");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_cubic",
+                        json,
+                        base.bytes));
+            },
+            "glTF morph-weight CUBICSPLINE is rejected rather than approximated");
+    }
+
+    {
+        std::string json = base.json;
+        replace_once(
+            json,
+            "\"node\": 0, \"path\": \"weights\"",
+            "\"node\": 1, \"path\": \"weights\"");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_wrong_node",
+                        json,
+                        base.bytes));
+            },
+            "morph-weight channel must target the unique skinned mesh instance");
+    }
+
+    {
+        std::string json = base.json;
+        replace_once(
+            json,
+            "    \"weights\": [0.25, 0.0],\n",
+            "");
+        replace_once(
+            json,
+            "      \"mode\": 4,\n"
+            "      \"targets\": [\n"
+            "        {\"POSITION\": 6, \"NORMAL\": 7},\n"
+            "        {\"POSITION\": 8, \"NORMAL\": 9}\n"
+            "      ]\n",
+            "      \"mode\": 4\n");
+        replace_once(
+            json,
+            ", \"weights\": [0.5, -0.25]",
+            "");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_missing_targets",
+                        json,
+                        base.bytes));
+            },
+            "morph-weight animation requires imported M118 morph target ownership");
+    }
+
+    {
+        std::string json = base.json;
+        const std::string channel =
+            "{\"sampler\": 0, \"target\": {\"node\": 0, "
+            "\"path\": \"weights\"}}";
+        replace_once(
+            json,
+            channel,
+            channel + ",\n      " + channel);
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_duplicate",
+                        json,
+                        base.bytes));
+            },
+            "duplicate morph-weight channel ownership is rejected");
+    }
+
+    {
+        std::string json = base.json;
+        replace_once(
+            json,
+            "{\"bufferView\": 11, \"componentType\": 5126, "
+            "\"count\": 4, \"type\": \"SCALAR\"}",
+            "{\"bufferView\": 11, \"componentType\": 5126, "
+            "\"count\": 4, \"type\": \"VEC3\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_type",
+                        json,
+                        base.bytes));
+            },
+            "morph-weight output accessor must be float SCALAR");
+    }
+
+    {
+        std::string json = base.json;
+        replace_once(
+            json,
+            "{\"bufferView\": 11, \"componentType\": 5126, "
+            "\"count\": 4, \"type\": \"SCALAR\"}",
+            "{\"bufferView\": 11, \"componentType\": 5126, "
+            "\"count\": 3, \"type\": \"SCALAR\"}");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_count",
+                        json,
+                        base.bytes));
+            },
+            "morph-weight output cardinality must be key count times target count");
+    }
+
+    {
+        std::vector<std::uint8_t> bytes = base.bytes;
+        set_f32(
+            bytes,
+            bytes.size() - 16U,
+            std::numeric_limits<float>::quiet_NaN());
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_nonfinite",
+                        base.json,
+                        bytes));
+            },
+            "non-finite morph-weight output is rejected at typed read");
+    }
+
+    {
+        std::string json = base.json;
+        replace_once(
+            json,
+            "      {\"sampler\": 0, \"target\": {\"node\": 0, "
+            "\"path\": \"weights\"}}\n    ]\n  }],",
+            "      {\"sampler\": 0, \"target\": {\"node\": 0, "
+            "\"path\": \"weights\"}}\n    ]\n  },\n"
+            "  {\n"
+            "    \"name\": \"BrokenLater\",\n"
+            "    \"samplers\": [{\"input\": 99, \"output\": 11}],\n"
+            "    \"channels\": [{\"sampler\": 0, \"target\": "
+            "{\"node\": 0, \"path\": \"weights\"}}]\n"
+            "  }],");
+        check_throws<GltfLoadError>(
+            [&] {
+                (void)load_gltf_skinned_animation_collection_file(
+                    write_morph_case(
+                        "morph_weights_later_animation",
+                        json,
+                        base.bytes));
+            },
+            "malformed later morph animation rejects the complete collection transaction");
+    }
+}
+
+
 void test_node_hierarchy_fail_closed() {
     const std::string valid =
         read_text(fixture_path("skinned_triangle.gltf"));
@@ -2921,6 +3524,9 @@ int main() {
     test_animation_collection_fail_closed_contract();
     test_animation_schema_and_data_fail_closed();
     test_imported_animation_later_overflow_is_batch_fail_closed();
+    test_gltf_morph_weight_linear_and_step_import();
+    test_gltf_mixed_skeletal_and_morph_animation_matches_programmatic_reference();
+    test_gltf_morph_weight_animation_validation_contract();
     test_node_hierarchy_fail_closed();
 
     if (failures != 0) {

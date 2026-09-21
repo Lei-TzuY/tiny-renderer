@@ -1384,7 +1384,12 @@ struct GltfAnimationSamplerInfo {
     return times;
 }
 
-[[nodiscard]] std::shared_ptr<const SkeletalTrsClip>
+struct ParsedGltfAnimation {
+    std::shared_ptr<const SkeletalTrsClip> skeletal{};
+    std::shared_ptr<const MorphWeightClip> morph_weights{};
+};
+
+[[nodiscard]] ParsedGltfAnimation
 parse_gltf_animation(
     const JsonValue& animation_value,
     const std::vector<AccessorInfo>& accessors,
@@ -1394,7 +1399,10 @@ parse_gltf_animation(
     std::span<const std::optional<std::size_t>> joint_index_by_node,
     SkeletalRigPtr rig,
     const std::vector<SkeletalTrs>& default_pose,
-    const std::vector<Mat4>& local_prefixes) {
+    const std::vector<Mat4>& local_prefixes,
+    std::size_t mesh_skin_node,
+    MorphTargetSetPtr morph_targets,
+    MorphStatePtr default_morph_state) {
     const auto& animation =
         as_object(animation_value, "animation");
     reject_member(animation, "extensions", "animation");
@@ -1479,6 +1487,9 @@ parse_gltf_animation(
         false);
     std::optional<float> clip_start;
     std::optional<float> clip_end;
+    bool morph_weights_seen = false;
+    std::vector<MorphWeightKeyframe> morph_weight_keys;
+    std::optional<SemanticInterpolationMode> morph_interpolation;
     const std::array<int, 1> float_type{5126};
 
     for (const JsonValue& value : channel_values) {
@@ -1516,26 +1527,12 @@ parse_gltf_animation(
         if (node >= nodes.size()) {
             fail("animation target node index is out of range");
         }
-        if (node >= joint_index_by_node.size()
-            || !joint_index_by_node[node]) {
-            fail("animation channel must target an imported skin joint node");
-        }
-        if (!nodes[node].semantic_trs) {
-            fail("animated skin joint must use TRS node state rather than matrix");
-        }
-        const std::size_t joint =
-            *joint_index_by_node[node];
         const std::string path = as_string(
             require_member(
                 target,
                 "path",
                 "animation channel target"),
             "animation target path");
-        if (path != "translation"
-            && path != "rotation"
-            && path != "scale") {
-            fail("animation target path is outside translation/rotation/scale");
-        }
 
         const GltfAnimationSamplerInfo& sampler =
             samplers[sampler_index];
@@ -1551,6 +1548,88 @@ parse_gltf_animation(
             sampler.output);
         const std::vector<float> times =
             read_animation_times(input, bytes);
+
+        if (path == "weights") {
+            if (node != mesh_skin_node) {
+                fail("animation weights channel must target the unique skinned mesh instance node");
+            }
+            if (!morph_targets || !default_morph_state) {
+                fail("animation weights channel requires imported morph target ownership");
+            }
+            if (morph_weights_seen) {
+                fail("animation contains duplicate morph-weight channel ownership");
+            }
+            if (sampler.interpolation
+                == SkeletalInterpolationMode::CubicSpline) {
+                fail("morph-weight CUBICSPLINE animation is not supported by this milestone");
+            }
+            require_accessor_shape(
+                output,
+                "SCALAR",
+                float_type,
+                "animation morph-weight output",
+                true);
+            const std::size_t target_count =
+                morph_targets->targets().size();
+            std::size_t expected_output_count = 0U;
+            if (!checked_mul(
+                    times.size(),
+                    target_count,
+                    expected_output_count)) {
+                fail("morph-weight animation output count overflows");
+            }
+            if (output.accessor->count != expected_output_count) {
+                fail("morph-weight animation output count must equal input key count times morph target count");
+            }
+
+            morph_weight_keys.reserve(times.size());
+            for (std::size_t key = 0U;
+                 key < times.size();
+                 ++key) {
+                std::vector<float> weights;
+                weights.reserve(target_count);
+                for (std::size_t target_index = 0U;
+                     target_index < target_count;
+                     ++target_index) {
+                    const std::size_t flat_index =
+                        key * target_count + target_index;
+                    weights.push_back(
+                        read_f32(
+                            element_pointer(
+                                output,
+                                bytes,
+                                flat_index),
+                            "animation morph-weight output"));
+                }
+                morph_weight_keys.push_back({
+                    times[key],
+                    std::move(weights),
+                });
+            }
+            morph_interpolation =
+                sampler.interpolation
+                    == SkeletalInterpolationMode::Step
+                ? SemanticInterpolationMode::Step
+                : SemanticInterpolationMode::Linear;
+            morph_weights_seen = true;
+            continue;
+        }
+
+        if (path != "translation"
+            && path != "rotation"
+            && path != "scale") {
+            fail("animation target path is outside translation/rotation/scale/weights");
+        }
+        if (node >= joint_index_by_node.size()
+            || !joint_index_by_node[node]) {
+            fail("skeletal animation channel must target an imported skin joint node");
+        }
+        if (!nodes[node].semantic_trs) {
+            fail("animated skin joint must use TRS node state rather than matrix");
+        }
+        const std::size_t joint =
+            *joint_index_by_node[node];
+
         std::size_t expected_output_count = times.size();
         if (sampler.interpolation
             == SkeletalInterpolationMode::CubicSpline) {
@@ -1757,26 +1836,55 @@ parse_gltf_animation(
             }
         }    }
 
-    if (!clip_start || !clip_end
-        || !(*clip_end > *clip_start)) {
-        fail("animation channels must span a finite increasing clip domain");
+    ParsedGltfAnimation parsed;
+    const bool has_skeletal_channels =
+        !translations.empty()
+        || !rotations.empty()
+        || !scales.empty();
+    if (has_skeletal_channels) {
+        if (!clip_start || !clip_end
+            || !(*clip_end > *clip_start)) {
+            fail("skeletal animation channels must span a finite increasing clip domain");
+        }
+        try {
+            parsed.skeletal =
+                std::make_shared<const SkeletalTrsClip>(
+                    rig,
+                    *clip_start,
+                    *clip_end,
+                    default_pose,
+                    local_prefixes,
+                    std::move(translations),
+                    std::move(rotations),
+                    std::move(scales));
+        } catch (const std::invalid_argument& error) {
+            fail(error.what());
+        } catch (const std::out_of_range& error) {
+            fail(error.what());
+        }
     }
 
-    try {
-        return std::make_shared<const SkeletalTrsClip>(
-            std::move(rig),
-            *clip_start,
-            *clip_end,
-            default_pose,
-            local_prefixes,
-            std::move(translations),
-            std::move(rotations),
-            std::move(scales));
-    } catch (const std::invalid_argument& error) {
-        fail(error.what());
-    } catch (const std::out_of_range& error) {
-        fail(error.what());
+    if (morph_weights_seen) {
+        try {
+            parsed.morph_weights =
+                std::make_shared<const MorphWeightClip>(
+                    std::move(morph_targets),
+                    std::vector<float>(
+                        default_morph_state->weights().begin(),
+                        default_morph_state->weights().end()),
+                    std::move(morph_weight_keys),
+                    *morph_interpolation);
+        } catch (const std::invalid_argument& error) {
+            fail(error.what());
+        } catch (const std::out_of_range& error) {
+            fail(error.what());
+        }
     }
+
+    if (!parsed.skeletal && !parsed.morph_weights) {
+        fail("animation must contain at least one supported skeletal or morph-weight channel");
+    }
+    return parsed;
 }
 
 struct GltfImportBundle {
@@ -2452,7 +2560,7 @@ struct GltfImportBundle {
                     *animation_name,
                     "animation name");
             }
-            std::shared_ptr<const SkeletalTrsClip> clip =
+            ParsedGltfAnimation parsed =
                 parse_gltf_animation(
                     animation_value,
                     accessors,
@@ -2462,10 +2570,14 @@ struct GltfImportBundle {
                     joint_index_by_node,
                     rig,
                     semantic_defaults,
-                    local_prefixes);
+                    local_prefixes,
+                    *mesh_skin_node,
+                    result.morph_targets,
+                    result.default_morph_state);
             animations.push_back({
                 std::move(name),
-                std::move(clip),
+                std::move(parsed.skeletal),
+                std::move(parsed.morph_weights),
             });
         }
     }
@@ -2504,6 +2616,9 @@ load_gltf_skinned_animated_asset_file(
         load_gltf_skinned_animation_collection_file(path);
     if (imported.animations.size() != 1U) {
         fail("exactly-one animated importer requires exactly one animation");
+    }
+    if (!imported.animations.front().clip) {
+        fail("exactly-one skeletal animated importer requires a skeletal clip");
     }
     return {
         std::move(imported.asset),
