@@ -2,7 +2,7 @@
 
 This file is the compact live capability/status layer for the repository. `ROADMAP.md` retains detailed milestone history and is not authoritative when it lags this file. A capability is considered integrated only when its exact `main` commit has passed Linux, macOS, and ASan/UBSan CI; milestone-numbered branches by themselves are not completion evidence.
 
-## Architecture frontier: Milestone 119 bounded programmatic morph-weight animation
+## Architecture frontier: Milestone 120 bounded glTF morph-weight animation interoperability
 
 Milestones 1–35 establish the deterministic CPU raster pipeline, indexed meshes and generalized varyings, fixed-point coverage/interpolation, explicit depth/stencil/blend ownership, viewport/scissor, 4x MSAA, material/texture import, opacity and alpha-to-coverage, directional shadows, alpha-tested cutouts, and bounded fragment/vertex programs. Milestones 36–47 extend the same execution path with tangent-space normal mapping, Blinn-Phong specular lighting, point/spot/multi-light accumulation, point/spot/directional shadowing, RGB light color, per-record shadow bindings, deterministic PCF policy, cascaded directional shadows, owned mip chains, nearest-level/trilinear filtering, and raster-derived perspective-correct UV gradients.
 
@@ -553,19 +553,37 @@ M119 adds temporal morph coefficients above M117/M118 without introducing an ani
 - A transactional regression requests one safe endpoint followed by a non-finite later time, then attempts to render only if sampling returns. The complete request rejects before the earlier endpoint can own sentinel RGB/depth/stencil.
 - M119 adds no file-driven `weights` channel, cubic morph interpolation, morph clip blending/layers, sparse target accessors, tangent morphing, GPU execution, parallel path, or performance claim.
 
-## Promotion after Milestone 119
+## Milestone 120 — bounded glTF morph-weight animation interoperability
 
-Programmatic temporal morph state now exists. The highest-value next gap is to close the real-file animation ownership already exposed by M118, rather than adding another standalone morph API. Milestone 120 should add **bounded glTF morph-weight animation interoperability** by projecting strict `target.path = "weights"` channels onto M119.
+M120 closes the file-driven temporal morph-ownership gap opened by M118/M119 without adding an importer-specific morph evaluator.
 
-A Milestone 120 slice should require:
+- `GltfImportedAnimation` can now own an existing skeletal `SkeletalTrsClip`, an M119 `MorphWeightClip`, or both. At least one supported semantic clip is required for every imported animation; existing skeletal-only collection entries remain source-compatible through the unchanged `clip` field.
+- A weights-only animation is a first-class collection entry and does not manufacture a dummy skeletal clip. The legacy exactly-one skeletal wrapper still requires exactly one animation with a real skeletal clip and rejects morph-only assets explicitly.
+- `target.path = "weights"` is accepted at most once per animation and must target exactly the unique skinned mesh instance node. Joint nodes, unrelated nodes, duplicate weight-channel ownership, or files without imported M118 morph targets/default state fail closed.
+- Animation sampler input continues through the established checked SCALAR time accessor path, including finite/non-negative/strictly-increasing data and exact accessor min/max ownership.
+- LINEAR/STEP morph output must be finite float SCALAR data with count exactly `input_key_count * morph_target_count`. Values are grouped in target order for each key and projected directly into complete M119 `MorphWeightKeyframe` vectors.
+- Imported M118 node-over-mesh default weights become the M119 clip default state and share the exact imported immutable `MorphTargetSet`; no target or default ownership is copied into a second deformation subsystem.
+- Omitted/explicit LINEAR and STEP map directly to the shared `SemanticInterpolationMode`. CUBICSPLINE weights remain deliberately rejected instead of being approximated through linear interpolation.
+- Mixed skeletal+weights animations keep independent semantic domains. A skeletal channel with domain 0.25..0.75 and a morph channel with domain 0..1 remain exactly those two domains; import never stretches, intersects, unions, or otherwise rewrites source time.
+- Deterministic runtime-generated file cases cover LINEAR and STEP weights-only animations and one mixed skeletal+weights animation derived from the real M118 morph fixture/binary ownership.
+- File-driven LINEAR/STEP morph samples are exact-equivalent to independently constructed programmatic M119 clips across endpoint/interior/repeated requests. STEP holds the left complete coefficient vector until exact right-key time.
+- The mixed case independently compares its skeletal sample against a programmatic M111 clip and its morph sample against M119, then combines both ordinary states through the established M117 morph → M108 skin → fixed-light/shadow path. 4x resolved RGB/per-sample depth/stencil and directional-shadow depth match the independent reference exactly.
+- Validation regressions cover unsupported CUBICSPLINE weights, wrong target node, absent M118 morph ownership, duplicate weight channels, non-SCALAR output, key×target cardinality mismatch, non-finite weight data, and a malformed later animation rejecting the complete multi-animation collection transaction.
+- Earlier M118 rejection coverage is updated to retain the real invariant: a weights channel aimed at a joint node remains invalid, while valid mesh-node morph animation is now supported.
+- M120 adds no cubic morph-weight evaluation, morph clip blending/layers, multiple primitives/skins, GLB/extensions/compression, sparse accessors, tangent morphing, GPU execution, parallel path, or performance claim.
 
-- extend `GltfImportedAnimation` so one ordered glTF animation may own an existing skeletal TRS clip, an M119 morph-weight clip, or both; at least one semantic clip must be present, and existing skeletal-only files remain source/behavior compatible;
-- accept at most one `weights` channel per animation in this first slice, targeting exactly the unique skinned mesh instance node that owns the imported M118 morph targets. Weight channels targeting joints, unrelated nodes, files without morph targets, or duplicate weight-channel ownership fail closed;
-- reuse the existing checked animation input accessor/time validation. LINEAR/STEP weight output must be float SCALAR data with count exactly `input_key_count * morph_target_count`, grouped in target order for each key;
-- project each output group directly into one complete `MorphWeightKeyframe`; the imported M118 default morph state supplies the clip's default weight vector and shared target ownership;
-- map omitted/explicit LINEAR and STEP directly onto the shared `SemanticInterpolationMode`. CUBICSPLINE weights remain rejected until a shared morph Hermite runtime exists; no approximation through linear sampling is allowed;
-- a weights-only animation must be representable in the collection importer without inventing a dummy skeletal channel. The legacy exactly-one skeletal wrapper may continue to require a skeletal clip explicitly rather than silently selecting morph-only state;
-- mixed skeletal+weights animations keep each semantic clip's own key domain. Import must not silently normalize, stretch, or merge source timelines;
-- deterministic fixtures should cover LINEAR and STEP weights, non-zero imported M118 defaults, and at least one animation that combines joint TRS and morph weights. File-driven samples must match independently constructed programmatic M111/M119 clips and exact M117+M108 fixed-light/shadow references;
-- validation must cover output type/component/cardinality/range, duplicate weight channels, wrong target node, missing morph ownership, unsupported CUBICSPLINE/unknown interpolation, non-finite weights, and transactional failure of a malformed later animation in a multi-animation collection;
-- M120 adds no cubic morph weights, morph clip blending/layers, multiple primitives/skins, GLB/extensions/compression, sparse accessors, tangent morphing, GPU execution, or performance claim.
+## Promotion after Milestone 120
+
+LINEAR/STEP file-driven morph animation now reaches the canonical M117/M119 execution path. The remaining standards-level semantic gap is glTF CUBICSPLINE morph weights. Implementing it only inside the importer would duplicate the Hermite scalar already embedded in M116 skeletal animation and would leave programmatic morph animation less capable than file import. Milestone 121 should therefore add **shared semantic Hermite morph-weight interpolation plus glTF CUBICSPLINE interoperability** as one coherent slice.
+
+A Milestone 121 slice should require:
+
+- extract the finite bounded cubic Hermite scalar primitive currently owned privately by skeletal TRS animation into the shared semantic interpolation layer, then make M116 skeletal CUBICSPLINE delegate to that same primitive with no behavior change;
+- extend morph animation with an explicit cubic key representation owning complete in-tangent, value, and out-tangent coefficient vectors aligned to the immutable target set;
+- `MorphWeightClip` must accept either ordinary LINEAR/STEP keys or CUBICSPLINE keys, never both, preserving exact-key semantic value passthrough and current target/default ownership;
+- interior cubic sampling must evaluate each target coefficient independently with glTF Hermite duration scaling in double precision, reject non-finite materialization, and return one ordinary M117 `MorphState`; no geometry-space interpolation is introduced;
+- glTF CUBICSPLINE `weights` output must be float SCALAR with exact count `input_key_count * morph_target_count * 3`. For each key, importer grouping must be in-tangent vector, value vector, out-tangent vector in target order;
+- LINEAR/STEP M120 files and M116 skeletal CUBICSPLINE behavior must remain exact-compatible after the shared Hermite refactor;
+- deterministic programmatic and file-driven cubic cases should include signed coefficients and non-zero tangents with a midpoint observably different from LINEAR, exact first/final key values, repeated/out-of-order sampling, fixed-light M117+M108 execution, and directional-shadow equivalence against an independent Hermite reference;
+- malformed cubic output type/count/range, non-finite tangent/value data, mixed ordinary+cubic clip ownership, target-cardinality mismatch, and a later cubic sample whose evaluated morph state becomes unsafe during M117 object-space preparation must fail closed before earlier framebuffer ownership;
+- M121 adds no morph clip blending/layers, multiple primitives/skins, sparse morph accessors, tangent morph targets, GLB/extensions/compression, GPU execution, parallel path, or performance claim.
